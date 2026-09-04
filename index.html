@@ -501,10 +501,78 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
 }
 
-/* Small screens: panel becomes a sheet under the map rather than a crushed column. */
-@media (max-width: 900px) {
-  #app { grid-template-columns: 1fr; grid-template-rows: auto 55dvh 1fr; }
-  #panel { border-right: 0; border-top: 1px solid var(--bdr); }
+/* ---- Mobile ----
+   Measured before rewriting: at 390×844 the header's non-wrapping controls forced the whole
+   grid to 788px and clipped half of them, and the panel took the row meant for the map, which
+   ended up 311px below it. In landscape the map got 107px and two sections fell off the
+   bottom. So: the map fills the screen, the controls collapse into one popover, and the panel
+   becomes a bottom sheet whose collapsed peek still shows the mode buttons — the only controls
+   you need before pressing Mark. Landscape answers to height, not width (W-5). */
+#layers-btn, #sheet { display: none; }   /* desktop: neither exists */
+
+@media (max-width: 900px), (max-height: 620px) {
+  #app {
+    position: relative;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  #app > * { min-width: 0; }
+
+  header {
+    position: relative;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    align-items: center;
+  }
+  .wordmark { font-size: var(--t-md); flex: none; }
+  .placepick { flex: 1; min-width: 0; }
+  #place-btn { width: 100%; }
+  #place-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  #layers-btn { display: block; flex: none; margin-left: auto; }
+  #controls {
+    display: none;
+    position: absolute; top: calc(100% + var(--s-1)); right: var(--s-3); z-index: 25;
+    flex-direction: column; gap: var(--s-2);
+    padding: var(--s-3);
+    background: var(--ground);
+    border: 1px solid var(--bdr);
+    border-radius: 3px;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+  }
+  #controls.open { display: flex; }
+  .basemaps, .overlays { margin: 0; }
+
+  #map { grid-row: 2; grid-column: 1; }
+  #readout { display: none; }          /* a cursor readout means nothing on a touch screen */
+
+  /* The sheet */
+  #panel {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
+    max-height: 74dvh;
+    border-right: 0;
+    border-top: 1px solid var(--bdr);
+    box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.45);
+    transform: translateY(calc(100% - var(--peek, 8rem)));
+    transition: transform var(--d) var(--ease);
+  }
+  #panel.open { transform: none; }
+
+  /* A short landscape screen cannot hold the whole sheet; it scrolls inside itself while the
+     peek — the mode buttons — stays pinned and never moves. */
+  #panel { overflow-y: auto; }
+  #sheet {
+    position: sticky; top: 0; z-index: 2;
+    display: block; width: 100%;
+    border: 0; border-radius: 0;
+    border-bottom: 1px solid var(--bdr);
+    padding: var(--s-3);
+    background: var(--raised);
+  }
+  #panel > .section:first-of-type .hint { display: none; }   /* keep the peek short */
+  .modes button { padding: var(--s-3) var(--s-2); }          /* M-4: thumb-sized */
+
+  #markbar { bottom: calc(var(--peek, 8rem) + var(--s-3)); right: var(--s-3); }
 }
 </style>
 </head>
@@ -522,6 +590,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <ul id="place-list" role="listbox"></ul>
       </div>
     </div>
+    <button type="button" id="layers-btn" aria-expanded="false" aria-label="Layers">Layers</button>
+    <div id="controls">
     <div class="basemaps" role="group" aria-label="Basemap">
       <button type="button" data-base="osm"  aria-pressed="false">Map</button>
       <button type="button" data-base="topo" aria-pressed="false">Topo</button>
@@ -533,9 +603,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <button type="button" data-forest="areas" aria-pressed="false" title="Frame plus sub-areas — the other polygons and the enclosed villages, reservoirs and clearings">Areas</button>
       <button type="button" class="ghost" id="fit-forest" title="Fit the view to the forest">Fit</button>
     </div>
+    </div>
   </header>
 
   <div id="panel">
+    <button type="button" id="sheet" aria-expanded="false">Details ▲</button>
     <div class="section">
       <h2>Mode</h2>
       <div class="modes" role="group" aria-label="Drawing mode">
@@ -1059,7 +1131,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function setSelected(id) {
     selected = id;
-    if (id) { showPane("info"); }   /* selecting always brings the card forward */
+    if (id) { showPane("info"); if (isMobile()) { openSheet(true); } }   /* selecting brings the card forward */
     map.setFilter("point-sel", ["all", ["==", ["geometry-type"], "Point"], ["==", ["get", "id"], id || "~none~"]]);
     map.setFilter("route-sel", ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "id"], id || "~none~"]]);
     renderDetail();
@@ -1570,6 +1642,39 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   document.querySelectorAll("[data-mode]").forEach(function (b) {
     b.addEventListener("click", function () { setMode(b.dataset.mode); });
   });
+  /* ---------- Mobile chrome ---------- */
+  function isMobile() { return matchMedia("(max-width: 900px), (max-height: 620px)").matches; }
+
+  function sizePeek() {
+    if (!isMobile()) { return; }
+    var handle = $("#sheet").offsetHeight;
+    var modes = document.querySelector("#panel > .section").offsetHeight;
+    document.documentElement.style.setProperty("--peek", (handle + modes) + "px");
+  }
+
+  function openSheet(open) {
+    $("#panel").classList.toggle("open", open);
+    $("#sheet").setAttribute("aria-expanded", String(open));
+    $("#sheet").textContent = open ? "Details ▼" : "Details ▲";
+  }
+
+  $("#sheet").addEventListener("click", function () {
+    openSheet(!$("#panel").classList.contains("open"));
+  });
+  $("#layers-btn").addEventListener("click", function () {
+    var open = !$("#controls").classList.contains("open");
+    $("#controls").classList.toggle("open", open);
+    this.setAttribute("aria-expanded", String(open));
+  });
+  document.addEventListener("click", function (e) {
+    if ($("#controls").classList.contains("open") &&
+        !e.target.closest("#controls") && !e.target.closest("#layers-btn")) {
+      $("#controls").classList.remove("open");
+      $("#layers-btn").setAttribute("aria-expanded", "false");
+    }
+  });
+  addEventListener("resize", sizePeek);
+
   $("#tab-info").addEventListener("click", function () { showPane("info"); });
   $("#tab-list").addEventListener("click", function () { showPane("list"); });
 
@@ -1633,6 +1738,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   setMode("select");
   renderList();
+  sizePeek();
 })();
 </script>
 </body>

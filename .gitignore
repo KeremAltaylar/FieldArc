@@ -4,3 +4,6 @@ fieldarc-*.geojson
 
 # Superseded by places.geojson, which carries Belgrad plus 68 other places.
 forest.geojson
+
+# Local dev harness for checking phone layouts.
+mobile-test.html
