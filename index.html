@@ -1,0 +1,1639 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FieldArc — Belgrad Ormanı</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Newsreader:opsz,wght@6..72,300;6..72,400;6..72,500&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet">
+
+<script>
+/* Test-only, opt-in via ?rafshim. A hidden/background tab never fires requestAnimationFrame,
+   and MapLibre defers style ingestion to it — so an automated check sees a map that never
+   loads even though nothing is wrong. This routes rAF through setTimeout so headless
+   verification is possible. Never active without the query parameter. */
+if (location.search.indexOf("rafshim") !== -1) {
+  window.requestAnimationFrame = function (cb) { return setTimeout(function () { cb(performance.now()); }, 16); };
+  window.cancelAnimationFrame = function (id) { clearTimeout(id); };
+}
+</script>
+
+<style>
+/* ---- Tokens — mirrored from Design System/Tokens.md. Nothing is chosen here. ---- */
+:root {
+  --sunk:      oklch(18% 0.012 162);
+  --ground:    oklch(24% 0.014 162);
+  --panel:     oklch(28% 0.015 162);
+  --raised:    oklch(33% 0.016 162);
+  --hairline:  oklch(36% 0.016 162);
+  --ink:       oklch(92.5% 0.006 150);
+  --dim:       oklch(78% 0.011 150);
+  --faint:     oklch(71% 0.013 150);
+  --accent:    oklch(83% 0.040 138);
+  --lamp:      oklch(88% 0.085 140);
+  --bdr:       color-mix(in oklch, var(--accent) 16%, transparent);
+
+  --font-display: "Cormorant Garamond", Georgia, serif;
+  --font-body:    "Newsreader", Georgia, serif;
+  --font-mono:    "Courier Prime", ui-monospace, monospace;
+
+  --t-xs: 0.68rem; --t-sm: 0.78rem; --t-base: 1.0625rem; --t-md: 1.15rem;
+  --t-lg: clamp(1.5rem, 2.4vw, 1.9rem);
+  --track-meta: 0.18em; --track-eyebrow: 0.28em;
+
+  --s-1: 0.25rem; --s-2: 0.5rem; --s-3: 0.75rem; --s-4: 1rem;
+  --s-5: 1.5rem; --s-6: 2rem; --s-8: 3rem;
+
+  --d-fast: 180ms; --d: 380ms;
+  --ease: cubic-bezier(0.77, 0, 0.18, 1);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;              /* C-8: the surface fits; it never scrolls */
+}
+
+body {
+  background: var(--sunk);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--t-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Shell ---- */
+#app {
+  display: grid;
+  grid-template-columns: 21rem 1fr;
+  grid-template-rows: auto 1fr;
+  height: 100dvh;
+}
+
+header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-5);
+  padding: var(--s-3) var(--s-5);
+  background: var(--ground);
+  border-bottom: 1px solid var(--bdr);
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-size: var(--t-lg);
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  margin: 0;
+}
+.wordmark em { font-style: normal; color: var(--accent); }
+
+.place {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--track-meta);
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* ---- Place picker ---- */
+.placepick { position: relative; }
+#place-btn {
+  display: inline-flex; align-items: baseline; gap: var(--s-2);
+  background: transparent;
+  color: var(--dim);
+}
+#place-btn:hover { color: var(--ink); background: var(--panel); }
+#place-btn .caret { color: var(--accent); }
+
+#place-menu {
+  position: absolute; top: calc(100% + var(--s-2)); left: 0; z-index: 20;
+  width: 25rem; max-width: 82vw;
+  padding: var(--s-3);
+  background: var(--ground);
+  border: 1px solid var(--bdr);
+  border-radius: 3px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+}
+#place-search { width: 100%; margin-bottom: var(--s-2); }
+#place-list { list-style: none; margin: 0; padding: 0; max-height: 21rem; overflow-y: auto; }
+
+.placerow {
+  width: 100%;
+  display: flex; align-items: baseline; gap: var(--s-2);
+  text-align: left; text-transform: none; letter-spacing: 0;
+  font-family: var(--font-body); font-size: var(--t-sm);
+  padding: var(--s-2);
+  background: transparent; border-color: transparent;
+}
+.placerow:hover { background: var(--panel); border-color: var(--bdr); }
+.placerow[aria-current="true"] { background: var(--panel); border-color: var(--accent); color: var(--ink); }
+.pkind {
+  flex: none; min-width: 4.4rem;
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: var(--track-meta); text-transform: uppercase;
+  color: var(--accent);
+}
+.pmeta {
+  margin-left: auto; flex: none;
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums; color: var(--faint); white-space: nowrap;
+}
+.placenone { font-size: var(--t-sm); color: var(--faint); padding: var(--s-3); }
+
+.basemaps { margin-left: auto; display: flex; gap: var(--s-1); }
+.overlays { display: flex; gap: var(--s-1); margin-left: var(--s-3); }
+
+/* ---- Buttons ---- */
+button {
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--track-meta);
+  text-transform: uppercase;
+  color: var(--dim);
+  background: var(--panel);
+  border: 1px solid var(--bdr);
+  border-radius: 2px;
+  padding: var(--s-2) var(--s-3);
+  cursor: pointer;
+  transition: color var(--d-fast) var(--ease),
+              background var(--d-fast) var(--ease),
+              border-color var(--d-fast) var(--ease);
+}
+button:hover { color: var(--ink); background: var(--raised); }
+button:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 2px;
+}
+button[aria-pressed="true"] {
+  color: var(--sunk);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+button.ghost { background: transparent; }
+button.danger:hover { color: var(--sunk); background: var(--lamp); border-color: var(--lamp); }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ---- Panel ---- */
+#panel {
+  background: var(--ground);
+  border-right: 1px solid var(--bdr);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;                 /* lets the list, not the panel, do the scrolling */
+}
+
+.section {
+  padding: var(--s-4) var(--s-5);
+  border-bottom: 1px solid var(--bdr);
+}
+/* The archive list keeps a floor of ~4 rows. Without it, selecting a feature let the detail
+   section take 349px of a 667px panel and crushed the list to 16px against 34px rows. */
+.section.grow { flex: 1 1 auto; min-height: 10rem; display: flex; flex-direction: column; }
+[hidden] { display: none !important; }   /* .section sets display:flex, which beats [hidden] */
+
+.tabbar {
+  display: flex; gap: var(--s-1);
+  padding: var(--s-3) var(--s-5);
+  border-bottom: 1px solid var(--bdr);
+}
+.tabbar button { flex: 1; }
+.tabbar b { font-weight: 400; color: var(--faint); }
+.tabbar button[aria-pressed="true"] b { color: var(--sunk); }
+
+/* The info card fits the pane — it never scrolls. */
+#pane-info { overflow: hidden; }
+#card {
+  display: flex; flex-direction: column; gap: var(--s-3);
+  background: var(--panel);
+  border: 1px solid var(--bdr);
+  border-radius: 3px;
+  padding: var(--s-4);
+}
+.cardmeta {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.7;
+  color: var(--faint);
+}
+.cardmeta b { display: block; color: var(--dim); font-weight: 400; }
+
+h2 {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-weight: 400;
+  letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase;
+  color: var(--faint);
+  margin: 0 0 var(--s-3);
+}
+
+.modes { display: flex; gap: var(--s-1); }
+.modes button { flex: 1; }
+
+.hint {
+  margin: var(--s-3) 0 0;
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  color: var(--faint);
+}
+.hint kbd {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  color: var(--dim);
+  border: 1px solid var(--bdr);
+  border-radius: 2px;
+  padding: 0 var(--s-1);
+}
+
+/* ---- Feature list ---- */
+#list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0 calc(var(--s-5) * -1) calc(var(--s-4) * -1);
+  padding: 0 var(--s-5) var(--s-4);
+  list-style: none;
+}
+#list li { margin-bottom: var(--s-1); }
+
+.row {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--font-body);
+  font-size: var(--t-sm);
+  padding: var(--s-2) var(--s-3);
+  background: transparent;
+  border-color: transparent;
+}
+.row:hover { background: var(--panel); border-color: var(--bdr); }
+.row[aria-current="true"] {
+  background: var(--panel);
+  border-color: var(--accent);
+  color: var(--ink);
+}
+.row .glyph { color: var(--accent); font-family: var(--font-mono); }
+.row .meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;   /* C-7 */
+  color: var(--faint);
+}
+
+/* ---- Empty + error states (C-5) ---- */
+.empty, .error {
+  font-size: var(--t-sm);
+  line-height: 1.6;
+  color: var(--faint);
+  border: 1px dashed var(--bdr);
+  border-radius: 2px;
+  padding: var(--s-4);
+}
+.error {
+  color: var(--ink);
+  border-style: solid;
+  border-color: var(--lamp);
+  background: color-mix(in oklch, var(--lamp) 8%, transparent);
+}
+.error strong { display: block; margin-bottom: var(--s-1); color: var(--lamp); font-weight: 500; }
+
+/* ---- Detail ---- */
+.field { display: block; margin-bottom: var(--s-3); }
+.field span {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--track-meta);
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: var(--s-1);
+}
+input[type="text"], textarea {
+  width: 100%;
+  font: inherit;
+  font-size: var(--t-sm);
+  color: var(--ink);
+  background: var(--sunk);
+  border: 1px solid var(--bdr);
+  border-radius: 2px;
+  padding: var(--s-2);
+  resize: vertical;
+}
+input[type="text"]:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--lamp);
+  outline-offset: 1px;
+}
+
+/* ---- Recording ---- */
+.rec { margin-bottom: var(--s-4); }
+.reclabel {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--track-meta);
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: var(--s-2);
+}
+#rec-add { width: 100%; }
+
+.transport { display: flex; align-items: center; gap: var(--s-2); }
+#rec-play {
+  flex: none;
+  width: 2.1rem; height: 2.1rem;
+  display: grid; place-items: center;
+  padding: 0;
+  font-size: var(--t-sm);
+  letter-spacing: 0;
+  color: var(--accent);
+  background: var(--sunk);
+}
+#rec-play:hover { color: var(--sunk); background: var(--lamp); border-color: var(--lamp); }
+
+#rec-bar {
+  flex: 1;
+  height: 3px;
+  background: var(--raised);
+  border-radius: 2px;
+  cursor: pointer;
+}
+#rec-bar:focus-visible { outline: 2px solid var(--lamp); outline-offset: 4px; }
+#rec-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 2px;
+}
+#rec-time {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+.recmeta {
+  display: flex; align-items: baseline; gap: var(--s-2);
+  margin-top: var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--faint);
+}
+.recmeta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recmeta button { margin-left: auto; flex: none; padding: var(--s-1) var(--s-2); }
+
+dl.props { margin: 0 0 var(--s-4); font-size: var(--t-sm); }
+dl.props div { display: flex; gap: var(--s-3); padding: var(--s-1) 0; border-bottom: 1px solid var(--bdr); }
+dl.props dt { color: var(--faint); font-family: var(--font-mono); font-size: var(--t-xs);
+              letter-spacing: var(--track-meta); text-transform: uppercase; min-width: 7.5rem; }
+dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--dim); }
+
+.actions { display: flex; gap: var(--s-2); }
+.actions button { flex: 1; }
+
+/* ---- Map ---- */
+#map { position: relative; background: var(--sunk); }
+#map.mode-point  .maplibregl-canvas { cursor: crosshair; }
+#map.mode-route  .maplibregl-canvas { cursor: crosshair; }
+
+#readout {
+  position: absolute;
+  left: var(--s-4); bottom: var(--s-4);
+  z-index: 2;
+  display: flex; gap: var(--s-4);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;    /* C-7 — coordinates must not jitter */
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  background: color-mix(in oklch, var(--sunk) 82%, transparent);
+  border: 1px solid var(--bdr);
+  border-radius: 2px;
+  padding: var(--s-2) var(--s-3);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+#readout b { color: var(--faint); font-weight: 400; }
+
+/* ---- Mark ----
+   Thumb-reachable and touch-sized (M-4: ≥44pt, and this one is the primary field control). */
+#markbar {
+  position: absolute;
+  right: var(--s-4); bottom: var(--s-4);
+  z-index: 3;
+  display: flex; flex-direction: column; align-items: flex-end; gap: var(--s-2);
+}
+#mark {
+  width: 4.5rem; height: 4.5rem;
+  border-radius: 50%;
+  font-size: var(--t-xs);
+  letter-spacing: var(--track-meta);
+  color: var(--sunk);
+  background: var(--accent);
+  border: 2px solid var(--sunk);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+#mark:hover { color: var(--sunk); background: var(--lamp); border-color: var(--sunk); }
+#mark:focus-visible { outline: 3px solid var(--lamp); outline-offset: 3px; }
+#mark[data-state="busy"] { background: var(--raised); color: var(--dim); }
+#mark[data-state="recording"] {
+  background: var(--lamp);
+  animation: pulse 1.6s var(--ease) infinite;
+}
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 6px 20px rgba(0,0,0,0.5), 0 0 0 0 rgba(186,230,177,0.55); }
+  50%      { box-shadow: 0 6px 20px rgba(0,0,0,0.5), 0 0 0 14px rgba(186,230,177,0); }
+}
+#marklive {
+  margin: 0;
+  padding: var(--s-2) var(--s-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: color-mix(in oklch, var(--sunk) 88%, transparent);
+  border: 1px solid var(--bdr);
+  border-radius: 2px;
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  #mark { width: 5.25rem; height: 5.25rem; }   /* the field is one-handed */
+}
+
+#loading {
+  position: absolute; inset: 0; z-index: 3;
+  display: grid; place-items: center;
+  background: var(--sunk);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase;
+  color: var(--faint);
+  transition: opacity var(--d) var(--ease);
+}
+#loading[hidden] { display: none; }
+
+.maplibregl-ctrl-attrib {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: color-mix(in oklch, var(--sunk) 80%, transparent) !important;
+}
+.maplibregl-ctrl-attrib a { color: var(--faint); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+}
+
+/* Small screens: panel becomes a sheet under the map rather than a crushed column. */
+@media (max-width: 900px) {
+  #app { grid-template-columns: 1fr; grid-template-rows: auto 55dvh 1fr; }
+  #panel { border-right: 0; border-top: 1px solid var(--bdr); }
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <header>
+    <h1 class="wordmark">Field<em>Arc</em></h1>
+    <div class="placepick">
+      <button type="button" id="place-btn" aria-haspopup="listbox" aria-expanded="false">
+        <span id="place-name">Belgrad Ormanı</span><span class="caret">▾</span>
+      </button>
+      <div id="place-menu" hidden>
+        <input type="text" id="place-search" placeholder="Search forests and korular…" aria-label="Search places">
+        <ul id="place-list" role="listbox"></ul>
+      </div>
+    </div>
+    <div class="basemaps" role="group" aria-label="Basemap">
+      <button type="button" data-base="osm"  aria-pressed="false">Map</button>
+      <button type="button" data-base="topo" aria-pressed="false">Topo</button>
+      <button type="button" data-base="sat"  aria-pressed="true">Satellite</button>
+    </div>
+    <div class="overlays" role="group" aria-label="Forest boundary">
+      <button type="button" data-forest="off"   aria-pressed="false" title="No boundary">Off</button>
+      <button type="button" data-forest="frame" aria-pressed="true"  title="Outer frame — the main body of the forest">Frame</button>
+      <button type="button" data-forest="areas" aria-pressed="false" title="Frame plus sub-areas — the other polygons and the enclosed villages, reservoirs and clearings">Areas</button>
+      <button type="button" class="ghost" id="fit-forest" title="Fit the view to the forest">Fit</button>
+    </div>
+  </header>
+
+  <div id="panel">
+    <div class="section">
+      <h2>Mode</h2>
+      <div class="modes" role="group" aria-label="Drawing mode">
+        <button type="button" data-mode="select" aria-pressed="true">Select</button>
+        <button type="button" data-mode="point"  aria-pressed="false">Point</button>
+        <button type="button" data-mode="route"  aria-pressed="false">Route</button>
+      </div>
+      <p class="hint" id="hint">Click a feature to inspect it.</p>
+    </div>
+
+    <div class="tabbar" role="group" aria-label="Panel view">
+      <button type="button" id="tab-info" aria-pressed="true">Selected</button>
+      <button type="button" id="tab-list" aria-pressed="false">Archive <b id="count">0</b></button>
+    </div>
+
+    <div class="section grow" id="pane-list" hidden>
+      <ul id="list"></ul>
+      <div class="empty" id="empty">
+        Nothing recorded yet. Choose <b>Point</b> or <b>Route</b> and click the map —
+        each feature is stored as GeoJSON, exactly as the archive will store it.
+      </div>
+    </div>
+
+    <div class="section grow" id="pane-info">
+      <div class="empty" id="nosel">Nothing selected. Click a point or a route on the map.</div>
+
+      <div id="card" hidden>
+      <input type="text" id="f-name" placeholder="Unnamed" aria-label="Name">
+      <textarea id="f-note" rows="2" placeholder="What is here?" aria-label="Note"></textarea>
+      <div class="rec">
+        <span class="reclabel">Recording</span>
+        <button type="button" id="rec-add">Attach audio…</button>
+        <input type="file" id="rec-file" accept="audio/*" hidden>
+        <div id="player" hidden>
+          <div class="transport">
+            <button type="button" id="rec-play" aria-label="Play">►</button>
+            <div id="rec-bar" tabindex="0" role="slider" aria-label="Seek"
+                 aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="rec-fill"></div></div>
+            <span id="rec-time">0:00 / 0:00</span>
+          </div>
+          <div class="recmeta">
+            <span id="rec-name"></span>
+            <button type="button" class="ghost" id="rec-remove">Remove</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="cardmeta" id="f-meta"></p>
+      <div class="actions">
+        <button type="button" class="ghost" id="f-zoom">Zoom to</button>
+        <button type="button" class="danger" id="f-delete">Delete</button>
+      </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Storage</h2>
+      <div class="actions">
+        <button type="button" id="export">Export .geojson</button>
+        <button type="button" class="ghost" id="import-btn">Import</button>
+      </div>
+      <input type="file" id="import" accept=".geojson,.json,application/geo+json" hidden>
+      <p class="hint" id="saved">Saved to this browser.</p>
+    </div>
+  </div>
+
+  <div id="map">
+    <div id="loading">Loading basemap…</div>
+    <div id="readout"><span><b>lat</b> —</span><span><b>lon</b> —</span></div>
+
+    <div id="markbar">
+      <p id="marklive" hidden></p>
+      <button type="button" id="mark" aria-label="Mark current location">Mark</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var STORE = "fieldarc.v1";
+  var PLACE_KEY = "fieldarc.place";
+  var DEFAULT_PLACE = "R8845862";      // Belgrad Ormanı
+  var CENTER = [28.9800, 41.1850];   // Belgrad Ormanı
+  var ZOOM = 12.4;
+
+  var $ = function (s) { return document.querySelector(s); };
+  var mapEl = $("#map");
+
+  /* ---------- Error state (C-5): if the library never arrives, say so. ---------- */
+  function fail(title, detail) {
+    $("#loading").hidden = true;
+    var box = document.createElement("div");
+    box.className = "error";
+    box.innerHTML = "<strong>" + title + "</strong>" + detail;
+    box.style.cssText = "position:absolute;inset:auto var(--s-4) var(--s-4) var(--s-4);z-index:4";
+    mapEl.appendChild(box);
+  }
+  if (typeof maplibregl === "undefined") {
+    fail("Basemap library did not load",
+         "MapLibre is loaded from unpkg. Check the connection and reload — everything already " +
+         "recorded is still stored in this browser and will reappear.");
+    return;
+  }
+
+  /* ---------- Data ---------- */
+  var fc = { type: "FeatureCollection", features: [] };
+  try {
+    var raw = localStorage.getItem(STORE);
+    if (raw) { fc = JSON.parse(raw); }
+  } catch (e) { /* private mode or corrupt payload — start empty rather than break */ }
+
+  /* Features recorded before places existed belong to Belgrad. Assign once, never guess again. */
+  fc.features.forEach(function (f) {
+    if (!f.properties.place) { f.properties.place = DEFAULT_PLACE; }
+  });
+
+  /* The map and the archive list show one place at a time; `fc` keeps them all. */
+  function visible() {
+    return fc.features.filter(function (f) {
+      return !place || f.properties.place === place.properties.id;
+    });
+  }
+
+  function save() {
+    try {
+      localStorage.setItem(STORE, JSON.stringify(fc));
+      $("#saved").textContent = "Saved to this browser · " + new Date().toLocaleTimeString();
+    } catch (e) {
+      $("#saved").textContent = "Could not save locally — export to keep this.";
+    }
+  }
+
+  function uid() {
+    return (crypto.randomUUID ? crypto.randomUUID()
+      : "f-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
+  }
+
+  /* Haversine, metres. */
+  function segment(a, b) {
+    var R = 6371000, r = Math.PI / 180;
+    var dLat = (b[1] - a[1]) * r, dLon = (b[0] - a[0]) * r;
+    var la1 = a[1] * r, la2 = b[1] * r;
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  function lineLength(coords) {
+    var t = 0;
+    for (var i = 1; i < coords.length; i++) { t += segment(coords[i - 1], coords[i]); }
+    return t;
+  }
+  function fmtLen(m) {
+    return m >= 1000 ? (m / 1000).toFixed(2) + " km" : Math.round(m) + " m";
+  }
+
+  /* Spherical excess, m². Used only to decide which polygon is the main body. */
+  function ringArea(r) {
+    var s = 0, rad = Math.PI / 180, R = 6371008.8;
+    for (var i = 0, n = r.length; i < n; i++) {
+      var a = r[i], b = r[(i + 1) % n];
+      s += (b[0] - a[0]) * rad * (2 + Math.sin(a[1] * rad) + Math.sin(b[1] * rad));
+    }
+    return Math.abs(s * R * R / 2);
+  }
+
+  /* Douglas–Peucker. Longitude is scaled by cos(lat) so the tolerance is roughly metric. */
+  function simplify(pts, tol) {
+    if (pts.length < 3) { return pts; }
+    var kx = Math.cos(pts[0][1] * Math.PI / 180), i;
+    function perp(p, a, b) {
+      var px = (p[0] - a[0]) * kx, py = p[1] - a[1];
+      var bx = (b[0] - a[0]) * kx, by = b[1] - a[1];
+      var len = bx * bx + by * by;
+      var t = len ? Math.max(0, Math.min(1, (px * bx + py * by) / len)) : 0;
+      var dx = px - bx * t, dy = py - by * t;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+    var keep = [];
+    for (i = 0; i < pts.length; i++) { keep.push(false); }
+    keep[0] = keep[pts.length - 1] = true;
+    var stack = [[0, pts.length - 1]];
+    while (stack.length) {
+      var seg = stack.pop(), a = seg[0], z = seg[1], maxD = 0, idx = -1;
+      for (i = a + 1; i < z; i++) {
+        var d = perp(pts[i], pts[a], pts[z]);
+        if (d > maxD) { maxD = d; idx = i; }
+      }
+      if (idx > 0 && maxD > tol) { keep[idx] = true; stack.push([a, idx], [idx, z]); }
+    }
+    return pts.filter(function (p, k) { return keep[k]; });
+  }
+
+  /* ---------- Map ---------- */
+  var RASTER = {
+    osm:  { tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], max: 19,
+            attr: "© OpenStreetMap contributors" },
+    topo: { tiles: ["https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+                    "https://b.tile.opentopomap.org/{z}/{x}/{y}.png"], max: 17,
+            attr: "© OpenTopoMap (CC-BY-SA) · © OpenStreetMap contributors" },
+    sat:  { tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+            max: 19, attr: "Imagery © Esri" }
+  };
+
+  var sources = {};
+  Object.keys(RASTER).forEach(function (k) {
+    sources["base-" + k] = {
+      type: "raster", tileSize: 256,
+      tiles: RASTER[k].tiles, maxzoom: RASTER[k].max, attribution: RASTER[k].attr
+    };
+  });
+  /* The forest boundary is reference data, not archive data — it never enters `fc`,
+     never appears in the list, and is not selectable. */
+  sources.forest = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  /* Two levels. `forest-outer` is the main body's ring, smoothed — 90.9% of the forest's
+     102 km², so it is the frame without being arbitrary. `forest-detail` is everything else:
+     the other 12 polygons and all 154 interior holes (villages, reservoirs, clearings). */
+  sources["forest-outer"] = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  sources["forest-detail"] = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  sources.features = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  sources.draft = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  sources.here = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+
+  /* MapLibre's colour parser has no notion of oklch() — it rejects the string and the whole
+     style fails validation. So the tokens stay the single source of truth (C-1) and get
+     converted to sRGB hex here. Verified against culori: exact match on every token. */
+  function oklchToHex(str) {
+    var m = /oklch\(\s*([\d.]+)(%?)\s+([\d.]+)\s+([\d.]+)/i.exec(str || "");
+    if (!m) { return null; }
+    var L = parseFloat(m[1]) / (m[2] ? 100 : 1),
+        C = parseFloat(m[3]), H = parseFloat(m[4]) * Math.PI / 180;
+    var a = C * Math.cos(H), b = C * Math.sin(H);
+    var l_ = L + 0.3963377774 * a + 0.2158037573 * b,
+        m_ = L - 0.1055613458 * a - 0.0638541728 * b,
+        s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+    var l = l_ * l_ * l_, mm = m_ * m_ * m_, s = s_ * s_ * s_;
+    return "#" + [
+       4.0767416621 * l - 3.3077115913 * mm + 0.2309699292 * s,
+      -1.2684380046 * l + 2.6097574011 * mm - 0.3413193965 * s,
+      -0.0041960863 * l - 0.7034186147 * mm + 1.7076147010 * s
+    ].map(function (c) {
+      c = c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+      return Math.max(0, Math.min(255, Math.round(c * 255))).toString(16).padStart(2, "0");
+    }).join("");
+  }
+
+  var cs = getComputedStyle(document.documentElement);
+  function token(name, fallback) {
+    return oklchToHex(cs.getPropertyValue(name).trim()) || fallback;
+  }
+  var accent = token("--accent", "#bbceb5");
+  var lamp   = token("--lamp",   "#bae6b1");
+  var ink    = token("--ink",    "#e3e7e4");
+  var dark   = token("--sunk",   "#0d1310");
+
+  var map;
+  try {
+  map = new maplibregl.Map({
+    container: "map",
+    style: {
+      version: 8,
+      sources: sources,
+      layers: [
+        /* Satellite is the default: the forest reads as canopy rather than as a flat green
+           fill, which is what you are actually navigating by. */
+        { id: "base-osm",  type: "raster", source: "base-osm",  layout: { visibility: "none" } },
+        { id: "base-topo", type: "raster", source: "base-topo", layout: { visibility: "none" } },
+        { id: "base-sat",  type: "raster", source: "base-sat" },
+
+        { id: "forest-fill", type: "fill", source: "forest",
+          paint: { "fill-color": accent, "fill-opacity": 0.12 } },
+        /* Sub-areas sit under the frame and are quieter: thinner, dimmer, tighter dash. */
+        { id: "forest-detail", type: "line", source: "forest-detail",
+          paint: { "line-color": ink, "line-width": 1.1, "line-opacity": 0.55,
+                   "line-dasharray": [3, 2] },
+          layout: { "line-join": "round", "visibility": "none" } },
+
+        /* Frame: near-white dashed over a dark casing. Dashed distinguishes the boundary
+           from the solid routes; the casing is what makes both hold over any basemap. */
+        { id: "forest-casing", type: "line", source: "forest-outer",
+          paint: { "line-color": dark, "line-width": 7, "line-opacity": 0.7 },
+          layout: { "line-join": "round", "line-cap": "round" } },
+        { id: "forest-line", type: "line", source: "forest-outer",
+          paint: { "line-color": ink, "line-width": 2.6, "line-dasharray": [6, 3] },
+          layout: { "line-join": "round", "line-cap": "round" } },
+
+        /* Map data is not brand data (C-15). The basemap is green; a sage line on green is
+           unreadable at any width. Dark casing + near-white line reads on Map, Topo and
+           Satellite alike. */
+        { id: "route-casing", type: "line", source: "features",
+          filter: ["==", ["geometry-type"], "LineString"],
+          paint: { "line-color": dark, "line-opacity": 0.8, "line-width": 8 },
+          layout: { "line-cap": "round", "line-join": "round" } },
+        { id: "route-line", type: "line", source: "features",
+          filter: ["==", ["geometry-type"], "LineString"],
+          paint: { "line-color": "#ffffff", "line-width": 3 },
+          layout: { "line-cap": "round", "line-join": "round" } },
+        { id: "route-sel", type: "line", source: "features",
+          filter: ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "id"], "~none~"]],
+          paint: { "line-color": lamp, "line-width": 4.5 },
+          layout: { "line-cap": "round", "line-join": "round" } },
+
+        { id: "point-halo", type: "circle", source: "features",
+          filter: ["==", ["geometry-type"], "Point"],
+          paint: { "circle-radius": 12, "circle-color": dark, "circle-opacity": 0.22,
+                   "circle-blur": 0.7 } },
+        /* Hollow = no recording yet, filled = a recording is attached. Colours invert between
+           the two states so both read at full contrast against a green basemap. */
+        { id: "point-dot", type: "circle", source: "features",
+          filter: ["==", ["geometry-type"], "Point"],
+          paint: {
+            "circle-radius": 6.5,
+            "circle-color": ["case", ["==", ["get", "has_audio"], true], lamp, dark],
+            "circle-stroke-width": 2.2,
+            "circle-stroke-color": ["case", ["==", ["get", "has_audio"], true], dark, ink]
+          } },
+        { id: "point-sel", type: "circle", source: "features",
+          filter: ["all", ["==", ["geometry-type"], "Point"], ["==", ["get", "id"], "~none~"]],
+          paint: { "circle-radius": 12, "circle-color": lamp, "circle-opacity": 0.18,
+                   "circle-stroke-width": 2, "circle-stroke-color": lamp } },
+
+        { id: "draft-line", type: "line", source: "draft",
+          filter: ["==", ["geometry-type"], "LineString"],
+          paint: { "line-color": lamp, "line-width": 2, "line-dasharray": [2, 1.5] },
+          layout: { "line-cap": "round", "line-join": "round" } },
+        /* Your position, drawn with its uncertainty rather than as a confident dot —
+           under canopy a fix can be 30m out, and the map should say so. */
+        { id: "here-accuracy", type: "fill", source: "here",
+          filter: ["==", ["geometry-type"], "Polygon"],
+          paint: { "fill-color": lamp, "fill-opacity": 0.14 } },
+        { id: "here-accuracy-line", type: "line", source: "here",
+          filter: ["==", ["geometry-type"], "Polygon"],
+          paint: { "line-color": lamp, "line-width": 1, "line-opacity": 0.5 } },
+        { id: "here-dot", type: "circle", source: "here",
+          filter: ["==", ["geometry-type"], "Point"],
+          paint: { "circle-radius": 7, "circle-color": lamp,
+                   "circle-stroke-width": 2.5, "circle-stroke-color": dark } },
+
+        { id: "draft-vertex", type: "circle", source: "draft",
+          filter: ["==", ["geometry-type"], "Point"],
+          paint: { "circle-radius": 3.5, "circle-color": lamp,
+                   "circle-stroke-width": 1, "circle-stroke-color": "#000" } }
+      ]
+    },
+    center: CENTER,
+    zoom: ZOOM,
+    attributionControl: { compact: true }
+  });
+  } catch (err) {
+    /* A rejected style throws here, and everything below — including hiding the overlay —
+       never runs. That is exactly how this failed silently once; never again. */
+    fail("Basemap could not start", "MapLibre rejected the style: " +
+         ((err && err.message) ? err.message : String(err)));
+    return;
+  }
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-right");
+
+  /* ---------- Places ----------
+     69 forests, nature reserves and korular across İstanbul, built from OSM. Switching place
+     swaps the boundary, refits the map and filters the archive — points belong to a place. */
+  var places = [], place = null, forestBounds = null;
+
+  function loadPlaces() {
+    fetch("places.geojson").then(function (r) {
+      if (!r.ok) { throw new Error("HTTP " + r.status); }
+      return r.json();
+    }).then(function (data) {
+      places = data.features;
+      renderPlaceList();
+      var want = localStorage.getItem(PLACE_KEY) || DEFAULT_PLACE;
+      setPlace(byId(want) || byId(DEFAULT_PLACE) || places[0], true);
+    }).catch(function (err) {
+      $("#saved").textContent = "Place catalogue unavailable (" + err.message +
+        ") — open via the local server, not file://.";
+    });
+  }
+
+  function byId(id) {
+    for (var i = 0; i < places.length; i++) {
+      if (places[i].properties.id === id) { return places[i]; }
+    }
+    return null;
+  }
+
+  function setPlace(p, initial) {
+    if (!p) { return; }
+    place = p;
+    localStorage.setItem(PLACE_KEY, p.properties.id);
+    $("#place-name").textContent = p.properties.name;
+    document.title = "FieldArc — " + p.properties.name;
+    $("#place-btn").title = p.properties.name + " · " + p.properties.area_km2 + " km² · " +
+      p.properties.source;
+
+    map.getSource("forest").setData({ type: "FeatureCollection", features: [p] });
+
+    var rings = [], b = new maplibregl.LngLatBounds();
+    p.geometry.coordinates.forEach(function (poly) {
+      poly[0].forEach(function (c) { b.extend(c); });
+      rings.push(poly);
+    });
+    /* The frame is the largest polygon's ring — for Belgrad that is 90.9% of its 102 km² —
+       so a fragmented place still reads as one boundary rather than a survey trace. */
+    rings.sort(function (x, y) { return ringArea(y[0]) - ringArea(x[0]); });
+    var main = rings[0][0];
+    var frame = simplify(main, p.properties.area_km2 > 5 ? 0.0003 : 0.00008);
+    var line = function (coords) {
+      return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } };
+    };
+    map.getSource("forest-outer").setData({ type: "FeatureCollection", features: [line(frame)] });
+
+    var detail = { type: "FeatureCollection", features: [] };
+    rings.forEach(function (poly, i) {
+      if (i > 0) { detail.features.push(line(poly[0])); }
+      for (var h = 1; h < poly.length; h++) { detail.features.push(line(poly[h])); }
+    });
+    map.getSource("forest-detail").setData(detail);
+
+    forestBounds = b;
+    if (!b.isEmpty()) { map.fitBounds(b, { padding: 28, duration: initial ? 0 : 700 }); }
+
+    window.__fa.frameStats = { place: p.properties.name, ringPoints: main.length,
+                               framePoints: frame.length, detailRings: detail.features.length };
+
+    setSelected(null);
+    closePlaceMenu();
+    commit();
+  }
+
+  function renderPlaceList() {
+    var q = $("#place-search").value.trim().toLowerCase();
+    var ul = $("#place-list");
+    ul.textContent = "";
+    var counts = {};
+    fc.features.forEach(function (f) {
+      counts[f.properties.place] = (counts[f.properties.place] || 0) + 1;
+    });
+    var shown = places.filter(function (p) {
+      return !q || p.properties.name.toLowerCase().indexOf(q) !== -1;
+    });
+    if (!shown.length) {
+      var none = document.createElement("li");
+      none.className = "placenone";
+      none.textContent = "No forest or koru matches that.";
+      ul.appendChild(none);
+      return;
+    }
+    shown.forEach(function (p) {
+      var li = document.createElement("li");
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "placerow";
+      b.setAttribute("aria-current", String(place && p.properties.id === place.properties.id));
+      var n = counts[p.properties.id] || 0;
+      b.innerHTML = '<span class="pkind">' + p.properties.kind + "</span>" +
+        "<span>" + p.properties.name.replace(/</g, "&lt;") + "</span>" +
+        '<span class="pmeta">' + (n ? n + " ▪ " : "") +
+        (p.properties.area_km2 >= 1 ? p.properties.area_km2.toFixed(1) + " km²"
+                                    : Math.round(p.properties.area_km2 * 100) + " ha") + "</span>";
+      b.addEventListener("click", function () { setPlace(p); });
+      li.appendChild(b);
+      ul.appendChild(li);
+    });
+  }
+
+  function openPlaceMenu() {
+    $("#place-menu").hidden = false;
+    $("#place-btn").setAttribute("aria-expanded", "true");
+    $("#place-search").value = "";
+    renderPlaceList();
+    $("#place-search").focus();
+  }
+  function closePlaceMenu() {
+    $("#place-menu").hidden = true;
+    $("#place-btn").setAttribute("aria-expanded", "false");
+  }
+  $("#place-btn").addEventListener("click", function () {
+    if ($("#place-menu").hidden) { openPlaceMenu(); } else { closePlaceMenu(); }
+  });
+  $("#place-search").addEventListener("input", renderPlaceList);
+  document.addEventListener("click", function (e) {
+    if (!$("#place-menu").hidden && !e.target.closest(".placepick")) { closePlaceMenu(); }
+  });
+
+  map.on("load", function () { $("#loading").hidden = true; loadPlaces(); render(); });
+  window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
+  var reported = false;
+  map.on("error", function (e) {
+    window.__fa.errors.push({ sourceId: e && e.sourceId, message: (e && e.error && e.error.message) || String(e) });
+    // A tile that 404s carries a sourceId and is not worth shouting about. Anything without
+    // one is style-level and is the kind of failure that used to hang the page in silence.
+    if (reported || (e && e.sourceId)) { return; }
+    reported = true;
+    $("#loading").hidden = true;
+    fail("Basemap error", ((e && e.error && e.error.message) || "Unknown map error") +
+         " — drawing and storage still work; the map is only the backdrop.");
+  });
+
+  /* ---------- State ---------- */
+  var mode = "select";
+  var selected = null;
+  var draft = [];
+
+  function setMode(next) {
+    if (track) { stopTrack(); }     /* never leave a trace recording into a different mode */
+    mode = next;
+    draft = [];
+    updateDraft();
+    document.querySelectorAll("[data-mode]").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.mode === next));
+    });
+    mapEl.className = "mode-" + next;
+    if (map && map.getCanvas) { map.getCanvas().style.cursor = ""; }  // drop any inline cursor left by select-mode hover
+    $("#hint").innerHTML =
+      next === "point" ? "Click the map to drop a point, or press <b>Mark</b> to pin your GPS position."
+      : next === "route" ? "Click to add vertices — <kbd>Enter</kbd> or double-click finishes, <kbd>Backspace</kbd> undoes. Or press <b>Mark</b> to record a live trace, and again to finish."
+      : "Click a feature to inspect it. <b>Mark</b> centres on your position.";
+  }
+
+  function setSelected(id) {
+    selected = id;
+    if (id) { showPane("info"); }   /* selecting always brings the card forward */
+    map.setFilter("point-sel", ["all", ["==", ["geometry-type"], "Point"], ["==", ["get", "id"], id || "~none~"]]);
+    map.setFilter("route-sel", ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "id"], id || "~none~"]]);
+    renderDetail();
+    renderList();
+  }
+
+  function feature(id) {
+    return fc.features.filter(function (f) { return f.properties.id === id; })[0] || null;
+  }
+
+  function updateDraft() {
+    var feats = [];
+    if (draft.length) {
+      draft.forEach(function (c) { feats.push({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: c } }); });
+      if (draft.length > 1) {
+        feats.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: draft } });
+      }
+    }
+    var src = map.getSource("draft");
+    if (src) { src.setData({ type: "FeatureCollection", features: feats }); }
+  }
+
+  function commit() {
+    map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+    save();
+    renderList();
+    renderStats();
+  }
+
+  /* ---------- Interaction ---------- */
+  map.on("click", function (e) {
+    var c = [ +e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6) ];
+
+    if (mode === "point") {
+      fc.features.push({
+        type: "Feature",
+        properties: {
+          id: uid(), kind: "point", name: "", note: "",
+          place: place ? place.properties.id : DEFAULT_PLACE,
+          created_at: new Date().toISOString(),
+          position_source: "manual"        // Section 1, decision 2 — always know where a coordinate came from
+        },
+        geometry: { type: "Point", coordinates: c }
+      });
+      commit();
+      setSelected(fc.features[fc.features.length - 1].properties.id);
+      return;
+    }
+
+    if (mode === "route") {
+      draft.push(c);
+      updateDraft();
+      return;
+    }
+
+    var hits = map.queryRenderedFeatures(e.point, {
+      layers: ["point-dot", "route-line", "point-halo", "route-casing"]
+    });
+    setSelected(hits.length ? hits[0].properties.id : null);
+  });
+
+  map.on("dblclick", function (e) {
+    if (mode === "route" && draft.length > 1) { e.preventDefault(); finishRoute(); }
+  });
+
+  map.on("mousemove", function (e) {
+    var r = $("#readout");
+    r.children[0].innerHTML = "<b>lat</b> " + e.lngLat.lat.toFixed(5);
+    r.children[1].innerHTML = "<b>lon</b> " + e.lngLat.lng.toFixed(5);
+    if (mode === "select") {
+      var hits = map.queryRenderedFeatures(e.point, { layers: ["point-dot", "route-line"] });
+      map.getCanvas().style.cursor = hits.length ? "pointer" : "";
+    }
+  });
+
+  function finishRoute() {
+    /* A double-click fires two click events before dblclick, so the closing vertex arrives
+       twice. Measured: 3 clicks produced 4 vertices, the last two identical. */
+    var coords = draft.filter(function (c, i) {
+      var p = draft[i - 1];
+      return !p || c[0] !== p[0] || c[1] !== p[1];
+    });
+    if (coords.length < 2) { return; }
+    fc.features.push({
+      type: "Feature",
+      properties: {
+        id: uid(), kind: "route", name: "", note: "",
+        place: place ? place.properties.id : DEFAULT_PLACE,
+        created_at: new Date().toISOString(),
+        position_source: "manual",
+        length_m: Math.round(lineLength(coords)),
+        vertices: coords.length
+      },
+      geometry: { type: "LineString", coordinates: coords }
+    });
+    draft = [];
+    updateDraft();
+    commit();
+    setSelected(fc.features[fc.features.length - 1].properties.id);
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) { return; }
+    if (e.key === "Escape") { draft = []; updateDraft(); setSelected(null); }
+    else if (e.key === "Enter" && mode === "route") { finishRoute(); }
+    else if (e.key === "Backspace" && mode === "route" && draft.length) { e.preventDefault(); draft.pop(); updateDraft(); }
+    else if ((e.key === "Delete") && selected) { removeSelected(); }
+    else if (e.key === "1") { setMode("select"); }
+    else if (e.key === "2") { setMode("point"); }
+    else if (e.key === "3") { setMode("route"); }
+  });
+
+  function removeSelected() {
+    delAudio(selected);            // never orphan a blob in IndexedDB
+    fc.features = fc.features.filter(function (f) { return f.properties.id !== selected; });
+    setSelected(null);
+    commit();
+  }
+
+  /* ---------- Mark: GPS capture ----------
+     Point mode pins a fix. Route mode starts a live trace on the first tap and closes it on
+     the second. Select mode only centres — Mark must never create something unasked. */
+  var GEO = { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 };
+  var watchId = null, track = null;
+
+  function circlePoly(lon, lat, metres, n) {
+    var coords = [], R = 6378137, dpr = 180 / Math.PI;
+    var kx = Math.cos(lat * Math.PI / 180) || 1e-6;
+    for (var i = 0; i <= n; i++) {
+      var t = i / n * 2 * Math.PI;
+      coords.push([lon + (metres * Math.cos(t) / (R * kx)) * dpr,
+                   lat + (metres * Math.sin(t) / R) * dpr]);
+    }
+    return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [coords] } };
+  }
+
+  function showHere(pos) {
+    var c = [+pos.coords.longitude.toFixed(6), +pos.coords.latitude.toFixed(6)];
+    var acc = pos.coords.accuracy || 0;
+    var feats = [{ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: c } }];
+    if (acc > 0) { feats.unshift(circlePoly(c[0], c[1], acc, 48)); }
+    map.getSource("here").setData({ type: "FeatureCollection", features: feats });
+    return c;
+  }
+
+  function setMarkState(state) {
+    var b = $("#mark");
+    b.dataset.state = state;
+    b.textContent = state === "recording" ? "Finish" : state === "busy" ? "…" : "Mark";
+    b.setAttribute("aria-label", state === "recording" ? "Finish route" : "Mark current location");
+    $("#marklive").hidden = state !== "recording";
+  }
+
+  function geoFail(err) {
+    var msg = err.code === 1 ? "Location permission denied."
+            : err.code === 2 ? "No position fix — no signal, or location is switched off."
+            : err.code === 3 ? "Timed out waiting for a fix."
+            : (err.message || "Location unavailable.");
+    if (!window.isSecureContext) {
+      msg += " Geolocation needs https:// or localhost — a plain LAN address will not work.";
+    }
+    $("#saved").textContent = msg;
+    if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+    track = null;
+    setMarkState("idle");
+  }
+
+  function outsidePlace(c) {
+    if (!place || !place.properties.bbox) { return false; }
+    var bb = place.properties.bbox;
+    return c[0] < bb[0] || c[0] > bb[2] || c[1] < bb[1] || c[1] > bb[3];
+  }
+
+  function markPoint() {
+    setMarkState("busy");
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      var c = showHere(pos);
+      var f = { type: "Feature",
+        properties: {
+          id: uid(), kind: "point", name: "", note: "",
+          place: place ? place.properties.id : DEFAULT_PLACE,
+          created_at: new Date(pos.timestamp).toISOString(),
+          position_source: "device_fix",     /* never confused with a mouse-drawn point */
+          accuracy_m: pos.coords.accuracy != null ? +pos.coords.accuracy.toFixed(1) : null,
+          altitude_m: pos.coords.altitude != null ? +pos.coords.altitude.toFixed(1) : null
+        },
+        geometry: { type: "Point", coordinates: c } };
+      fc.features.push(f);
+      commit();
+      setSelected(f.properties.id);
+      map.easeTo({ center: c, zoom: Math.max(map.getZoom(), 15) });
+      setMarkState("idle");
+      $("#saved").textContent = outsidePlace(c)
+        ? "Fix is outside " + place.properties.name + " — check the selected place."
+        : "Point marked · ±" + Math.round(pos.coords.accuracy || 0) + "m";
+    }, geoFail, GEO);
+  }
+
+  function updateLive() {
+    if (!track) { return; }
+    $("#marklive").textContent = track.pts.length + " fixes · " + fmtLen(track.dist) +
+      " · " + fmtTime(Math.round((Date.now() - track.started) / 1000));
+  }
+
+  function startTrack() {
+    setMarkState("busy");
+    track = { pts: [], acc: [], started: Date.now(), dist: 0 };
+    watchId = navigator.geolocation.watchPosition(function (pos) {
+      var c = showHere(pos);
+      setMarkState("recording");
+      var last = track.pts[track.pts.length - 1];
+      /* Standing still still produces fixes. Without a movement floor the trace fills with
+         jitter and the distance inflates — the same conditioning idea as A-14. */
+      if (last && segment(last, c) < 4) { updateLive(); return; }
+      if (last) { track.dist += segment(last, c); }
+      track.pts.push(c);
+      track.acc.push(pos.coords.accuracy || 0);
+      draft = track.pts.slice();
+      updateDraft();
+      updateLive();
+    }, geoFail, GEO);
+  }
+
+  function stopTrack() {
+    if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+    var t = track;
+    track = null;
+    draft = [];
+    updateDraft();
+    setMarkState("idle");
+    if (!t || t.pts.length < 2) {
+      $("#saved").textContent = "Route discarded — fewer than two fixes.";
+      return;
+    }
+    var mean = t.acc.reduce(function (a, b) { return a + b; }, 0) / t.acc.length;
+    var f = { type: "Feature",
+      properties: {
+        id: uid(), kind: "route", name: "", note: "",
+        place: place ? place.properties.id : DEFAULT_PLACE,
+        created_at: new Date(t.started).toISOString(),
+        position_source: "device_fix",
+        length_m: Math.round(lineLength(t.pts)),
+        vertices: t.pts.length,
+        duration_s: Math.round((Date.now() - t.started) / 1000),
+        accuracy_mean_m: +mean.toFixed(1)
+      },
+      geometry: { type: "LineString", coordinates: t.pts } };
+    fc.features.push(f);
+    commit();
+    setSelected(f.properties.id);
+    $("#saved").textContent = "Route saved · " + fmtLen(f.properties.length_m) +
+      " · ±" + Math.round(mean) + "m mean";
+  }
+
+  $("#mark").addEventListener("click", function () {
+    if (!navigator.geolocation) { $("#saved").textContent = "This browser has no geolocation."; return; }
+    if (track) { stopTrack(); return; }
+    if (mode === "route") { startTrack(); return; }
+    if (mode === "point") { markPoint(); return; }
+    setMarkState("busy");
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      var c = showHere(pos);
+      map.easeTo({ center: c, zoom: Math.max(map.getZoom(), 15) });
+      setMarkState("idle");
+      $("#saved").textContent = "Centred on your position · ±" +
+        Math.round(pos.coords.accuracy || 0) + "m";
+    }, geoFail, GEO);
+  });
+
+  /* ---------- Audio store ----------
+     Blobs cannot go in localStorage (string-only, ~5MB). IndexedDB keyed by feature id, which
+     is the same local-first shape the capture app needs. */
+  var dbp = null;
+  function db() {
+    if (!dbp) {
+      dbp = new Promise(function (res, rej) {
+        var r = indexedDB.open("fieldarc", 1);
+        r.onupgradeneeded = function () { r.result.createObjectStore("audio"); };
+        r.onsuccess = function () { res(r.result); };
+        r.onerror = function () { rej(r.error); };
+      });
+    }
+    return dbp;
+  }
+  function idb(mode, fn) {
+    return db().then(function (d) {
+      return new Promise(function (res, rej) {
+        var tx = d.transaction("audio", mode), req = fn(tx.objectStore("audio"));
+        tx.oncomplete = function () { res(req && req.result); };
+        tx.onerror = function () { rej(tx.error); };
+      });
+    });
+  }
+  function putAudio(id, blob) { return idb("readwrite", function (st) { return st.put(blob, id); }); }
+  function getAudio(id) { return idb("readonly", function (st) { return st.get(id); }); }
+  function delAudio(id) { return idb("readwrite", function (st) { return st.delete(id); }); }
+
+  /* ---------- Player ---------- */
+  var audioEl = new Audio(), audioURL = null;
+  audioEl.preload = "metadata";
+
+  function fmtTime(s) {
+    if (!isFinite(s) || s < 0) { return "0:00"; }
+    var m = Math.floor(s / 60), ss = Math.floor(s % 60);
+    return m + ":" + (ss < 10 ? "0" : "") + ss;
+  }
+  function clearPlayer() {
+    audioEl.pause();
+    if (audioURL) { URL.revokeObjectURL(audioURL); audioURL = null; }
+    audioEl.removeAttribute("src");
+    $("#player").hidden = true;
+    $("#rec-add").hidden = false;
+    $("#rec-fill").style.width = "0";
+    $("#rec-time").textContent = "0:00 / 0:00";
+    $("#rec-play").textContent = "►";
+  }
+  function loadPlayer(f) {
+    clearPlayer();
+    if (!f || !f.properties.has_audio) { return; }
+    getAudio(f.properties.id).then(function (blob) {
+      if (!blob || feature(selected) !== f) { return; }   // selection may have moved on
+      audioURL = URL.createObjectURL(blob);
+      audioEl.src = audioURL;
+      $("#player").hidden = false;
+      $("#rec-add").hidden = true;
+      var a = f.properties.audio || {};
+      $("#rec-name").textContent = (a.name || "recording") + " · " +
+        Math.round((a.size || blob.size) / 1024) + " KB";
+    }).catch(function (err) {
+      $("#saved").textContent = "Could not read audio: " + err.message;
+    });
+  }
+
+  audioEl.addEventListener("loadedmetadata", function () {
+    $("#rec-time").textContent = "0:00 / " + fmtTime(audioEl.duration);
+    var f = feature(selected);
+    if (f && f.properties.audio && isFinite(audioEl.duration) && !f.properties.audio.duration_s) {
+      /* Deliberately not calling renderDetail() here — it reloads the player, which fires
+         loadedmetadata again. Save the value; the props row picks it up on next select. */
+      f.properties.audio.duration_s = +audioEl.duration.toFixed(2);
+      save();
+    }
+  });
+  audioEl.addEventListener("timeupdate", function () {
+    var d = audioEl.duration || 0;
+    $("#rec-fill").style.width = (d ? (audioEl.currentTime / d * 100) : 0) + "%";
+    $("#rec-time").textContent = fmtTime(audioEl.currentTime) + " / " + fmtTime(d);
+    $("#rec-bar").setAttribute("aria-valuenow", d ? Math.round(audioEl.currentTime / d * 100) : 0);
+  });
+  audioEl.addEventListener("ended", function () { $("#rec-play").textContent = "►"; });
+
+  $("#rec-play").addEventListener("click", function () {
+    var btn = this;
+    if (!audioEl.paused) { audioEl.pause(); btn.textContent = "►"; return; }
+    /* play() rejects under autoplay policy. Flipping the label before knowing means the
+       transport lies about what the audio is doing. */
+    var p = audioEl.play();
+    if (p && p.then) {
+      p.then(function () { btn.textContent = "‖"; })
+       .catch(function (err) {
+         btn.textContent = "►";
+         $("#saved").textContent = "Playback blocked: " + err.message;
+       });
+    } else { btn.textContent = "‖"; }
+  });
+  audioEl.addEventListener("pause", function () { $("#rec-play").textContent = "►"; });
+  audioEl.addEventListener("play", function () { $("#rec-play").textContent = "‖"; });
+  audioEl.addEventListener("error", function () {
+    $("#saved").textContent = "This audio file could not be decoded.";
+  });
+  $("#rec-bar").addEventListener("click", function (e) {
+    var r = this.getBoundingClientRect();
+    if (audioEl.duration) { audioEl.currentTime = (e.clientX - r.left) / r.width * audioEl.duration; }
+  });
+  $("#rec-bar").addEventListener("keydown", function (e) {
+    if (!audioEl.duration) { return; }
+    if (e.key === "ArrowRight") { audioEl.currentTime = Math.min(audioEl.duration, audioEl.currentTime + 5); }
+    else if (e.key === "ArrowLeft") { audioEl.currentTime = Math.max(0, audioEl.currentTime - 5); }
+  });
+  $("#rec-add").addEventListener("click", function () { $("#rec-file").click(); });
+  $("#rec-file").addEventListener("change", function () {
+    var file = this.files && this.files[0], f = feature(selected);
+    this.value = "";
+    if (!file || !f) { return; }
+    putAudio(f.properties.id, file).then(function () {
+      f.properties.has_audio = true;
+      f.properties.audio = {
+        name: file.name, type: file.type || "audio/*", size: file.size,
+        added_at: new Date().toISOString()
+      };
+      commit();
+      renderDetail();
+    }).catch(function (err) {
+      $("#saved").textContent = "Could not store audio: " + err.message;
+    });
+  });
+  $("#rec-remove").addEventListener("click", function () {
+    var f = feature(selected);
+    if (!f) { return; }
+    delAudio(f.properties.id).then(function () {
+      delete f.properties.audio;
+      f.properties.has_audio = false;
+      commit();
+      renderDetail();
+    });
+  });
+
+  /* ---------- Rendering ---------- */
+  function renderStats() {
+    var vis = visible(), pts = 0, rts = 0, dist = 0, rec = 0;
+    vis.forEach(function (f) {
+      if (f.geometry.type === "Point") { pts++; } else { rts++; dist += f.properties.length_m || 0; }
+      if (f.properties.has_audio) { rec++; }
+    });
+    $("#count").textContent = vis.length;
+    $("#tab-list").title = pts + " points · " + rts + " routes · " + fmtLen(dist) +
+      " · " + rec + " with recordings";
+    $("#empty").hidden = vis.length > 0;
+  }
+
+  /* Unnamed features are numbered in creation order within their kind — Point 1, Point 2,
+     Route 1 — so the archive reads as a sequence rather than sixteen rows called "Point". */
+  function label(f) {
+    if (f.properties.name) { return f.properties.name; }
+    var isPt = f.properties.kind === "point", vis = visible(), n = 0;
+    for (var i = 0; i < vis.length; i++) {
+      if ((vis[i].properties.kind === "point") === isPt) { n++; }
+      if (vis[i].properties.id === f.properties.id) { break; }
+    }
+    return (isPt ? "Point " : "Route ") + n;
+  }
+
+  function showPane(which) {
+    var info = which === "info";
+    $("#pane-info").hidden = !info;
+    $("#pane-list").hidden = info;
+    $("#tab-info").setAttribute("aria-pressed", String(info));
+    $("#tab-list").setAttribute("aria-pressed", String(!info));
+  }
+
+  function renderList() {
+    var list = $("#list");
+    list.textContent = "";
+    visible().slice().reverse().forEach(function (f) {
+      var li = document.createElement("li");
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "row";
+      b.setAttribute("aria-current", String(f.properties.id === selected));
+      var isPt = f.properties.kind === "point";
+      b.innerHTML = '<span class="glyph">' + (isPt ? (f.properties.has_audio ? "◆" : "◇") : "╱") + "</span>" +
+                    "<span>" + label(f).replace(/</g, "&lt;") + "</span>" +
+                    '<span class="meta">' +
+                    (isPt ? f.geometry.coordinates[1].toFixed(4) : fmtLen(f.properties.length_m || 0)) +
+                    "</span>";
+      b.addEventListener("click", function () { setSelected(f.properties.id); });
+      li.appendChild(b);
+      list.appendChild(li);
+    });
+    renderStats();
+  }
+
+  function renderDetail() {
+    var f = selected ? feature(selected) : null;
+    $("#card").hidden = !f;
+    $("#nosel").hidden = !!f;
+    if (!f) { clearPlayer(); return; }
+    loadPlayer(f);
+
+    $("#f-name").value = f.properties.name || "";
+    $("#f-name").placeholder = label(f);
+    $("#f-note").value = f.properties.note || "";
+
+    var head = f.properties.kind === "point"
+      ? f.geometry.coordinates[1].toFixed(6) + ", " + f.geometry.coordinates[0].toFixed(6)
+      : fmtLen(f.properties.length_m || 0) + " · " +
+        (f.properties.vertices || f.geometry.coordinates.length) + " vertices";
+
+    var tail = f.properties.position_source + " · " +
+      new Date(f.properties.created_at).toLocaleString();
+    if (f.properties.audio && f.properties.audio.duration_s) {
+      tail += " · " + fmtTime(f.properties.audio.duration_s);
+    }
+    $("#f-meta").innerHTML = "<b>" + head + "</b>" + tail;
+  }
+
+  function render() { map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); renderList(); }
+
+  $("#f-name").addEventListener("input", function () {
+    var f = feature(selected); if (!f) { return; }
+    f.properties.name = this.value; commit();
+  });
+  $("#f-note").addEventListener("input", function () {
+    var f = feature(selected); if (!f) { return; }
+    f.properties.note = this.value; save();
+  });
+  $("#f-delete").addEventListener("click", removeSelected);
+  $("#f-zoom").addEventListener("click", function () {
+    var f = feature(selected); if (!f) { return; }
+    if (f.geometry.type === "Point") { map.easeTo({ center: f.geometry.coordinates, zoom: 15 }); }
+    else {
+      var b = new maplibregl.LngLatBounds();
+      f.geometry.coordinates.forEach(function (c) { b.extend(c); });
+      map.fitBounds(b, { padding: 60 });
+    }
+  });
+
+  document.querySelectorAll("[data-mode]").forEach(function (b) {
+    b.addEventListener("click", function () { setMode(b.dataset.mode); });
+  });
+  $("#tab-info").addEventListener("click", function () { showPane("info"); });
+  $("#tab-list").addEventListener("click", function () { showPane("list"); });
+
+  function setForest(level) {
+    var frame = level !== "off", areas = level === "areas";
+    ["forest-fill", "forest-casing", "forest-line"].forEach(function (id) {
+      map.setLayoutProperty(id, "visibility", frame ? "visible" : "none");
+    });
+    map.setLayoutProperty("forest-detail", "visibility", areas ? "visible" : "none");
+    document.querySelectorAll("[data-forest]").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.forest === level));
+    });
+  }
+  document.querySelectorAll("[data-forest]").forEach(function (b) {
+    b.addEventListener("click", function () { setForest(b.dataset.forest); });
+  });
+
+  $("#fit-forest").addEventListener("click", function () {
+    if (forestBounds && !forestBounds.isEmpty()) { map.fitBounds(forestBounds, { padding: 28 }); }
+  });
+
+  document.querySelectorAll("[data-base]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      document.querySelectorAll("[data-base]").forEach(function (o) {
+        var on = o === b;
+        o.setAttribute("aria-pressed", String(on));
+        map.setLayoutProperty("base-" + o.dataset.base, "visibility", on ? "visible" : "none");
+      });
+    });
+  });
+
+  /* ---------- Import / export ---------- */
+  $("#export").addEventListener("click", function () {
+    var blob = new Blob([JSON.stringify(fc, null, 2)], { type: "application/geo+json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "fieldarc-belgrad-" + new Date().toISOString().slice(0, 10) + ".geojson";
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  });
+  $("#import-btn").addEventListener("click", function () { $("#import").click(); });
+  $("#import").addEventListener("change", function () {
+    var file = this.files && this.files[0];
+    if (!file) { return; }
+    file.text().then(function (txt) {
+      var incoming = JSON.parse(txt);
+      var feats = (incoming.features || []).filter(function (f) { return f && f.geometry; });
+      feats.forEach(function (f) {
+        f.properties = f.properties || {};
+        if (!f.properties.id) { f.properties.id = uid(); }
+        if (!f.properties.kind) { f.properties.kind = f.geometry.type === "Point" ? "point" : "route"; }
+        fc.features.push(f);
+      });
+      commit();
+      $("#saved").textContent = "Imported " + feats.length + " feature(s).";
+    }).catch(function () {
+      $("#saved").textContent = "That file could not be read as GeoJSON.";
+    });
+    this.value = "";
+  });
+
+  setMode("select");
+  renderList();
+})();
+</script>
+</body>
+</html>
