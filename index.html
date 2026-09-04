@@ -477,6 +477,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   #mark { width: 5.25rem; height: 5.25rem; }   /* the field is one-handed */
 }
 
+/* Confirmation you can read without opening the sheet — on a phone the sheet is the map. */
+#toast {
+  position: absolute; left: 50%; top: var(--s-4); transform: translateX(-50%);
+  z-index: 4; margin: 0;
+  padding: var(--s-2) var(--s-4);
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: var(--track-meta); text-transform: uppercase;
+  color: var(--sunk); background: var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  white-space: nowrap; pointer-events: none;
+  max-width: 88%; overflow: hidden; text-overflow: ellipsis;
+}
+
 #loading {
   position: absolute; inset: 0; z-index: 3;
   display: grid; place-items: center;
@@ -676,6 +690,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   <div id="map">
     <div id="loading">Loading basemap…</div>
+    <p id="toast" hidden></p>
     <div id="readout"><span><b>lat</b> —</span><span><b>lon</b> —</span></div>
 
     <div id="markbar">
@@ -698,6 +713,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   var $ = function (s) { return document.querySelector(s); };
   var mapEl = $("#map");
+
+  function toast(msg) {
+    var t = $("#toast");
+    t.textContent = msg;
+    t.hidden = false;
+    clearTimeout(t._timer);
+    t._timer = setTimeout(function () { t.hidden = true; }, 2600);
+  }
 
   /* ---------- Error state (C-5): if the library never arrives, say so. ---------- */
   function fail(title, detail) {
@@ -1129,9 +1152,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       : "Click a feature to inspect it. <b>Mark</b> centres on your position.";
   }
 
-  function setSelected(id) {
+  /* `reveal` is true only when you asked to inspect something — tapping a feature or a list
+     row. Creating a point or a route selects it without throwing the sheet over the map;
+     on a phone that hid the very thing you were aiming at. */
+  function setSelected(id, reveal) {
     selected = id;
-    if (id) { showPane("info"); if (isMobile()) { openSheet(true); } }   /* selecting brings the card forward */
+    if (id) { showPane("info"); if (reveal && isMobile()) { openSheet(true); } }
+    if (!id && isMobile()) { openSheet(false); }
     map.setFilter("point-sel", ["all", ["==", ["geometry-type"], "Point"], ["==", ["get", "id"], id || "~none~"]]);
     map.setFilter("route-sel", ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "id"], id || "~none~"]]);
     renderDetail();
@@ -1163,6 +1190,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* ---------- Interaction ---------- */
   map.on("click", function (e) {
+    if (isMobile()) { openSheet(false); }   /* touching the map means you want the map */
     var c = [ +e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6) ];
 
     if (mode === "point") {
@@ -1178,6 +1206,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
       commit();
       setSelected(fc.features[fc.features.length - 1].properties.id);
+      toast(label(fc.features[fc.features.length - 1]) + " added");
       return;
     }
 
@@ -1190,7 +1219,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var hits = map.queryRenderedFeatures(e.point, {
       layers: ["point-dot", "route-line", "point-halo", "route-casing"]
     });
-    setSelected(hits.length ? hits[0].properties.id : null);
+    setSelected(hits.length ? hits[0].properties.id : null, true);
   });
 
   map.on("dblclick", function (e) {
@@ -1324,6 +1353,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       setSelected(f.properties.id);
       map.easeTo({ center: c, zoom: Math.max(map.getZoom(), 15) });
       setMarkState("idle");
+      toast(outsidePlace(c)
+        ? "Outside " + place.properties.name
+        : label(f) + " · ±" + Math.round(pos.coords.accuracy || 0) + "m");
       $("#saved").textContent = outsidePlace(c)
         ? "Fix is outside " + place.properties.name + " — check the selected place."
         : "Point marked · ±" + Math.round(pos.coords.accuracy || 0) + "m";
@@ -1382,6 +1414,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     fc.features.push(f);
     commit();
     setSelected(f.properties.id);
+    toast(label(f) + " · " + fmtLen(f.properties.length_m));
     $("#saved").textContent = "Route saved · " + fmtLen(f.properties.length_m) +
       " · ±" + Math.round(mean) + "m mean";
   }
@@ -1587,7 +1620,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                     '<span class="meta">' +
                     (isPt ? f.geometry.coordinates[1].toFixed(4) : fmtLen(f.properties.length_m || 0)) +
                     "</span>";
-      b.addEventListener("click", function () { setSelected(f.properties.id); });
+      b.addEventListener("click", function () { setSelected(f.properties.id, true); });
       li.appendChild(b);
       list.appendChild(li);
     });
@@ -1616,6 +1649,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       tail += " · " + fmtTime(f.properties.audio.duration_s);
     }
     $("#f-meta").innerHTML = "<b>" + head + "</b>" + tail;
+    sheetLabel();
   }
 
   function render() { map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); renderList(); }
@@ -1655,7 +1689,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function openSheet(open) {
     $("#panel").classList.toggle("open", open);
     $("#sheet").setAttribute("aria-expanded", String(open));
-    $("#sheet").textContent = open ? "Details ▼" : "Details ▲";
+    sheetLabel();
+  }
+
+  /* Collapsed, the handle names what is selected, so the card is not the only way to know. */
+  function sheetLabel() {
+    var f = selected ? feature(selected) : null;
+    var open = $("#panel").classList.contains("open");
+    $("#sheet").textContent = (f ? label(f) : "Details") + (open ? " ▼" : " ▲");
   }
 
   $("#sheet").addEventListener("click", function () {
