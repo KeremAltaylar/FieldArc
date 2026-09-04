@@ -281,6 +281,19 @@ h2 {
   background: transparent;
   border-color: transparent;
 }
+.rowwrap { display: flex; align-items: stretch; gap: var(--s-1); }
+.rowwrap .row { flex: 1; min-width: 0; }
+.rowdel {
+  flex: none;
+  padding: var(--s-2) var(--s-3);
+  color: var(--faint);
+  background: transparent;
+  border-color: transparent;
+}
+.rowdel:hover, .rowdel[data-confirm="1"] {
+  color: var(--sunk); background: var(--lamp); border-color: var(--lamp);
+}
+
 .row:hover { background: var(--panel); border-color: var(--bdr); }
 .row[aria-current="true"] {
   background: var(--panel);
@@ -563,7 +576,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* The sheet */
   #panel {
     position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
-    max-height: 74dvh;
+    max-height: 88dvh;
     border-right: 0;
     border-top: 1px solid var(--bdr);
     box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.45);
@@ -584,6 +597,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     background: var(--raised);
   }
   #panel > .section:first-of-type .hint { display: none; }   /* keep the peek short */
+  /* At 390x664 the card cleared the fold by 1px, and a loaded player would have pushed
+     Delete off. Tighter spacing buys the margin back. */
+  .section { padding: var(--s-3) var(--s-4); }
+  .tabbar { padding: var(--s-2) var(--s-4); }
+  #card { padding: var(--s-3); gap: var(--s-2); }
   .modes button { padding: var(--s-3) var(--s-2); }          /* M-4: thumb-sized */
 
   #markbar { bottom: calc(var(--peek, 8rem) + var(--s-3)); right: var(--s-3); }
@@ -1273,12 +1291,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     else if (e.key === "3") { setMode("route"); }
   });
 
-  function removeSelected() {
-    delAudio(selected);            // never orphan a blob in IndexedDB
-    fc.features = fc.features.filter(function (f) { return f.properties.id !== selected; });
-    setSelected(null);
+  function deleteFeature(id) {
+    if (!id) { return; }
+    var f = feature(id);
+    var name = f ? label(f) : "Feature";
+    delAudio(id);                  // never orphan a blob in IndexedDB
+    fc.features = fc.features.filter(function (x) { return x.properties.id !== id; });
+    if (selected === id) { setSelected(null); }
     commit();
+    toast(name + " deleted");
   }
+  function removeSelected() { deleteFeature(selected); }
 
   /* ---------- Mark: GPS capture ----------
      Point mode pins a fix. Route mode starts a live trace on the first tap and closes it on
@@ -1610,6 +1633,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     list.textContent = "";
     visible().slice().reverse().forEach(function (f) {
       var li = document.createElement("li");
+      var wrap = document.createElement("div");
+      wrap.className = "rowwrap";
       var b = document.createElement("button");
       b.type = "button";
       b.className = "row";
@@ -1621,7 +1646,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                     (isPt ? f.geometry.coordinates[1].toFixed(4) : fmtLen(f.properties.length_m || 0)) +
                     "</span>";
       b.addEventListener("click", function () { setSelected(f.properties.id, true); });
-      li.appendChild(b);
+
+      /* Two taps to delete. One tap on a phone is a mis-tap waiting to happen. */
+      var del = document.createElement("button");
+      del.type = "button";
+      del.className = "rowdel";
+      del.textContent = "×";
+      del.setAttribute("aria-label", "Delete " + label(f));
+      del.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        if (del.dataset.confirm === "1") { deleteFeature(f.properties.id); return; }
+        del.dataset.confirm = "1";
+        del.textContent = "Sure?";
+        clearTimeout(del._t);
+        del._t = setTimeout(function () { del.dataset.confirm = ""; del.textContent = "×"; }, 3000);
+      });
+
+      wrap.appendChild(b);
+      wrap.appendChild(del);
+      li.appendChild(wrap);
       list.appendChild(li);
     });
     renderStats();
