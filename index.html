@@ -148,8 +148,11 @@ header {
 }
 .placenone { font-size: var(--t-sm); color: var(--faint); padding: var(--s-3); }
 
-.basemaps { margin-left: auto; display: flex; gap: var(--s-1); }
-.overlays { display: flex; gap: var(--s-1); margin-left: var(--s-3); }
+/* #controls wraps both groups so mobile can collapse them into one popover. On desktop it
+   has to stay a flex row, or the two groups stack and the header becomes two lines. */
+#controls { display: flex; align-items: center; gap: var(--s-3); margin-left: auto; }
+.basemaps { display: flex; gap: var(--s-1); }
+.overlays { display: flex; gap: var(--s-1); }
 
 /* ---- Buttons ---- */
 button {
@@ -1397,6 +1400,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     watchId = navigator.geolocation.watchPosition(function (pos) {
       var c = showHere(pos);
       setMarkState("recording");
+      /* Keep yourself on screen while walking, but only when you have actually left it —
+         recentring on every fix would fight you every time you panned to look around. */
+      if (!map.getBounds().contains(c)) { map.easeTo({ center: c, duration: 600 }); }
       var last = track.pts[track.pts.length - 1];
       /* Standing still still produces fixes. Without a movement floor the trace fills with
          jitter and the distance inflates — the same conditioning idea as A-14. */
@@ -1437,6 +1443,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     fc.features.push(f);
     commit();
     setSelected(f.properties.id);
+
+    /* Show the walk you just made. During recording the map only follows your position, so
+       at the end you are zoomed into the last few metres of it. */
+    var b = new maplibregl.LngLatBounds();
+    t.pts.forEach(function (c) { b.extend(c); });
+    if (!b.isEmpty()) {
+      map.fitBounds(b, { padding: 60, duration: 900, maxZoom: 17 });
+    }
     toast(label(f) + " · " + fmtLen(f.properties.length_m));
     $("#saved").textContent = "Route saved · " + fmtLen(f.properties.length_m) +
       " · ±" + Math.round(mean) + "m mean";
