@@ -903,10 +903,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <button type="button" data-vmode="wave" aria-pressed="false">Waveform</button>
       </div>
       <div class="vmodes" role="group" aria-label="Dynamic range">
-        <button type="button" data-vrange="50" aria-pressed="false">50 dB</button>
-        <button type="button" data-vrange="70" aria-pressed="true">70 dB</button>
-        <button type="button" data-vrange="95" aria-pressed="false">95 dB</button>
+        <button type="button" data-vrange="20" aria-pressed="false">20 dB</button>
+        <button type="button" data-vrange="30" aria-pressed="true">30 dB</button>
+        <button type="button" data-vrange="45" aria-pressed="false">45 dB</button>
+        <button type="button" data-vrange="70" aria-pressed="false">70 dB</button>
       </div>
+      <button type="button" id="v-flatten" aria-pressed="true"
+        title="Level each frequency band against its own quiet baseline, so a faint high call reads as clearly as low rumble">Flatten</button>
       <span id="v-name"></span>
       <button type="button" id="v-close" aria-label="Close">Close</button>
     </div>
@@ -2064,7 +2067,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      The strip in the card is a thumbnail. This is where you actually look at a recording:
      a spectrogram computed at nearly three times the resolution, with a playhead you can
      scrub, and the same transport as the card so playback state is shared. */
-  var viewer = { open: false, mode: "spec", base: null, peaks: null, spec: null, range: 70 };
+  var viewer = { open: false, mode: "spec", base: null, peaks: null, spec: null,
+                 range: 30, flatten: true };
 
   function viewerSize() {
     var c = $("#v-canvas");
@@ -2079,7 +2083,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     ctx.clearRect(0, 0, s.w, s.h);
     if (viewer.mode === "spec" && viewer.spec) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      paintSpectro(c, viewer.spec, viewer.range);
+      paintSpectro(c, viewer.spec, viewer.range, viewer.flatten);
       ctx.setTransform(s.r, 0, 0, s.r, 0, 0);
       drawSpecAxes(ctx, viewer.spec, s.w, s.h);
     }
@@ -2152,6 +2156,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
       viewerRender();
     });
+  });
+
+  $("#v-flatten").addEventListener("click", function () {
+    viewer.flatten = !viewer.flatten;
+    this.setAttribute("aria-pressed", String(viewer.flatten));
+    viewerRender();
   });
 
   $("#v-close").addEventListener("click", closeViewer);
@@ -2565,13 +2575,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (frames > CAP) { hop = Math.ceil((n - N) / (CAP - 1)); frames = CAP; }
 
         /* Log frequency bands, precomputed once. */
-        var fMin = 30, fMax = sr / 2, lo = [], hi = [];
+        var fMin = 30, fMax = sr / 2, lo = [], hi = [], cen = [];
         for (r = 0; r < ROWS; r++) {
           var f0 = fMin * Math.pow(fMax / fMin, r / ROWS);
           var f1 = fMin * Math.pow(fMax / fMin, (r + 1) / ROWS);
           var b0 = Math.max(1, Math.round(f0 * N / sr));
           var b1 = Math.max(b0 + 1, Math.round(f1 * N / sr));
           lo.push(b0); hi.push(Math.min(N / 2, b1));
+          cen.push(Math.max(1, Math.sqrt(f0 * f1) * N / sr));
         }
 
         var out = [];
@@ -2588,12 +2599,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           fft(re, im);
           var col = out[Math.min(COLS - 1, Math.floor(off / n * COLS))];
           for (r = 0; r < ROWS; r++) {
-            var m = 0;
-            for (i = lo[r]; i < hi[r]; i++) {
-              var mag = re[i] * re[i] + im[i] * im[i];   /* compare squared, sqrt once */
-              if (mag > m) { m = mag; }
+            var m;
+            if (hi[r] - lo[r] >= 2) {
+              m = 0;
+              for (i = lo[r]; i < hi[r]; i++) {
+                var mag = re[i] * re[i] + im[i] * im[i];   /* compare squared, sqrt once */
+                if (mag > m) { m = mag; }
+              }
+              m = Math.sqrt(m);
+            } else {
+              /* Narrower than one bin: interpolate, or the bottom rows repeat the same bin
+                 and the picture shows horizontal stripes instead of a gradient. */
+              var fb = cen[r], i0 = Math.floor(fb), k = fb - i0, i1 = i0 + 1;
+              if (i1 > N / 2 - 1) { i1 = N / 2 - 1; }
+              var m0 = Math.sqrt(re[i0] * re[i0] + im[i0] * im[i0]);
+              var m1 = Math.sqrt(re[i1] * re[i1] + im[i1] * im[i1]);
+              m = m0 + (m1 - m0) * k;
             }
-            m = Math.sqrt(m);
             if (m > col[r]) { col[r] = m; }
           }
         }
@@ -2603,8 +2625,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         out.forEach(function (cl) {
           for (var k = 0; k < cl.length; k++) { if (cl[k] > peak) { peak = cl[k]; } }
         });
+        /* Each band gets its own reference level — the 20th percentile across time. Without
+           it the 1/f tilt of any natural recording turns the bottom of the picture into a
+           solid block and hides everything quiet above it. */
+        var floor = new Float32Array(ROWS);
+        var scratch = new Float32Array(COLS);
+        for (r = 0; r < ROWS; r++) {
+          for (c = 0; c < COLS; c++) { scratch[c] = out[c][r]; }
+          var sorted = Array.prototype.slice.call(scratch).sort(function (a, b) { return a - b; });
+          floor[r] = sorted[Math.floor(sorted.length * 0.2)] || 1e-7;
+        }
+
         specCache[key] = {
-          cols: out, peak: peak || 1, rows: ROWS,
+          cols: out, peak: peak || 1, rows: ROWS, floor: floor,
           fMin: fMin, fMax: fMax, duration: ab.duration,
           frames: frames, hopMs: +(hop / sr * 1000).toFixed(1)
         };
@@ -2618,11 +2651,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      instead of a fillRect per cell. */
   var SPEC_RAMP = [
     [0.00,  13,  19,  16,   0],
-    [0.12,  22,  46,  38, 170],
-    [0.35,  74, 120,  90, 240],
-    [0.60, 155, 190, 150, 255],
-    [0.82, 186, 230, 177, 255],
-    [1.00, 240, 255, 235, 255]
+    [0.15,  20,  38,  31, 150],
+    [0.45,  52,  92,  68, 235],
+    [0.72, 120, 162, 116, 255],
+    [0.90, 186, 230, 177, 255],
+    [1.00, 245, 255, 240, 255]
   ];
   function specColour(t, o) {
     for (var i = 1; i < SPEC_RAMP.length; i++) {
@@ -2640,21 +2673,31 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
-  function paintSpectro(c, data, rangeDb) {
+  function paintSpectro(c, data, rangeDb, flatten) {
     var ctx = c.getContext('2d');
     var W = c.width, H = c.height;
     if (!W || !H) { return; }
     var img = ctx.createImageData(W, H), px = img.data;
-    var cols = data.cols, rows = data.rows, peak = data.peak, R = rangeDb || 70;
+    var cols = data.cols, rows = data.rows, R = rangeDb || 70;
+    var peakDb = 20 * Math.log10(data.peak || 1);
+    /* Reference per band when flattened, one global peak when not. */
+    var refDb = new Float32Array(rows);
+    for (var r = 0; r < rows; r++) {
+      refDb[r] = flatten && data.floor
+        ? 20 * Math.log10(Math.max(data.floor[r], 1e-9))
+        : peakDb - R;
+    }
     var rgba = [0, 0, 0, 0];
     for (var x = 0; x < W; x++) {
       var col = cols[Math.min(cols.length - 1, Math.floor(x / W * cols.length))];
       for (var y = 0; y < H; y++) {
         var band = rows - 1 - Math.min(rows - 1, Math.floor(y / H * rows));
-        var v = col[band] / peak;
-        var t = v > 0 ? (20 * Math.log10(v) + R) / R : 0;
+        var v = col[band];
+        if (v <= 0) { continue; }
+        var t = (20 * Math.log10(v) - refDb[band]) / R;
         if (t <= 0) { continue; }
         if (t > 1) { t = 1; }
+        t = Math.pow(t, 1.15);  /* mild: enough to hold back ambience, not enough to bury a call */
         specColour(t, rgba);
         var o = (y * W + x) * 4;
         px[o] = rgba[0]; px[o + 1] = rgba[1]; px[o + 2] = rgba[2]; px[o + 3] = rgba[3];
@@ -2708,7 +2751,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var w = bar.clientWidth || 200, h = bar.clientHeight || 56, r = window.devicePixelRatio || 1;
     c.width = w * r; c.height = h * r;
     c.getContext("2d").setTransform(1, 0, 0, 1, 0, 0);
-    paintSpectro(c, data, viewer.range);
+    paintSpectro(c, data, viewer.range, viewer.flatten);
   }
 
   /* ---------- Rendering ---------- */
