@@ -258,6 +258,29 @@ h2 {
 .iconbtn[aria-pressed="true"] { color: var(--sunk); background: var(--accent); border-color: var(--accent); }
 .row .glyph svg { display: block; }
 
+/* ---- Map labels ----
+   Drawn as DOM markers rather than MapLibre text, because MapLibre text needs a glyph server
+   and none of them serve Courier Prime — a third typeface on the map would break C-2. */
+.maplabel {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: 0.05em;
+  line-height: 1;
+  color: var(--ink);
+  background: color-mix(in oklch, var(--sunk) 78%, transparent);
+  border: 1px solid var(--bdr);
+  border-radius: 2px;
+  padding: 3px 5px;
+  white-space: nowrap;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
+.maplabel.sel {
+  color: var(--sunk);
+  background: var(--lamp);
+  border-color: var(--lamp);
+}
+
 .hint {
   margin: var(--s-3) 0 0;
   font-size: var(--t-sm);
@@ -1236,6 +1259,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
     loadPlaces();
     render();
+    map.on("moveend", renderLabels);
+    map.on("zoomend", renderLabels);
   });
   window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
   var reported = false;
@@ -1285,6 +1310,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     map.setFilter("route-sel", ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "id"], id || "~none~"]]);
     renderDetail();
     renderList();
+    renderLabels();
   }
 
   function feature(id) {
@@ -1308,6 +1334,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     save();
     renderList();
     renderStats();
+    renderLabels();
   }
 
   /* ---------- Interaction ---------- */
@@ -1712,6 +1739,56 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   });
 
+  /* ---------- Map labels ----------
+     Names are derived, not stored, so they live here rather than in the feature. Markers
+     track the map on their own once placed; only the set worth showing is recomputed, and
+     only when the view settles. */
+  var LABEL_MIN_ZOOM = 11;
+  var labelMarkers = [];
+
+  function labelAnchor(f) {
+    if (f.geometry.type === "Point") { return f.geometry.coordinates; }
+    var c = f.geometry.coordinates;
+    return c[Math.floor(c.length / 2)];      /* middle of the walk, not its end */
+  }
+
+  function renderLabels() {
+    labelMarkers.forEach(function (m) { m.remove(); });
+    labelMarkers = [];
+    if (!map || !map.getCanvas || map.getZoom() < LABEL_MIN_ZOOM) { return; }
+
+    var w = map.getCanvas().clientWidth, h = map.getCanvas().clientHeight;
+    var placed = [];
+
+    /* Selected first, so it never loses a collision to a neighbour. */
+    var feats = visible().slice().sort(function (a, b) {
+      return (b.properties.id === selected ? 1 : 0) - (a.properties.id === selected ? 1 : 0);
+    });
+
+    feats.forEach(function (f) {
+      var at = labelAnchor(f), p;
+      try { p = map.project(at); } catch (e) { return; }
+      if (p.x < 0 || p.y < 0 || p.x > w || p.y > h) { return; }
+
+      var text = label(f);
+      var bw = text.length * 6.4 + 14, bh = 19;
+      var box = { x1: p.x - bw / 2, y1: p.y + 8, x2: p.x + bw / 2, y2: p.y + 27 };
+      var clash = placed.some(function (q) {
+        return !(box.x2 < q.x1 || box.x1 > q.x2 || box.y2 < q.y1 || box.y1 > q.y2);
+      });
+      if (clash) { return; }          /* crowded views thin out rather than pile up */
+      placed.push(box);
+
+      var el = document.createElement("div");
+      el.className = "maplabel" + (f.properties.id === selected ? " sel" : "");
+      el.textContent = text;
+      labelMarkers.push(
+        new maplibregl.Marker({ element: el, anchor: "top", offset: [0, 8] })
+          .setLngLat(at).addTo(map)
+      );
+    });
+  }
+
   /* ---------- Rendering ---------- */
   function renderStats() {
     var vis = visible(), pts = 0, rts = 0, dist = 0, rec = 0;
@@ -1846,7 +1923,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     sheetLabel();
   }
 
-  function render() { map.getSource("features").setData({ type: "FeatureCollection", features: visible() }); renderList(); }
+  function render() {
+    map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+    renderList();
+    renderLabels();
+  }
 
   $("#f-name").addEventListener("input", function () {
     var f = feature(selected); if (!f) { return; }
