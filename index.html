@@ -212,10 +212,12 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .tabbar b { font-weight: 400; color: var(--faint); }
 .tabbar button[aria-pressed="true"] b { color: var(--sunk); }
 
-/* The info card fits the pane — it never scrolls. */
-#pane-info { overflow: hidden; }
+/* The card fits on a phone, where this is actually used. On a short desktop window it now
+   carries more than the pane can show, so the pane yields rather than clipping the actions
+   off the bottom — hiding controls would be the worse failure. */
+#pane-info { overflow-y: auto; }
 #card {
-  display: flex; flex-direction: column; gap: var(--s-3);
+  display: flex; flex-direction: column; gap: var(--s-2);
   background: var(--panel);
   border: 1px solid var(--bdr);
   border-radius: 3px;
@@ -230,6 +232,10 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   color: var(--faint);
 }
 .cardmeta b { display: block; color: var(--dim); font-weight: 400; }
+
+.actions button[aria-pressed="true"] { color: var(--sunk); background: var(--accent); border-color: var(--accent); }
+
+#saved.warn { color: var(--lamp); }
 
 h2 {
   font-family: var(--font-mono);
@@ -347,6 +353,19 @@ h2 {
    taller row in a list that scrolls anyway. */
 .rowmain { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rowname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.walkhead {
+  margin: var(--s-3) 0 var(--s-1);
+  padding: 0 var(--s-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--track-meta);
+  text-transform: uppercase;
+  color: var(--accent);
+  border-bottom: 1px solid var(--bdr);
+  padding-bottom: var(--s-1);
+}
+#list li:first-child.walkhead { margin-top: 0; }
+
 .rowwhen {
   font-family: var(--font-mono);
   font-size: var(--t-xs);
@@ -432,19 +451,24 @@ input[type="text"]:focus-visible, textarea:focus-visible {
 }
 #rec-play:hover { color: var(--sunk); background: var(--lamp); border-color: var(--lamp); }
 
+/* The bar shows the recording rather than a bare progress line: same control, more truth. */
 #rec-bar {
+  position: relative;
   flex: 1;
-  height: 3px;
+  height: 20px;
   background: var(--raised);
   border-radius: 2px;
   cursor: pointer;
+  overflow: hidden;
 }
+#rec-wave { position: absolute; inset: 0; width: 100%; height: 100%; }
 #rec-bar:focus-visible { outline: 2px solid var(--lamp); outline-offset: 4px; }
 #rec-fill {
+  position: absolute; top: 0; left: 0;
   height: 100%;
   width: 0;
-  background: var(--accent);
-  border-radius: 2px;
+  background: color-mix(in oklch, var(--lamp) 26%, transparent);
+  border-right: 1px solid var(--lamp);
 }
 #rec-time {
   flex: none;
@@ -724,6 +748,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <input type="text" id="f-name" placeholder="Unnamed" aria-label="Name">
       <textarea id="f-note" rows="2" placeholder="What is here?" aria-label="Note"></textarea>
       <div class="iconpick" id="card-icons" role="group" aria-label="Point type"></div>
+      <input type="text" id="f-tags" placeholder="tags, comma separated" aria-label="Tags">
       <div class="rec">
         <span class="reclabel">Recording</span>
         <button type="button" id="rec-add">Attach audio…</button>
@@ -732,7 +757,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           <div class="transport">
             <button type="button" id="rec-play" aria-label="Play">►</button>
             <div id="rec-bar" tabindex="0" role="slider" aria-label="Seek"
-                 aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="rec-fill"></div></div>
+                 aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><canvas id="rec-wave"></canvas><div id="rec-fill"></div></div>
             <span id="rec-time">0:00 / 0:00</span>
           </div>
           <div class="recmeta">
@@ -743,20 +768,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       </div>
 
       <p class="cardmeta" id="f-meta"></p>
+
       <div class="actions">
+        <button type="button" class="ghost" id="f-sensitive" aria-pressed="false"
+          title="A nest, den or rare species — its position is fuzzed when the archive is published">Sens.</button>
+        <button type="button" class="ghost" id="f-published" aria-pressed="false"
+          title="Include this feature when the archive is published">Pub.</button>
         <button type="button" class="ghost" id="f-zoom">Zoom to</button>
         <button type="button" class="danger" id="f-delete">Delete</button>
       </div>
       </div>
     </div>
 
-    <div class="section">
+    <div class="section" id="storage">
       <h2>Storage</h2>
       <div class="actions">
         <button type="button" id="export">Export .geojson</button>
         <button type="button" class="ghost" id="import-btn">Import</button>
       </div>
-      <input type="file" id="import" accept=".geojson,.json,application/geo+json" hidden>
+      <input type="file" id="import" multiple
+             accept=".geojson,.json,.gpx,audio/*,application/geo+json" hidden>
       <p class="hint" id="saved">Saved to this browser.</p>
     </div>
   </div>
@@ -780,6 +811,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   var STORE = "fieldarc.v1";
   var PLACE_KEY = "fieldarc.place";
+  var EXPORT_KEY = "fieldarc.export";
+  var LICENSE = "CC BY-SA 4.0";
   var DEFAULT_PLACE = "R8845862";      // Belgrad Ormanı
   var CENTER = [28.9800, 41.1850];   // Belgrad Ormanı
   var ZOOM = 12.4;
@@ -830,12 +863,40 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   }
 
+  /* The corpus lives in one browser and can vanish with a cleared cache, so the panel
+     always says how far it has drifted from the last export. */
+  function exportState() {
+    try { return JSON.parse(localStorage.getItem(EXPORT_KEY)) || { at: null, changes: 0 }; }
+    catch (e) { return { at: null, changes: 0 }; }
+  }
+  function setExportState(s) {
+    try { localStorage.setItem(EXPORT_KEY, JSON.stringify(s)); } catch (e) { /* ignore */ }
+    renderSaved();
+  }
+  function renderSaved() {
+    var st = exportState(), el = $("#saved");
+    if (!st.at) {
+      el.textContent = "Never exported — this browser is the only copy.";
+      el.className = "hint warn";
+    } else if (st.changes > 0) {
+      el.textContent = st.changes + (st.changes === 1 ? " change" : " changes") +
+        " since last export · " + fmtWhen(st.at);
+      el.className = "hint warn";
+    } else {
+      el.textContent = "Exported " + fmtWhen(st.at) + " — up to date.";
+      el.className = "hint";
+    }
+  }
+
   function save() {
     try {
       localStorage.setItem(STORE, JSON.stringify(fc));
-      $("#saved").textContent = "Saved to this browser · " + new Date().toLocaleTimeString();
+      var st = exportState();
+      st.changes = (st.changes || 0) + 1;
+      setExportState(st);
     } catch (e) {
       $("#saved").textContent = "Could not save locally — export to keep this.";
+      $("#saved").className = "hint warn";
     }
   }
 
@@ -1525,6 +1586,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         },
         geometry: { type: "Point", coordinates: c } };
       if (pickIcon) { f.properties.icon = pickIcon; }
+      fetchWeather(f, c[0], c[1]);
       fc.features.push(f);
       commit();
       setSelected(f.properties.id);
@@ -1591,6 +1653,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         accuracy_mean_m: +mean.toFixed(1)
       },
       geometry: { type: "LineString", coordinates: t.pts } };
+    fetchWeather(f, t.pts[0][0], t.pts[0][1]);
     fc.features.push(f);
     commit();
     setSelected(f.properties.id);
@@ -1621,6 +1684,123 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         Math.round(pos.coords.accuracy || 0) + "m";
     }, geoFail, GEO);
   });
+
+  /* ---------- Weather ----------
+     Open-Meteo, no key. Only for fixes you actually stood at — a mouse-drawn point has no
+     weather worth claiming. Failure is silent: a missing field beats a wrong one. */
+  function fetchWeather(f, lon, lat) {
+    var url = "https://api.open-meteo.com/v1/forecast?latitude=" + lat.toFixed(4) +
+      "&longitude=" + lon.toFixed(4) +
+      "&current=temperature_2m,relative_humidity_2m,precipitation,cloud_cover," +
+      "wind_speed_10m,wind_direction_10m";
+    fetch(url).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (!d || !d.current) { return; }
+      var c = d.current;
+      f.properties.weather = {
+        temp_c: c.temperature_2m, humidity_pct: c.relative_humidity_2m,
+        precip_mm: c.precipitation, cloud_pct: c.cloud_cover,
+        wind_kmh: c.wind_speed_10m, wind_dir: c.wind_direction_10m,
+        at: c.time
+      };
+      save();
+      if (selected === f.properties.id) { renderDetail(); }
+    }).catch(function () { /* offline in a forest is the normal case */ });
+  }
+
+  function fmtWeather(w) {
+    if (!w) { return ""; }
+    var bits = [];
+    if (w.temp_c != null) { bits.push(Math.round(w.temp_c) + "°C"); }
+    if (w.wind_kmh != null) { bits.push("wind " + Math.round(w.wind_kmh) + " km/h"); }
+    if (w.precip_mm) { bits.push(w.precip_mm + " mm rain"); }
+    if (w.cloud_pct != null) { bits.push(w.cloud_pct + "% cloud"); }
+    return bits.join(" · ");
+  }
+
+  /* ---------- Audio analysis ----------
+     One decode on attach turns a blob into something the archive can be queried by. */
+  function fft(re, im) {
+    var n = re.length, i, j = 0, k, m, t, bit;
+    for (i = 1; i < n; i++) {
+      for (bit = n >> 1; j & bit; bit >>= 1) { j ^= bit; }
+      j ^= bit;
+      if (i < j) {
+        t = re[i]; re[i] = re[j]; re[j] = t;
+        t = im[i]; im[i] = im[j]; im[j] = t;
+      }
+    }
+    for (m = 2; m <= n; m <<= 1) {
+      var ang = -2 * Math.PI / m, wr = Math.cos(ang), wi = Math.sin(ang), half = m >> 1;
+      for (i = 0; i < n; i += m) {
+        var cr = 1, ci = 0;
+        for (k = 0; k < half; k++) {
+          var ur = re[i + k], ui = im[i + k];
+          var vr = re[i + k + half] * cr - im[i + k + half] * ci;
+          var vi = re[i + k + half] * ci + im[i + k + half] * cr;
+          re[i + k] = ur + vr; im[i + k] = ui + vi;
+          re[i + k + half] = ur - vr; im[i + k + half] = ui - vi;
+          var ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
+        }
+      }
+    }
+  }
+
+  function dbfs(v) { return v > 0 ? +(20 * Math.log10(v)).toFixed(1) : -120; }
+
+  function analyseAudio(blob) {
+    return blob.arrayBuffer().then(function (buf) {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      var ctx = new Ctx();
+      return ctx.decodeAudioData(buf).then(function (ab) {
+        var ch = ab.getChannelData(0), n = ch.length;
+
+        var peak = 0, sum = 0, i;
+        for (i = 0; i < n; i++) {
+          var a = ch[i] < 0 ? -ch[i] : ch[i];
+          if (a > peak) { peak = a; }
+          sum += ch[i] * ch[i];
+        }
+
+        /* ~200 buckets is enough to draw a waveform and cheap enough to store. */
+        var B = 200, peaks = [], step = Math.max(1, Math.floor(n / B));
+        for (var b = 0; b < B; b++) {
+          var s = b * step, e = Math.min(n, s + step), mx = 0;
+          for (i = s; i < e; i++) { var v = ch[i] < 0 ? -ch[i] : ch[i]; if (v > mx) { mx = v; } }
+          peaks.push(+mx.toFixed(3));
+        }
+
+        /* Spectral centroid, averaged over windows spread across the file. */
+        var N = 2048, wins = Math.min(32, Math.max(1, Math.floor(n / N))), cSum = 0, cN = 0;
+        for (var w = 0; w < wins; w++) {
+          var off = Math.floor(w * (n - N) / Math.max(1, wins - 1));
+          if (off < 0) { break; }
+          var re = new Float64Array(N), im = new Float64Array(N);
+          for (i = 0; i < N; i++) {
+            re[i] = ch[off + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)));
+          }
+          fft(re, im);
+          var num = 0, den = 0;
+          for (i = 1; i < N / 2; i++) {
+            var mag = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+            num += (i * ab.sampleRate / N) * mag;
+            den += mag;
+          }
+          if (den > 0) { cSum += num / den; cN++; }
+        }
+
+        try { ctx.close(); } catch (e) { /* ignore */ }
+        return {
+          sample_rate: ab.sampleRate,
+          channels: ab.numberOfChannels,
+          duration_s: +ab.duration.toFixed(2),
+          peak_dbfs: dbfs(peak),
+          rms_dbfs: dbfs(Math.sqrt(sum / n)),
+          centroid_hz: cN ? Math.round(cSum / cN) : null,
+          peaks: peaks
+        };
+      });
+    });
+  }
 
   /* ---------- Audio store ----------
      Blobs cannot go in localStorage (string-only, ~5MB). IndexedDB keyed by feature id, which
@@ -1659,6 +1839,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var m = Math.floor(s / 60), ss = Math.floor(s % 60);
     return m + ":" + (ss < 10 ? "0" : "") + ss;
   }
+  function drawWave(peaks) {
+    var c = $("#rec-wave"), bar = $("#rec-bar");
+    var w = bar.clientWidth || 200, h = 20, r = window.devicePixelRatio || 1;
+    c.width = w * r; c.height = h * r;
+    var ctx = c.getContext("2d");
+    ctx.setTransform(r, 0, 0, r, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (!peaks || !peaks.length) { return; }
+    ctx.fillStyle = accent;
+    for (var i = 0; i < w; i++) {
+      var p = peaks[Math.floor(i / w * peaks.length)] || 0;
+      var bh = Math.max(1, p * (h - 4));
+      ctx.fillRect(i, (h - bh) / 2, 1, bh);
+    }
+  }
+
   function clearPlayer() {
     audioEl.pause();
     if (audioURL) { URL.revokeObjectURL(audioURL); audioURL = null; }
@@ -1681,6 +1877,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var a = f.properties.audio || {};
       $("#rec-name").textContent = (a.name || "recording") + " · " +
         Math.round((a.size || blob.size) / 1024) + " KB";
+      drawWave(a.peaks);
     }).catch(function (err) {
       $("#saved").textContent = "Could not read audio: " + err.message;
     });
@@ -1737,14 +1934,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var file = this.files && this.files[0], f = feature(selected);
     this.value = "";
     if (!file || !f) { return; }
+    $("#rec-add").textContent = "Analysing…";
     putAudio(f.properties.id, file).then(function () {
       f.properties.has_audio = true;
       f.properties.audio = {
         name: file.name, type: file.type || "audio/*", size: file.size,
-        added_at: new Date().toISOString()
+        added_at: new Date().toISOString(),
+        recorded_at: file.lastModified ? new Date(file.lastModified).toISOString() : undefined
       };
       commit();
       renderDetail();
+      /* Descriptors arrive after the player does — the recording is usable immediately. */
+      analyseAudio(file).then(function (a) {
+        var t = f.properties.audio;
+        for (var k in a) { t[k] = a[k]; }
+        save();
+        $("#rec-add").textContent = "Attach audio…";
+        if (selected === f.properties.id) { renderDetail(); }
+      }).catch(function () {
+        $("#rec-add").textContent = "Attach audio…";
+        $("#saved").textContent = "Audio stored, but it could not be decoded for analysis.";
+      });
     }).catch(function (err) {
       $("#saved").textContent = "Could not store audio: " + err.message;
     });
@@ -1759,6 +1969,99 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       renderDetail();
     });
   });
+
+  /* ---------- Walks ----------
+     Derived, never stored. Features in the active place split into walks wherever more than
+     two hours pass. No new state and nothing to remember in the field; if explicit walks are
+     ever needed, they can be stored then. */
+  var WALK_GAP_MS = 2 * 60 * 60 * 1000;
+
+  function walks() {
+    var list = visible().slice().sort(function (a, b) {
+      return new Date(a.properties.created_at) - new Date(b.properties.created_at);
+    });
+    var out = [], cur = null;
+    list.forEach(function (f) {
+      var t = new Date(f.properties.created_at).getTime();
+      if (!cur || t - cur.end > WALK_GAP_MS) { cur = { start: t, end: t, items: [] }; out.push(cur); }
+      cur.end = t;
+      cur.items.push(f);
+    });
+    return out;
+  }
+
+  function walkTitle(w) {
+    var d = new Date(w.start), e = new Date(w.end);
+    var hm = function (x) { return ("0" + x.getHours()).slice(-2) + ":" + ("0" + x.getMinutes()).slice(-2); };
+    var pts = w.items.filter(function (f) { return f.properties.kind === "point"; }).length;
+    var rts = w.items.length - pts;
+    var rec = w.items.filter(function (f) { return f.properties.has_audio; }).length;
+    var counts = [];
+    if (pts) { counts.push(pts + " pt"); }
+    if (rts) { counts.push(rts + " rt"); }
+    if (rec) { counts.push(rec + " rec"); }
+    return d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear() +
+      " · " + hm(d) + (w.end - w.start > 60000 ? "–" + hm(e) : "") +
+      " · " + counts.join(" · ");
+  }
+
+  /* ---------- GPX ----------
+     A logger app's trace. Times are kept per vertex so recordings can be placed against it
+     later — that pairing is the whole point of using a separate logger. */
+  function parseGPX(text) {
+    var doc = new DOMParser().parseFromString(text, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length) { throw new Error("not valid GPX"); }
+    var segs = doc.getElementsByTagName("trkseg");
+    var sources = segs.length ? segs : [doc];
+    var routes = [];
+    for (var s = 0; s < sources.length; s++) {
+      var nodes = sources[s].getElementsByTagName("trkpt");
+      var coords = [], times = [];
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        var t = n.getElementsByTagName("time")[0];
+        coords.push([+(+n.getAttribute("lon")).toFixed(6), +(+n.getAttribute("lat")).toFixed(6)]);
+        times.push(t ? Date.parse(t.textContent) : null);
+      }
+      if (coords.length < 2) { continue; }
+      /* A 1Hz two-hour walk is 7200 points; localStorage is not the place for that. Even
+         thinning keeps timing resolution well under the GPS error itself. */
+      if (coords.length > 1500) {
+        var keep = Math.ceil(coords.length / 1500), c2 = [], t2 = [];
+        for (var k = 0; k < coords.length; k += keep) { c2.push(coords[k]); t2.push(times[k]); }
+        if (c2[c2.length - 1] !== coords[coords.length - 1]) {
+          c2.push(coords[coords.length - 1]); t2.push(times[times.length - 1]);
+        }
+        coords = c2; times = t2;
+      }
+      routes.push({ coords: coords, times: times });
+    }
+    return routes;
+  }
+
+  /* Where were you at time t, according to any imported trace? */
+  function positionAt(ms) {
+    var best = null;
+    fc.features.forEach(function (f) {
+      var t = f.properties.times;
+      if (!t || !t.length || f.geometry.type !== "LineString") { return; }
+      if (ms < t[0] || ms > t[t.length - 1]) { return; }
+      for (var i = 1; i < t.length; i++) {
+        if (t[i] == null || t[i - 1] == null) { continue; }
+        if (ms <= t[i]) {
+          var span = t[i] - t[i - 1];
+          var r = span > 0 ? (ms - t[i - 1]) / span : 0;
+          var a = f.geometry.coordinates[i - 1], b = f.geometry.coordinates[i];
+          best = {
+            coord: [+(a[0] + (b[0] - a[0]) * r).toFixed(6), +(a[1] + (b[1] - a[1]) * r).toFixed(6)],
+            from: f.properties.id
+          };
+          return;
+        }
+      }
+    });
+    return best;
+  }
 
   /* ---------- Map labels ----------
      Names are derived, not stored, so they live here rather than in the feature. Markers
@@ -1861,6 +2164,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var info = which === "info";
     $("#pane-info").hidden = !info;
     $("#pane-list").hidden = info;
+    /* Export and import act on the archive, so they live with it. Giving the card those
+       129px is what lets it hold weather, tags and audio specs without clipping. */
+    $("#storage").hidden = info;
+    sizePeek();
     $("#tab-info").setAttribute("aria-pressed", String(info));
     $("#tab-list").setAttribute("aria-pressed", String(!info));
   }
@@ -1868,7 +2175,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function renderList() {
     var list = $("#list");
     list.textContent = "";
-    visible().slice().reverse().forEach(function (f) {
+    var groups = walks().reverse();
+    groups.forEach(function (wk) {
+    if (groups.length > 1 || wk.items.length !== visible().length) {
+      var head = document.createElement("li");
+      head.className = "walkhead";
+      head.textContent = walkTitle(wk);
+      list.appendChild(head);
+    }
+    wk.items.slice().reverse().forEach(function (f) {
       var li = document.createElement("li");
       var wrap = document.createElement("div");
       wrap.className = "rowwrap";
@@ -1915,6 +2230,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       li.appendChild(wrap);
       list.appendChild(li);
     });
+    });
     renderStats();
   }
 
@@ -1938,6 +2254,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (f.properties.audio && f.properties.audio.duration_s) {
       tail += " · " + fmtTime(f.properties.audio.duration_s);
     }
+    $("#f-tags").value = (f.properties.tags || []).join(", ");
+    $("#f-sensitive").setAttribute("aria-pressed", String(!!f.properties.sensitive));
+    $("#f-published").setAttribute("aria-pressed", String(!!f.properties.published));
+
     $("#card-icons").hidden = f.properties.kind !== "point";
     if (f.properties.kind === "point") {
       renderIconPicker($("#card-icons"), f.properties.icon || null, function (k) {
@@ -1947,7 +2267,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
     }
 
-    $("#f-meta").innerHTML = "<b>" + head + "</b>" + tail;
+    var extra = "";
+    var wx = fmtWeather(f.properties.weather);
+    if (wx) { extra += "<br>" + wx; }
+    var a = f.properties.audio;
+    if (a && a.sample_rate) {
+      extra += "<br>" + (a.sample_rate / 1000) + " kHz · " +
+        (a.channels === 1 ? "mono" : a.channels === 2 ? "stereo" : a.channels + "ch") +
+        " · peak " + a.peak_dbfs + " dB" +
+        (a.centroid_hz ? " · centroid " + (a.centroid_hz >= 1000
+          ? (a.centroid_hz / 1000).toFixed(1) + " kHz" : a.centroid_hz + " Hz") : "");
+    }
+    $("#f-meta").innerHTML = "<b>" + head + "</b>" + tail + extra;
     sheetLabel();
   }
 
@@ -1965,6 +2296,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var f = feature(selected); if (!f) { return; }
     f.properties.note = this.value; save();
   });
+  $("#f-tags").addEventListener("input", function () {
+    var f = feature(selected); if (!f) { return; }
+    var t = this.value.split(",").map(function (x) { return x.trim(); })
+              .filter(function (x) { return x.length; });
+    if (t.length) { f.properties.tags = t; } else { delete f.properties.tags; }
+    save();
+  });
+  function flagToggle(id, prop) {
+    $(id).addEventListener("click", function () {
+      var f = feature(selected); if (!f) { return; }
+      var on = this.getAttribute("aria-pressed") !== "true";
+      if (on) { f.properties[prop] = true; } else { delete f.properties[prop]; }
+      this.setAttribute("aria-pressed", String(on));
+      commit();
+    });
+  }
+  flagToggle("#f-sensitive", "sensitive");
+  flagToggle("#f-published", "published");
+
   $("#f-delete").addEventListener("click", removeSelected);
   $("#f-zoom").addEventListener("click", function () {
     var f = feature(selected); if (!f) { return; }
@@ -2052,36 +2402,111 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* ---------- Import / export ---------- */
   $("#export").addEventListener("click", function () {
-    var blob = new Blob([JSON.stringify(fc, null, 2)], { type: "application/geo+json" });
+    var out = {
+      type: "FeatureCollection",
+      properties: {
+        generator: "FieldArc",
+        exported_at: new Date().toISOString(),
+        license: LICENSE,
+        note: "Coordinates carry position_source and, for GPS fixes, accuracy_m. " +
+              "Audio is stored separately from this file."
+      },
+      features: fc.features
+    };
+    var blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/geo+json" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "fieldarc-belgrad-" + new Date().toISOString().slice(0, 10) + ".geojson";
     a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    setExportState({ at: new Date().toISOString(), changes: 0 });
   });
   $("#import-btn").addEventListener("click", function () { $("#import").click(); });
+  /* One button, three kinds of file: an archive, a logger trace, or the recordings
+     themselves — which are placed by their own timestamp against any imported trace. */
   $("#import").addEventListener("change", function () {
-    var file = this.files && this.files[0];
-    if (!file) { return; }
-    file.text().then(function (txt) {
-      var incoming = JSON.parse(txt);
-      var feats = (incoming.features || []).filter(function (f) { return f && f.geometry; });
-      feats.forEach(function (f) {
-        f.properties = f.properties || {};
-        if (!f.properties.id) { f.properties.id = uid(); }
-        if (!f.properties.kind) { f.properties.kind = f.geometry.type === "Point" ? "point" : "route"; }
-        fc.features.push(f);
-      });
-      commit();
-      $("#saved").textContent = "Imported " + feats.length + " feature(s).";
-    }).catch(function () {
-      $("#saved").textContent = "That file could not be read as GeoJSON.";
-    });
+    var files = [].slice.call(this.files || []);
     this.value = "";
+    if (!files.length) { return; }
+
+    var geo = files.filter(function (f) { return /\.(geojson|json)$/i.test(f.name); });
+    var gpx = files.filter(function (f) { return /\.gpx$/i.test(f.name); });
+    var snd = files.filter(function (f) {
+      return /^audio\//.test(f.type) || /\.(wav|mp3|m4a|aac|ogg|opus|flac)$/i.test(f.name);
+    });
+    var report = [];
+
+    var chain = Promise.resolve();
+
+    geo.forEach(function (file) {
+      chain = chain.then(function () { return file.text(); }).then(function (txt) {
+        var incoming = JSON.parse(txt);
+        var feats = (incoming.features || []).filter(function (f) { return f && f.geometry; });
+        feats.forEach(function (f) {
+          f.properties = f.properties || {};
+          if (!f.properties.id) { f.properties.id = uid(); }
+          if (!f.properties.kind) { f.properties.kind = f.geometry.type === "Point" ? "point" : "route"; }
+          if (!f.properties.place) { f.properties.place = place ? place.properties.id : DEFAULT_PLACE; }
+          fc.features.push(f);
+        });
+        report.push(feats.length + " feature(s)");
+      });
+    });
+
+    gpx.forEach(function (file) {
+      chain = chain.then(function () { return file.text(); }).then(function (txt) {
+        var routes = parseGPX(txt);
+        routes.forEach(function (r) {
+          fc.features.push({ type: "Feature", properties: {
+            id: uid(), kind: "route", name: "", note: "",
+            place: place ? place.properties.id : DEFAULT_PLACE,
+            created_at: new Date(r.times[0] || Date.now()).toISOString(),
+            position_source: "gpx",
+            length_m: Math.round(lineLength(r.coords)),
+            vertices: r.coords.length,
+            times: r.times
+          }, geometry: { type: "LineString", coordinates: r.coords } });
+        });
+        report.push(routes.length + " trace(s) from " + file.name);
+      });
+    });
+
+    snd.forEach(function (file) {
+      chain = chain.then(function () {
+        var when = file.lastModified;
+        var at = when ? positionAt(when) : null;
+        if (!at) { report.push("no trace covers " + file.name); return; }
+        var f = { type: "Feature", properties: {
+          id: uid(), kind: "point", name: "", note: "",
+          place: place ? place.properties.id : DEFAULT_PLACE,
+          created_at: new Date(when).toISOString(),
+          position_source: "interpolated",   /* matched to a trace, not a fix of its own */
+          matched_to: at.from,
+          has_audio: true,
+          audio: { name: file.name, type: file.type || "audio/*", size: file.size,
+                   added_at: new Date().toISOString(),
+                   recorded_at: new Date(when).toISOString() }
+        }, geometry: { type: "Point", coordinates: at.coord } };
+        fc.features.push(f);
+        return putAudio(f.properties.id, file).then(function () {
+          return analyseAudio(file).then(function (a) {
+            for (var k in a) { f.properties.audio[k] = a[k]; }
+          }).catch(function () { /* stored even if undecodable */ });
+        }).then(function () { report.push("placed " + file.name); });
+      });
+    });
+
+    chain.then(function () {
+      commit();
+      $("#saved").textContent = "Imported: " + (report.join(" · ") || "nothing recognised");
+    }).catch(function (err) {
+      $("#saved").textContent = "Import failed: " + (err.message || err);
+    });
   });
 
   setMode("select");
   renderList();
+  renderSaved();
   sizePeek();
 })();
 </script>
