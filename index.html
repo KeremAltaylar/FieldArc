@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FieldArc — Belgrad Ormanı</title>
 
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#0d1310">
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Newsreader:opsz,wght@6..72,300;6..72,400;6..72,500&family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
@@ -233,7 +237,15 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .cardmeta b { display: block; color: var(--dim); font-weight: 400; }
 
-.actions button[aria-pressed="true"] { color: var(--sunk); background: var(--accent); border-color: var(--accent); }
+.chips { display: flex; gap: var(--s-1); }
+.chips button {
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+  padding: var(--s-1) var(--s-2);
+  background: transparent;
+  color: var(--faint);
+}
+.chips button[aria-pressed="true"] { color: var(--sunk); background: var(--accent); border-color: var(--accent); }
 
 #saved.warn { color: var(--lamp); }
 
@@ -353,7 +365,23 @@ h2 {
    taller row in a list that scrolls anyway. */
 .rowmain { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rowname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listctl { display: flex; gap: var(--s-1); margin-bottom: var(--s-2); }
+.listctl input { flex: 1; min-width: 0; }
+.listctl select {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--track-meta);
+  text-transform: uppercase;
+  color: var(--dim);
+  background: var(--panel);
+  border: 1px solid var(--bdr);
+  border-radius: 2px;
+  padding: var(--s-2);
+}
+
 .walkhead {
+  display: flex; align-items: baseline; gap: var(--s-2);
   margin: var(--s-3) 0 var(--s-1);
   padding: 0 var(--s-3);
   font-family: var(--font-mono);
@@ -365,6 +393,16 @@ h2 {
   padding-bottom: var(--s-1);
 }
 #list li:first-child.walkhead { margin-top: 0; }
+.walkhead span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.walkplay {
+  flex: none;
+  padding: 1px var(--s-2);
+  font-size: 11px;
+  color: var(--accent);
+  background: transparent;
+  border-color: var(--bdr);
+}
+.walkplay:hover { color: var(--sunk); background: var(--accent); }
 
 .rowwhen {
   font-family: var(--font-mono);
@@ -470,6 +508,8 @@ input[type="text"]:focus-visible, textarea:focus-visible {
   background: color-mix(in oklch, var(--lamp) 26%, transparent);
   border-right: 1px solid var(--lamp);
 }
+#rec-spec { flex: none; padding: var(--s-1) var(--s-2); background: transparent; }
+#rec-bar.spec { height: 56px; }
 #rec-time {
   flex: none;
   font-family: var(--font-mono);
@@ -734,6 +774,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     </div>
 
     <div class="section grow" id="pane-list" hidden>
+      <div class="listctl">
+        <input type="text" id="q" placeholder="filter by name, tag or type" aria-label="Filter">
+        <select id="sort" aria-label="Sort">
+          <option value="new">Newest</option>
+          <option value="old">Oldest</option>
+          <option value="bright">Brightest</option>
+          <option value="loud">Loudest</option>
+          <option value="long">Longest</option>
+          <option value="quiet">Quietest</option>
+        </select>
+      </div>
       <ul id="list"></ul>
       <div class="empty" id="empty">
         Nothing recorded yet. Choose <b>Point</b> or <b>Route</b> and click the map —
@@ -759,6 +810,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             <div id="rec-bar" tabindex="0" role="slider" aria-label="Seek"
                  aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><canvas id="rec-wave"></canvas><div id="rec-fill"></div></div>
             <span id="rec-time">0:00 / 0:00</span>
+            <button type="button" id="rec-spec" aria-pressed="false" title="Spectrogram">Spec</button>
           </div>
           <div class="recmeta">
             <span id="rec-name"></span>
@@ -768,12 +820,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       </div>
 
       <p class="cardmeta" id="f-meta"></p>
+      <div class="chips">
+        <button type="button" id="f-sensitive" aria-pressed="false"
+          title="A nest, den or rare species — its position is fuzzed when the archive is published">sensitive</button>
+        <button type="button" id="f-published" aria-pressed="false"
+          title="Include this feature when the archive is published">published</button>
+      </div>
 
       <div class="actions">
-        <button type="button" class="ghost" id="f-sensitive" aria-pressed="false"
-          title="A nest, den or rare species — its position is fuzzed when the archive is published">Sens.</button>
-        <button type="button" class="ghost" id="f-published" aria-pressed="false"
-          title="Include this feature when the archive is published">Pub.</button>
         <button type="button" class="ghost" id="f-zoom">Zoom to</button>
         <button type="button" class="danger" id="f-delete">Delete</button>
       </div>
@@ -786,6 +840,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <button type="button" id="export">Export .geojson</button>
         <button type="button" class="ghost" id="import-btn">Import</button>
       </div>
+      <button type="button" class="ghost" id="offline">Download map</button>
+      <button type="button" class="ghost" id="undo" hidden>Undo delete</button>
       <input type="file" id="import" multiple
              accept=".geojson,.json,.gpx,audio/*,application/geo+json" hidden>
       <p class="hint" id="saved">Saved to this browser.</p>
@@ -812,6 +868,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   var STORE = "fieldarc.v1";
   var PLACE_KEY = "fieldarc.place";
   var EXPORT_KEY = "fieldarc.export";
+  var TRASH_KEY = "fieldarc.trash";
+  var TRASH_DAYS = 30;
   var LICENSE = "CC BY-SA 4.0";
   var DEFAULT_PLACE = "R8845862";      // Belgrad Ormanı
   var CENTER = [28.9800, 41.1850];   // Belgrad Ormanı
@@ -1145,16 +1203,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
         { id: "point-halo", type: "circle", source: "features",
           filter: ["==", ["geometry-type"], "Point"],
-          paint: { "circle-radius": ["case", ["has", "icon"], 17, 12], "circle-color": dark,
-                   "circle-opacity": 0.22, "circle-blur": 0.7 } },
+          paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"],
+                     10, ["case", ["has", "icon"], 8, 6],
+                     13, ["case", ["has", "icon"], 17, 12]],
+                   "circle-color": dark, "circle-opacity": 0.22, "circle-blur": 0.7 } },
         /* Hollow = no recording yet, filled = a recording is attached. Colours invert between
            the two states so both read at full contrast against a green basemap. */
         { id: "point-dot", type: "circle", source: "features",
           filter: ["==", ["geometry-type"], "Point"],
           paint: {
-            "circle-radius": ["case", ["has", "icon"], 11.5, 6.5],
+            "circle-radius": ["interpolate", ["linear"], ["zoom"],
+              10, ["case", ["has", "icon"], 5.5, 3.5],
+              13, ["case", ["has", "icon"], 11.5, 6.5]],
             "circle-color": ["case", ["==", ["get", "has_audio"], true], lamp, dark],
-            "circle-stroke-width": 2.2,
+            "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 10, 1.2, 13, 2.2],
             "circle-stroke-color": ["case", ["==", ["get", "has_audio"], true], dark, ink]
           } },
         { id: "point-sel", type: "circle", source: "features",
@@ -1334,7 +1396,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       layout: {
         "icon-image": ["concat", ["get", "icon"],
           ["case", ["==", ["get", "has_audio"], true], "-dark", "-light"]],
-        "icon-size": 0.62,
+        "icon-size": ["interpolate", ["linear"], ["zoom"], 10, 0.32, 13, 0.62],
         "icon-allow-overlap": true,
         "icon-ignore-placement": true
       }
@@ -1505,15 +1567,54 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     else if (e.key === "3") { setMode("route"); }
   });
 
+  function trash() {
+    try { return JSON.parse(localStorage.getItem(TRASH_KEY)) || []; } catch (e) { return []; }
+  }
+  function setTrash(t) {
+    try { localStorage.setItem(TRASH_KEY, JSON.stringify(t)); } catch (e) { /* ignore */ }
+    renderTrash();
+  }
+  /* Anything older than the window is gone for good, and only then is its audio dropped. */
+  function purgeTrash() {
+    var cut = Date.now() - TRASH_DAYS * 86400000;
+    var keep = [], drop = [];
+    trash().forEach(function (e) {
+      if (new Date(e.deleted_at).getTime() < cut) { drop.push(e); } else { keep.push(e); }
+    });
+    drop.forEach(function (e) { delAudio(e.feature.properties.id); });
+    if (drop.length) { setTrash(keep); } else { renderTrash(); }
+  }
+  function renderTrash() {
+    var n = trash().length;
+    $("#undo").hidden = !n;
+    $("#undo").textContent = "Undo delete (" + n + ")";
+  }
+  function restoreLast() {
+    var t = trash();
+    if (!t.length) { return; }
+    var e = t.pop();
+    fc.features.push(e.feature);
+    setTrash(t);
+    commit();
+    setSelected(e.feature.properties.id, true);
+    toast(label(e.feature) + " restored");
+  }
+
   function deleteFeature(id) {
     if (!id) { return; }
     var f = feature(id);
     var name = f ? label(f) : "Feature";
-    delAudio(id);                  // never orphan a blob in IndexedDB
+    /* The audio blob stays in IndexedDB until the trash window expires, so a restore is
+       a real restore and not just the pin coming back without its recording. */
+    if (f) {
+      var t = trash();
+      t.push({ deleted_at: new Date().toISOString(), feature: f });
+      setTrash(t);
+    }
     fc.features = fc.features.filter(function (x) { return x.properties.id !== id; });
     if (selected === id) { setSelected(null); }
     commit();
-    toast(name + " deleted");
+    toast(name + " deleted — undo in Storage");
   }
   function removeSelected() { deleteFeature(selected); }
 
@@ -1521,7 +1622,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      Point mode pins a fix. Route mode starts a live trace on the first tap and closes it on
      the second. Select mode only centres — Mark must never create something unasked. */
   var GEO = { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 };
-  var watchId = null, track = null;
+  var watchId = null, track = null, wakeLock = null;
+
+  /* A locked screen suspends the page and the trace dies in your pocket. This is the one
+     thing standing between a recorded walk and a lost one. */
+  function keepAwake(on) {
+    if (!("wakeLock" in navigator)) { return; }
+    if (on) {
+      navigator.wakeLock.request("screen").then(function (l) {
+        wakeLock = l;
+        l.addEventListener("release", function () { wakeLock = null; });
+      }).catch(function () { /* denied or unsupported — tracing still works while visible */ });
+    } else if (wakeLock) {
+      wakeLock.release().catch(function () {});
+      wakeLock = null;
+    }
+  }
+  /* Re-acquire after the tab comes back, or the lock is gone for the rest of the walk. */
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && track && !wakeLock) { keepAwake(true); }
+  });
 
   function circlePoly(lon, lat, metres, n) {
     var coords = [], R = 6378137, dpr = 180 / Math.PI;
@@ -1609,6 +1729,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function startTrack() {
     setMarkState("busy");
+    keepAwake(true);
     track = { pts: [], acc: [], started: Date.now(), dist: 0 };
     watchId = navigator.geolocation.watchPosition(function (pos) {
       var c = showHere(pos);
@@ -1630,6 +1751,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function stopTrack() {
+    keepAwake(false);
     if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     var t = track;
     track = null;
@@ -1855,6 +1977,29 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
+  function showSpec(f, blob) {
+    $("#rec-bar").classList.add("spec");
+    spectrogram(blob, f.properties.id)
+      .then(drawSpectrogram)
+      .catch(function () {
+        $("#rec-bar").classList.remove("spec");
+        $("#saved").textContent = "That file could not be decoded for a spectrogram.";
+      });
+  }
+
+  $("#rec-spec").addEventListener("click", function () {
+    specMode = !specMode;
+    this.setAttribute("aria-pressed", String(specMode));
+    if (!specMode) { $("#rec-bar").classList.remove("spec"); }
+    var f = feature(selected);
+    if (!f || !f.properties.has_audio) { return; }
+    getAudio(f.properties.id).then(function (blob) {
+      if (!blob) { return; }
+      if (specMode) { showSpec(f, blob); }
+      else { drawWave((f.properties.audio || {}).peaks); }
+    });
+  });
+
   function clearPlayer() {
     audioEl.pause();
     if (audioURL) { URL.revokeObjectURL(audioURL); audioURL = null; }
@@ -1877,7 +2022,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var a = f.properties.audio || {};
       $("#rec-name").textContent = (a.name || "recording") + " · " +
         Math.round((a.size || blob.size) / 1024) + " KB";
-      drawWave(a.peaks);
+      if (specMode) { showSpec(f, blob); } else { drawWave(a.peaks); }
     }).catch(function (err) {
       $("#saved").textContent = "Could not read audio: " + err.message;
     });
@@ -1976,8 +2121,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      ever needed, they can be stored then. */
   var WALK_GAP_MS = 2 * 60 * 60 * 1000;
 
-  function walks() {
-    var list = visible().slice().sort(function (a, b) {
+  function walksFrom(src) {
+    var list = src.slice().sort(function (a, b) {
       return new Date(a.properties.created_at) - new Date(b.properties.created_at);
     });
     var out = [], cur = null;
@@ -1988,6 +2133,36 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       cur.items.push(f);
     });
     return out;
+  }
+  function walks() { return walksFrom(visible()); }
+
+  /* Date order keeps the walk headers. Sorting by sound deliberately drops them — a list
+     ordered by brightness is not a sequence of walks and should not pretend to be. */
+  function listGroups() {
+    var qEl = $("#q"), sEl = $("#sort");
+    var q = qEl ? qEl.value.trim().toLowerCase() : "";
+    var sort = sEl ? sEl.value : "new";
+    var items = visible().filter(function (f) {
+      if (!q) { return true; }
+      var p = f.properties;
+      return [label(f), p.note || "", p.icon || "", (p.tags || []).join(" ")]
+        .join(" ").toLowerCase().indexOf(q) !== -1;
+    });
+    if (sort === "new" || sort === "old") {
+      var ws = walksFrom(items);
+      if (sort === "new") { ws.reverse(); ws.forEach(function (w) { w.items.reverse(); }); }
+      ws.forEach(function (w) { w.title = walkTitle(w); });
+      return ws;
+    }
+    var a = function (f) { return f.properties.audio || {}; };
+    var key = {
+      bright: function (f) { return a(f).centroid_hz != null ? a(f).centroid_hz : -1; },
+      loud:   function (f) { return a(f).peak_dbfs != null ? a(f).peak_dbfs : -999; },
+      long:   function (f) { return a(f).duration_s || (f.properties.length_m || 0) / 100; },
+      quiet:  function (f) { return a(f).rms_dbfs != null ? -a(f).rms_dbfs : -999; }
+    }[sort];
+    items.sort(function (x, y) { return key(y) - key(x); });
+    return [{ items: items, title: null }];
   }
 
   function walkTitle(w) {
@@ -2113,6 +2288,120 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   }
 
+  /* ---------- Walk playback ----------
+     A tour, not a simulation: it steps through a walk in the order you made it, flying to
+     each feature and playing whatever you recorded there. The point is to hear whether the
+     archive holds what the artwork will need, long before the artwork exists. */
+  var tour = null, tourAudio = new Audio();
+
+  function tourStop() {
+    if (tour && tour.timer) { clearTimeout(tour.timer); }
+    if (tour && tour.url) { URL.revokeObjectURL(tour.url); }
+    tourAudio.pause();
+    tourAudio.removeAttribute("src");
+    tour = null;
+    renderList();
+  }
+
+  function tourStep() {
+    if (!tour) { return; }
+    if (tour.i >= tour.items.length) { toast("Walk finished"); tourStop(); return; }
+    var f = tour.items[tour.i++];
+    setSelected(f.properties.id, false);
+    map.easeTo({ center: labelAnchor(f), zoom: Math.max(map.getZoom(), 14), duration: 900 });
+    if (!f.properties.has_audio) {
+      tour.timer = setTimeout(tourStep, 1400);
+      return;
+    }
+    getAudio(f.properties.id).then(function (blob) {
+      if (!tour) { return; }
+      if (!blob) { tour.timer = setTimeout(tourStep, 800); return; }
+      if (tour.url) { URL.revokeObjectURL(tour.url); }
+      tour.url = URL.createObjectURL(blob);
+      tourAudio.src = tour.url;
+      tourAudio.play().catch(function () {
+        /* Autoplay refused — keep the tour moving rather than hanging on it. */
+        if (tour) { tour.timer = setTimeout(tourStep, 1200); }
+      });
+    });
+  }
+  tourAudio.addEventListener("ended", function () {
+    if (tour) { tour.timer = setTimeout(tourStep, 400); }
+  });
+
+  function playWalk(wk) {
+    var items = wk.items.slice().sort(function (a, b) {
+      return new Date(a.properties.created_at) - new Date(b.properties.created_at);
+    });
+    if (!items.length) { return; }
+    tourStop();
+    tour = { items: items, i: 0, key: wk.start };
+    renderList();
+    tourStep();
+  }
+
+  /* ---------- Spectrogram ----------
+     Computed on demand and never stored: a decode costs a second, a stored spectrogram
+     costs kilobytes per recording forever. */
+  var specMode = false, specCache = {};
+
+  function spectrogram(blob, id) {
+    if (specCache[id]) { return Promise.resolve(specCache[id]); }
+    return blob.arrayBuffer().then(function (buf) {
+      var Ctx = window.AudioContext || window.webkitAudioContext, ctx = new Ctx();
+      return ctx.decodeAudioData(buf).then(function (ab) {
+        var ch = ab.getChannelData(0), n = ch.length;
+        var N = 1024, COLS = 220, ROWS = 64, out = [];
+        for (var c = 0; c < COLS; c++) {
+          var off = Math.floor(c * Math.max(0, n - N) / (COLS - 1));
+          var re = new Float64Array(N), im = new Float64Array(N), i;
+          for (i = 0; i < N; i++) {
+            re[i] = ch[off + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)));
+          }
+          fft(re, im);
+          var col = [];
+          for (var r = 0; r < ROWS; r++) {
+            /* Log frequency: linear rows would spend most of the picture above 10 kHz,
+               where a forest has almost nothing. */
+            var f0 = Math.pow(N / 2, r / ROWS), f1 = Math.pow(N / 2, (r + 1) / ROWS);
+            var a = Math.max(1, Math.floor(f0)), b = Math.max(a + 1, Math.floor(f1)), m = 0;
+            for (i = a; i < b && i < N / 2; i++) {
+              var mag = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+              if (mag > m) { m = mag; }
+            }
+            col.push(m);
+          }
+          out.push(col);
+        }
+        try { ctx.close(); } catch (e) { /* ignore */ }
+        var peak = 0;
+        out.forEach(function (col) { col.forEach(function (v) { if (v > peak) { peak = v; } }); });
+        specCache[id] = { cols: out, peak: peak || 1 };
+        return specCache[id];
+      });
+    });
+  }
+
+  function drawSpectrogram(data) {
+    var bar = $("#rec-bar"), c = $("#rec-wave");
+    var w = bar.clientWidth || 200, h = bar.clientHeight || 56, r = window.devicePixelRatio || 1;
+    c.width = w * r; c.height = h * r;
+    var ctx = c.getContext("2d");
+    ctx.setTransform(r, 0, 0, r, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var cols = data.cols, rows = cols[0].length;
+    for (var x = 0; x < w; x++) {
+      var col = cols[Math.floor(x / w * cols.length)];
+      for (var y = 0; y < rows; y++) {
+        var v = col[rows - 1 - y] / data.peak;
+        v = v > 0 ? Math.max(0, (20 * Math.log10(v) + 70) / 70) : 0;   /* 70 dB of range */
+        if (v <= 0.02) { continue; }
+        ctx.fillStyle = "rgba(186,230,177," + v.toFixed(3) + ")";
+        ctx.fillRect(x, y * h / rows, 1, Math.ceil(h / rows));
+      }
+    }
+  }
+
   /* ---------- Rendering ---------- */
   function renderStats() {
     var vis = visible(), pts = 0, rts = 0, dist = 0, rec = 0;
@@ -2175,15 +2464,34 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function renderList() {
     var list = $("#list");
     list.textContent = "";
-    var groups = walks().reverse();
+    var groups = listGroups();
+    if (!groups.length || !groups[0].items.length) {
+      var none = document.createElement("li");
+      none.className = "placenone";
+      none.textContent = "Nothing matches that filter.";
+      list.appendChild(none);
+    }
     groups.forEach(function (wk) {
-    if (groups.length > 1 || wk.items.length !== visible().length) {
+    if (wk.title) {
       var head = document.createElement("li");
       head.className = "walkhead";
-      head.textContent = walkTitle(wk);
+      var ht = document.createElement("span");
+      ht.textContent = wk.title;
+      var play = document.createElement("button");
+      play.type = "button";
+      play.className = "walkplay";
+      var running = tour && tour.key === wk.start;
+      play.textContent = running ? "■" : "▶";
+      play.setAttribute("aria-label", running ? "Stop walk" : "Play walk");
+      play.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        if (tour && tour.key === wk.start) { tourStop(); } else { playWalk(wk); }
+      });
+      head.appendChild(ht);
+      head.appendChild(play);
       list.appendChild(head);
     }
-    wk.items.slice().reverse().forEach(function (f) {
+    wk.items.forEach(function (f) {
       var li = document.createElement("li");
       var wrap = document.createElement("div");
       wrap.className = "rowwrap";
@@ -2369,6 +2677,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   });
   addEventListener("resize", sizePeek);
 
+  $("#q").addEventListener("input", renderList);
+  $("#sort").addEventListener("change", renderList);
+
   $("#tab-info").addEventListener("click", function () { showPane("info"); });
   $("#tab-list").addEventListener("click", function () { showPane("list"); });
 
@@ -2421,6 +2732,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
     setExportState({ at: new Date().toISOString(), changes: 0 });
   });
+  $("#undo").addEventListener("click", restoreLast);
   $("#import-btn").addEventListener("click", function () { $("#import").click(); });
   /* One button, three kinds of file: an archive, a logger trace, or the recordings
      themselves — which are placed by their own timestamp against any imported trace. */
@@ -2504,9 +2816,80 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   });
 
+  /* ---------- Offline ---------- */
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js").catch(function () { /* file:// or blocked */ });
+  }
+
+  function tileXY(lon, lat, z) {
+    var n = Math.pow(2, z), r = lat * Math.PI / 180;
+    return [Math.floor((lon + 180) / 360 * n),
+            Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n)];
+  }
+
+  /* Only the basemap you are actually looking at — caching all three would triple the
+     download for layers you may never open in the field. */
+  function tileURLs(bbox, zmin, zmax) {
+    var active = "osm";
+    document.querySelectorAll("[data-base]").forEach(function (b) {
+      if (b.getAttribute("aria-pressed") === "true") { active = b.dataset.base; }
+    });
+    var tpl = RASTER[active].tiles[0], urls = [];
+    for (var z = zmin; z <= zmax; z++) {
+      var a = tileXY(bbox[0], bbox[3], z), b = tileXY(bbox[2], bbox[1], z);
+      for (var x = a[0]; x <= b[0]; x++) {
+        for (var y = a[1]; y <= b[1]; y++) {
+          urls.push(tpl.replace("{z}", z).replace("{x}", x).replace("{y}", y));
+        }
+      }
+    }
+    return urls;
+  }
+
+  $("#offline").addEventListener("click", function () {
+    if (!place || !window.caches) { toast("Offline storage unavailable"); return; }
+    var btn = this, bb = place.properties.bbox;
+    var zmin = 11, zmax = 15, urls = tileURLs(bb, zmin, zmax);
+    while (urls.length > 900 && zmax > zmin) { zmax--; urls = tileURLs(bb, zmin, zmax); }
+    btn.disabled = true;
+    var done = 0, failed = 0;
+    caches.open("fieldarc-tiles-v1").then(function (c) {
+      /* Six at a time: enough to be quick, not enough to get throttled by a tile server. */
+      var i = 0;
+      function next() {
+        if (i >= urls.length) { return Promise.resolve(); }
+        var u = urls[i++];
+        return c.match(u).then(function (hit) {
+          if (hit) { return null; }
+          return fetch(u, { mode: "cors" }).then(function (r) {
+            if (r && r.status === 200) { return c.put(u, r); }
+            failed++;
+          }).catch(function () { failed++; });
+        }).then(function () {
+          done++;
+          if (done % 15 === 0 || done === urls.length) {
+            btn.textContent = "Saving " + done + "/" + urls.length;
+          }
+          return next();
+        });
+      }
+      var lanes = [];
+      for (var k = 0; k < 6; k++) { lanes.push(next()); }
+      return Promise.all(lanes);
+    }).then(function () {
+      btn.disabled = false;
+      btn.textContent = "Download map";
+      toast(place.properties.name + " saved to z" + zmax +
+            (failed ? " · " + failed + " failed" : ""));
+      $("#saved").textContent = urls.length + " tiles cached for " + place.properties.name +
+        " — the map now works offline.";
+    });
+  });
+
   setMode("select");
   renderList();
   renderSaved();
+  purgeTrash();
   sizePeek();
 })();
 </script>
