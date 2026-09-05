@@ -803,7 +803,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <div class="rec">
         <span class="reclabel">Recording</span>
         <button type="button" id="rec-add">Attach audio…</button>
-        <input type="file" id="rec-file" accept="audio/*" hidden>
+        <input type="file" id="rec-file" accept="audio/*,.wav,.bwf,.aif,.aiff,.caf,.w64,.wv" hidden>
         <div id="player" hidden>
           <div class="transport">
             <button type="button" id="rec-play" aria-label="Play">►</button>
@@ -843,7 +843,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <button type="button" class="ghost" id="offline">Download map</button>
       <button type="button" class="ghost" id="undo" hidden>Undo delete</button>
       <input type="file" id="import" multiple
-             accept=".geojson,.json,.gpx,audio/*,application/geo+json" hidden>
+             accept=".geojson,.json,.gpx,audio/*,.wav,.bwf,.aif,.aiff,.caf,.w64,.wv,application/geo+json" hidden>
       <p class="hint" id="saved">Saved to this browser.</p>
     </div>
   </div>
@@ -2097,8 +2097,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         $("#rec-add").textContent = "Attach audio…";
         if (selected === f.properties.id) { renderDetail(); }
       }).catch(function () {
+        f.properties.audio.undecodable = true;
+        save();
         $("#rec-add").textContent = "Attach audio…";
-        $("#saved").textContent = "Audio stored, but it could not be decoded for analysis.";
+        $("#saved").textContent = "Stored, but this browser cannot decode " +
+          (file.name.split(".").pop() || "that format").toUpperCase() +
+          " — it is kept intact and exports fine, with no waveform or descriptors.";
       });
     }).catch(function (err) {
       $("#saved").textContent = "Could not store audio: " + err.message;
@@ -2744,7 +2748,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var geo = files.filter(function (f) { return /\.(geojson|json)$/i.test(f.name); });
     var gpx = files.filter(function (f) { return /\.gpx$/i.test(f.name); });
     var snd = files.filter(function (f) {
-      return /^audio\//.test(f.type) || /\.(wav|mp3|m4a|aac|ogg|opus|flac)$/i.test(f.name);
+      /* Recognise a wide set on purpose: a recorder's file being silently skipped on import
+         is far worse than one that stores but cannot be decoded here. */
+      return /^audio\//.test(f.type) ||
+        /\.(wav|bwf|mp3|m4a|m4b|mp4|aac|ogg|oga|opus|flac|aif|aiff|aifc|caf|wv|w64)$/i.test(f.name);
     });
     var report = [];
 
@@ -2803,7 +2810,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         return putAudio(f.properties.id, file).then(function () {
           return analyseAudio(file).then(function (a) {
             for (var k in a) { f.properties.audio[k] = a[k]; }
-          }).catch(function () { /* stored even if undecodable */ });
+          }).catch(function () {
+          f.properties.audio.undecodable = true;   /* kept, but no descriptors here */
+          report.push(file.name + " stored (not decodable in this browser)");
+        });
         }).then(function () { report.push("placed " + file.name); });
       });
     });
