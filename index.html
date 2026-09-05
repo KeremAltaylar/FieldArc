@@ -340,7 +340,20 @@ h2 {
   border-color: var(--accent);
   color: var(--ink);
 }
-.row .glyph { color: var(--accent); font-family: var(--font-mono); }
+.row { align-items: flex-start; }
+.row .glyph { color: var(--accent); font-family: var(--font-mono); padding-top: 1px; }
+/* Coordinates and time stack rather than share a line: at 182px of usable row width a
+   single line clipped all sixteen rows by 46px, and truncating either is worse than a
+   taller row in a list that scrolls anyway. */
+.rowmain { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rowname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rowwhen {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .row .meta {
   margin-left: auto;
   font-family: var(--font-mono);
@@ -845,6 +858,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     for (var i = 1; i < coords.length; i++) { t += segment(coords[i - 1], coords[i]); }
     return t;
   }
+  var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function fmtWhen(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) { return ""; }
+    var hh = ("0" + d.getHours()).slice(-2), mm = ("0" + d.getMinutes()).slice(-2);
+    return d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear() + " " + hh + ":" + mm;
+  }
+
   function fmtLen(m) {
     return m >= 1000 ? (m / 1000).toFixed(2) + " km" : Math.round(m) + " m";
   }
@@ -1859,11 +1880,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var glyph = (isPt && f.properties.icon && ICONS[f.properties.icon])
         ? iconSVG(f.properties.icon, 15)
         : (isPt ? (f.properties.has_audio ? "◆" : "◇") : "╱");
+      var where = isPt
+        ? f.geometry.coordinates[1].toFixed(4) + ", " + f.geometry.coordinates[0].toFixed(4)
+        : fmtLen(f.properties.length_m || 0) + " · " +
+          (f.properties.vertices || f.geometry.coordinates.length) + " pts";
+      var dur = (f.properties.audio && f.properties.audio.duration_s)
+        ? fmtTime(f.properties.audio.duration_s) : "";
       b.innerHTML = '<span class="glyph">' + glyph + "</span>" +
-                    "<span>" + label(f).replace(/</g, "&lt;") + "</span>" +
-                    '<span class="meta">' +
-                    (isPt ? f.geometry.coordinates[1].toFixed(4) : fmtLen(f.properties.length_m || 0)) +
-                    "</span>";
+                    '<span class="rowmain">' +
+                      '<span class="rowname">' + label(f).replace(/</g, "&lt;") + "</span>" +
+                      '<span class="rowwhen">' + where + "</span>" +
+                      '<span class="rowwhen">' + fmtWhen(f.properties.created_at) + "</span>" +
+                    "</span>" +
+                    '<span class="meta">' + dur + "</span>";
       b.addEventListener("click", function () { setSelected(f.properties.id, true); });
 
       /* Two taps to delete. One tap on a phone is a mis-tap waiting to happen. */
@@ -1905,8 +1934,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       : fmtLen(f.properties.length_m || 0) + " · " +
         (f.properties.vertices || f.geometry.coordinates.length) + " vertices";
 
-    var tail = f.properties.position_source + " · " +
-      new Date(f.properties.created_at).toLocaleString();
+    var tail = f.properties.position_source + " · " + fmtWhen(f.properties.created_at);
     if (f.properties.audio && f.properties.audio.duration_s) {
       tail += " · " + fmtTime(f.properties.audio.duration_s);
     }
