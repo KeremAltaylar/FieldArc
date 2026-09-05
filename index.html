@@ -902,6 +902,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <button type="button" data-vmode="spec" aria-pressed="true">Spectrogram</button>
         <button type="button" data-vmode="wave" aria-pressed="false">Waveform</button>
       </div>
+      <div class="vmodes" role="group" aria-label="Dynamic range">
+        <button type="button" data-vrange="50" aria-pressed="false">50 dB</button>
+        <button type="button" data-vrange="70" aria-pressed="true">70 dB</button>
+        <button type="button" data-vrange="95" aria-pressed="false">95 dB</button>
+      </div>
       <span id="v-name"></span>
       <button type="button" id="v-close" aria-label="Close">Close</button>
     </div>
@@ -2059,7 +2064,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      The strip in the card is a thumbnail. This is where you actually look at a recording:
      a spectrogram computed at nearly three times the resolution, with a playhead you can
      scrub, and the same transport as the card so playback state is shared. */
-  var viewer = { open: false, mode: "spec", base: null, peaks: null, spec: null };
+  var viewer = { open: false, mode: "spec", base: null, peaks: null, spec: null, range: 70 };
 
   function viewerSize() {
     var c = $("#v-canvas");
@@ -2072,7 +2077,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     c.width = s.w * s.r; c.height = s.h * s.r;
     ctx.setTransform(s.r, 0, 0, s.r, 0, 0);
     ctx.clearRect(0, 0, s.w, s.h);
-    if (viewer.mode === "spec" && viewer.spec) { paintSpectro(ctx, viewer.spec, s.w, s.h); }
+    if (viewer.mode === "spec" && viewer.spec) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      paintSpectro(c, viewer.spec, viewer.range);
+      ctx.setTransform(s.r, 0, 0, s.r, 0, 0);
+      drawSpecAxes(ctx, viewer.spec, s.w, s.h);
+    }
     else if (viewer.mode === "wave") { paintWave(ctx, viewer.peaks, s.w, s.h); }
     else {
       ctx.fillStyle = "#7d8c78";
@@ -2119,7 +2129,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     setViewerMode(specMode ? "spec" : "wave");
     getAudio(f.properties.id).then(function (blob) {
       if (!blob || !viewer.open) { return; }
-      return spectrogram(blob, f.properties.id, 600, 128).then(function (sp) {
+      return spectrogram(blob, f.properties.id, 900, 200).then(function (sp) {
         viewer.spec = sp;
         viewerRender();
       });
@@ -2133,6 +2143,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     viewer.base = null;
     $("#viewer").hidden = true;
   }
+
+  document.querySelectorAll("[data-vrange]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      viewer.range = +b.dataset.vrange;
+      document.querySelectorAll("[data-vrange]").forEach(function (o) {
+        o.setAttribute("aria-pressed", String(o === b));
+      });
+      viewerRender();
+    });
+  });
 
   $("#v-close").addEventListener("click", closeViewer);
   document.querySelectorAll("[data-vmode]").forEach(function (b) {
@@ -2522,49 +2542,154 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return blob.arrayBuffer().then(function (buf) {
       var Ctx = window.AudioContext || window.webkitAudioContext, ctx = new Ctx();
       return ctx.decodeAudioData(buf).then(function (ab) {
-        var ch = ab.getChannelData(0), n = ch.length;
-        var N = 1024, out = [];
-        for (var c = 0; c < COLS; c++) {
-          var off = Math.floor(c * Math.max(0, n - N) / (COLS - 1));
-          var re = new Float64Array(N), im = new Float64Array(N), i;
-          for (i = 0; i < N; i++) {
-            re[i] = ch[off + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)));
-          }
+        var n = ab.length, sr = ab.sampleRate, i, r, c;
+
+        /* Mix every channel down. Reading channel 0 alone loses anything that happened only
+           on the right — for a stereo field recording that is half the scene. */
+        var ch = new Float32Array(n);
+        for (c = 0; c < ab.numberOfChannels; c++) {
+          var src = ab.getChannelData(c);
+          for (i = 0; i < n; i++) { ch[i] += src[i]; }
+        }
+        if (ab.numberOfChannels > 1) {
+          for (i = 0; i < n; i++) { ch[i] /= ab.numberOfChannels; }
+        }
+
+        /* 2048 at 48k is a 23 Hz bin instead of 47 — the difference between two low
+           harmonics being one smear and two lines. */
+        var N = 2048, hop = N / 2;
+        /* Every window across the whole file, so nothing falls between columns. Only a very
+           long recording widens the hop, and it says so in the result. */
+        var frames = Math.max(1, Math.floor((n - N) / hop) + 1);
+        var CAP = 20000;
+        if (frames > CAP) { hop = Math.ceil((n - N) / (CAP - 1)); frames = CAP; }
+
+        /* Log frequency bands, precomputed once. */
+        var fMin = 30, fMax = sr / 2, lo = [], hi = [];
+        for (r = 0; r < ROWS; r++) {
+          var f0 = fMin * Math.pow(fMax / fMin, r / ROWS);
+          var f1 = fMin * Math.pow(fMax / fMin, (r + 1) / ROWS);
+          var b0 = Math.max(1, Math.round(f0 * N / sr));
+          var b1 = Math.max(b0 + 1, Math.round(f1 * N / sr));
+          lo.push(b0); hi.push(Math.min(N / 2, b1));
+        }
+
+        var out = [];
+        for (c = 0; c < COLS; c++) { out.push(new Float32Array(ROWS)); }
+
+        var re = new Float64Array(N), im = new Float64Array(N);
+        var win = new Float64Array(N);
+        for (i = 0; i < N; i++) { win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)); }
+
+        for (var fme = 0; fme < frames; fme++) {
+          var off = fme * hop;
+          if (off + N > n) { break; }
+          for (i = 0; i < N; i++) { re[i] = ch[off + i] * win[i]; im[i] = 0; }
           fft(re, im);
-          var col = [];
-          for (var r = 0; r < ROWS; r++) {
-            /* Log frequency: linear rows would spend most of the picture above 10 kHz,
-               where a forest has almost nothing. */
-            var f0 = Math.pow(N / 2, r / ROWS), f1 = Math.pow(N / 2, (r + 1) / ROWS);
-            var a = Math.max(1, Math.floor(f0)), b = Math.max(a + 1, Math.floor(f1)), m = 0;
-            for (i = a; i < b && i < N / 2; i++) {
-              var mag = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+          var col = out[Math.min(COLS - 1, Math.floor(off / n * COLS))];
+          for (r = 0; r < ROWS; r++) {
+            var m = 0;
+            for (i = lo[r]; i < hi[r]; i++) {
+              var mag = re[i] * re[i] + im[i] * im[i];   /* compare squared, sqrt once */
               if (mag > m) { m = mag; }
             }
-            col.push(m);
+            m = Math.sqrt(m);
+            if (m > col[r]) { col[r] = m; }
           }
-          out.push(col);
         }
+
         try { ctx.close(); } catch (e) { /* ignore */ }
         var peak = 0;
-        out.forEach(function (col) { col.forEach(function (v) { if (v > peak) { peak = v; } }); });
-        specCache[key] = { cols: out, peak: peak || 1 };
+        out.forEach(function (cl) {
+          for (var k = 0; k < cl.length; k++) { if (cl[k] > peak) { peak = cl[k]; } }
+        });
+        specCache[key] = {
+          cols: out, peak: peak || 1, rows: ROWS,
+          fMin: fMin, fMax: fMax, duration: ab.duration,
+          frames: frames, hopMs: +(hop / sr * 1000).toFixed(1)
+        };
         return specCache[key];
       });
     });
   }
 
-  function paintSpectro(ctx, data, w, h) {
-    var cols = data.cols, rows = cols[0].length;
-    for (var x = 0; x < w; x++) {
-      var col = cols[Math.floor(x / w * cols.length)];
-      for (var y = 0; y < rows; y++) {
-        var v = col[rows - 1 - y] / data.peak;
-        v = v > 0 ? Math.max(0, (20 * Math.log10(v) + 70) / 70) : 0;   /* 70 dB of range */
-        if (v <= 0.02) { continue; }
-        ctx.fillStyle = "rgba(186,230,177," + v.toFixed(3) + ")";
-        ctx.fillRect(x, y * h / rows, 1, Math.ceil(h / rows));
+  /* A single-hue alpha ramp wasted most of the visible range. Six stops from near-black
+     through sage to white use the whole picture, and ImageData writes it a pixel at a time
+     instead of a fillRect per cell. */
+  var SPEC_RAMP = [
+    [0.00,  13,  19,  16,   0],
+    [0.12,  22,  46,  38, 170],
+    [0.35,  74, 120,  90, 240],
+    [0.60, 155, 190, 150, 255],
+    [0.82, 186, 230, 177, 255],
+    [1.00, 240, 255, 235, 255]
+  ];
+  function specColour(t, o) {
+    for (var i = 1; i < SPEC_RAMP.length; i++) {
+      var b = SPEC_RAMP[i];
+      if (t <= b[0] || i === SPEC_RAMP.length - 1) {
+        var a = SPEC_RAMP[i - 1];
+        var k = (t - a[0]) / (b[0] - a[0] || 1);
+        if (k < 0) { k = 0; } else if (k > 1) { k = 1; }
+        o[0] = a[1] + (b[1] - a[1]) * k;
+        o[1] = a[2] + (b[2] - a[2]) * k;
+        o[2] = a[3] + (b[3] - a[3]) * k;
+        o[3] = a[4] + (b[4] - a[4]) * k;
+        return;
       }
+    }
+  }
+
+  function paintSpectro(c, data, rangeDb) {
+    var ctx = c.getContext('2d');
+    var W = c.width, H = c.height;
+    if (!W || !H) { return; }
+    var img = ctx.createImageData(W, H), px = img.data;
+    var cols = data.cols, rows = data.rows, peak = data.peak, R = rangeDb || 70;
+    var rgba = [0, 0, 0, 0];
+    for (var x = 0; x < W; x++) {
+      var col = cols[Math.min(cols.length - 1, Math.floor(x / W * cols.length))];
+      for (var y = 0; y < H; y++) {
+        var band = rows - 1 - Math.min(rows - 1, Math.floor(y / H * rows));
+        var v = col[band] / peak;
+        var t = v > 0 ? (20 * Math.log10(v) + R) / R : 0;
+        if (t <= 0) { continue; }
+        if (t > 1) { t = 1; }
+        specColour(t, rgba);
+        var o = (y * W + x) * 4;
+        px[o] = rgba[0]; px[o + 1] = rgba[1]; px[o + 2] = rgba[2]; px[o + 3] = rgba[3];
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  /* Without a scale you cannot say "that call is at 4 kHz", which is most of why you
+     would look at a spectrogram at all. */
+  function drawSpecAxes(ctx, data, w, h) {
+    var fr = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+    var span = Math.log(data.fMax / data.fMin);
+    ctx.font = '10px "Courier Prime", monospace';
+    ctx.textBaseline = 'bottom';
+    fr.forEach(function (f) {
+      if (f < data.fMin || f > data.fMax) { return; }
+      var y = h * (1 - Math.log(f / data.fMin) / span);
+      ctx.strokeStyle = 'rgba(226,231,228,0.14)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      ctx.fillStyle = 'rgba(226,231,228,0.55)';
+      ctx.fillText(f >= 1000 ? (f / 1000) + 'k' : f + '', 6, y - 3);
+    });
+    var d = data.duration || 0;
+    if (!d) { return; }
+    var steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+    var step = steps[steps.length - 1];
+    for (var i = 0; i < steps.length; i++) { if (d / steps[i] <= 8) { step = steps[i]; break; } }
+    for (var t = step; t < d; t += step) {
+      var x = t / d * w;
+      ctx.strokeStyle = 'rgba(226,231,228,0.12)';
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      ctx.fillStyle = 'rgba(226,231,228,0.5)';
+      ctx.fillText(fmtTime(t), x + 4, h - 4);
     }
   }
 
@@ -2582,10 +2707,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var bar = $("#rec-bar"), c = $("#rec-wave");
     var w = bar.clientWidth || 200, h = bar.clientHeight || 56, r = window.devicePixelRatio || 1;
     c.width = w * r; c.height = h * r;
-    var ctx = c.getContext("2d");
-    ctx.setTransform(r, 0, 0, r, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-    paintSpectro(ctx, data, w, h);
+    c.getContext("2d").setTransform(1, 0, 0, 1, 0, 0);
+    paintSpectro(c, data, viewer.range);
   }
 
   /* ---------- Rendering ---------- */
