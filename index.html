@@ -621,6 +621,52 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   max-width: 88%; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* ---- Full-screen analyser ---- */
+#viewer {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; flex-direction: column;
+  background: var(--sunk);
+}
+.viewerbar {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  background: var(--ground);
+  border-bottom: 1px solid var(--bdr);
+}
+#v-play {
+  flex: none; width: 2.4rem; height: 2.4rem;
+  display: grid; place-items: center; padding: 0;
+  color: var(--accent); background: var(--sunk);
+}
+#v-play:hover { color: var(--sunk); background: var(--lamp); border-color: var(--lamp); }
+#v-time {
+  flex: none;
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums; color: var(--dim);
+}
+.vmodes { display: flex; gap: var(--s-1); }
+#v-name {
+  flex: 1; min-width: 0;
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  color: var(--faint); text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#v-close { flex: none; }
+#v-canvas { flex: 1; width: 100%; min-height: 0; cursor: crosshair; display: block; }
+#v-hint {
+  margin: 0; padding: var(--s-2) var(--s-4) var(--s-3);
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: var(--track-meta); text-transform: uppercase;
+  color: var(--faint);
+}
+#v-hint kbd { border: 1px solid var(--bdr); border-radius: 2px; padding: 0 var(--s-1); }
+
+@media (max-width: 900px), (max-height: 620px) {
+  .viewerbar { flex-wrap: wrap; gap: var(--s-2); padding: var(--s-2) var(--s-3); }
+  #v-name { display: none; }          /* the card already names it */
+  #v-hint { display: none; }
+}
+
 #loading {
   position: absolute; inset: 0; z-index: 3;
   display: grid; place-items: center;
@@ -848,7 +894,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     </div>
   </div>
 
-  <div id="map">
+  <div id="viewer" hidden>
+    <div class="viewerbar">
+      <button type="button" id="v-play" aria-label="Play">►</button>
+      <span id="v-time">0:00 / 0:00</span>
+      <div class="vmodes" role="group" aria-label="View">
+        <button type="button" data-vmode="spec" aria-pressed="true">Spectrogram</button>
+        <button type="button" data-vmode="wave" aria-pressed="false">Waveform</button>
+      </div>
+      <span id="v-name"></span>
+      <button type="button" id="v-close" aria-label="Close">Close</button>
+    </div>
+    <canvas id="v-canvas"></canvas>
+    <p id="v-hint">Click to seek · <kbd>Esc</kbd> to close</p>
+  </div>
+
+  <div id="map"
     <div id="loading">Loading basemap…</div>
     <p id="toast" hidden></p>
     <div id="readout"><span><b>lat</b> —</span><span><b>lon</b> —</span></div>
@@ -1968,13 +2029,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var ctx = c.getContext("2d");
     ctx.setTransform(r, 0, 0, r, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    if (!peaks || !peaks.length) { return; }
-    ctx.fillStyle = accent;
-    for (var i = 0; i < w; i++) {
-      var p = peaks[Math.floor(i / w * peaks.length)] || 0;
-      var bh = Math.max(1, p * (h - 4));
-      ctx.fillRect(i, (h - bh) / 2, 1, bh);
-    }
+    paintWave(ctx, peaks, w, h);
   }
 
   function showSpec(f, blob) {
@@ -2000,7 +2055,107 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   });
 
+  /* ---------- Full-screen analyser ----------
+     The strip in the card is a thumbnail. This is where you actually look at a recording:
+     a spectrogram computed at nearly three times the resolution, with a playhead you can
+     scrub, and the same transport as the card so playback state is shared. */
+  var viewer = { open: false, mode: "spec", base: null, peaks: null, spec: null };
+
+  function viewerSize() {
+    var c = $("#v-canvas");
+    return { w: c.clientWidth || 1, h: c.clientHeight || 1, r: window.devicePixelRatio || 1 };
+  }
+
+  function viewerRender() {
+    if (!viewer.open) { return; }
+    var s = viewerSize(), c = $("#v-canvas"), ctx = c.getContext("2d");
+    c.width = s.w * s.r; c.height = s.h * s.r;
+    ctx.setTransform(s.r, 0, 0, s.r, 0, 0);
+    ctx.clearRect(0, 0, s.w, s.h);
+    if (viewer.mode === "spec" && viewer.spec) { paintSpectro(ctx, viewer.spec, s.w, s.h); }
+    else if (viewer.mode === "wave") { paintWave(ctx, viewer.peaks, s.w, s.h); }
+    else {
+      ctx.fillStyle = "#7d8c78";
+      ctx.font = "12px monospace";
+      ctx.fillText("analysing…", 12, 22);
+    }
+    viewer.base = ctx.getImageData(0, 0, c.width, c.height);
+    viewerPlayhead();
+  }
+
+  function viewerPlayhead() {
+    if (!viewer.open || !viewer.base) { return; }
+    var s = viewerSize(), c = $("#v-canvas"), ctx = c.getContext("2d");
+    ctx.putImageData(viewer.base, 0, 0);
+    var d = audioEl.duration || 0;
+    if (!d) { return; }
+    ctx.setTransform(s.r, 0, 0, s.r, 0, 0);
+    var x = audioEl.currentTime / d * s.w;
+    ctx.strokeStyle = lamp;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, s.h);
+    ctx.stroke();
+  }
+
+  function setViewerMode(m) {
+    viewer.mode = m;
+    document.querySelectorAll("[data-vmode]").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.vmode === m));
+    });
+    viewerRender();
+  }
+
+  function openViewer() {
+    var f = feature(selected);
+    if (!f || !f.properties.has_audio) { return; }
+    viewer.open = true;
+    viewer.spec = null;
+    viewer.peaks = (f.properties.audio || {}).peaks;
+    $("#viewer").hidden = false;
+    $("#v-name").textContent = (f.properties.audio || {}).name || label(f);
+    /* Open showing what you clicked, not what you last looked at. */
+    setViewerMode(specMode ? "spec" : "wave");
+    getAudio(f.properties.id).then(function (blob) {
+      if (!blob || !viewer.open) { return; }
+      return spectrogram(blob, f.properties.id, 600, 128).then(function (sp) {
+        viewer.spec = sp;
+        viewerRender();
+      });
+    }).catch(function () {
+      setViewerMode("wave");
+    });
+  }
+
+  function closeViewer() {
+    viewer.open = false;
+    viewer.base = null;
+    $("#viewer").hidden = true;
+  }
+
+  $("#v-close").addEventListener("click", closeViewer);
+  document.querySelectorAll("[data-vmode]").forEach(function (b) {
+    b.addEventListener("click", function () { setViewerMode(b.dataset.vmode); });
+  });
+  $("#v-play").addEventListener("click", function () {
+    if (audioEl.paused) { audioEl.play().catch(function () {}); } else { audioEl.pause(); }
+  });
+  $("#v-canvas").addEventListener("click", function (e) {
+    if (!audioEl.duration) { return; }
+    var r = this.getBoundingClientRect();
+    audioEl.currentTime = (e.clientX - r.left) / r.width * audioEl.duration;
+    viewerPlayhead();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (!viewer.open) { return; }
+    if (e.key === "Escape") { closeViewer(); }
+    else if (e.key === " ") { e.preventDefault(); $("#v-play").click(); }
+  });
+  addEventListener("resize", function () { if (viewer.open) { viewerRender(); } });
+
   function clearPlayer() {
+    if (viewer.open) { closeViewer(); }
     audioEl.pause();
     if (audioURL) { URL.revokeObjectURL(audioURL); audioURL = null; }
     audioEl.removeAttribute("src");
@@ -2039,6 +2194,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   });
   audioEl.addEventListener("timeupdate", function () {
+    viewerPlayhead();
+    if (viewer.open) {
+      $("#v-time").textContent = fmtTime(audioEl.currentTime) + " / " + fmtTime(audioEl.duration || 0);
+    }
     var d = audioEl.duration || 0;
     $("#rec-fill").style.width = (d ? (audioEl.currentTime / d * 100) : 0) + "%";
     $("#rec-time").textContent = fmtTime(audioEl.currentTime) + " / " + fmtTime(d);
@@ -2060,12 +2219,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        });
     } else { btn.textContent = "‖"; }
   });
-  audioEl.addEventListener("pause", function () { $("#rec-play").textContent = "►"; });
-  audioEl.addEventListener("play", function () { $("#rec-play").textContent = "‖"; });
+  audioEl.addEventListener("pause", function () {
+    $("#rec-play").textContent = "►"; $("#v-play").textContent = "►";
+  });
+  audioEl.addEventListener("play", function () {
+    $("#rec-play").textContent = "‖"; $("#v-play").textContent = "‖";
+  });
   audioEl.addEventListener("error", function () {
     $("#saved").textContent = "This audio file could not be decoded.";
   });
   $("#rec-bar").addEventListener("click", function (e) {
+    /* The waveform is the transport and stays seekable. The spectrogram strip is too small
+       to read, so clicking it opens the full-screen view instead. */
+    if (specMode) { openViewer(); return; }
     var r = this.getBoundingClientRect();
     if (audioEl.duration) { audioEl.currentTime = (e.clientX - r.left) / r.width * audioEl.duration; }
   });
@@ -2349,13 +2515,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      costs kilobytes per recording forever. */
   var specMode = false, specCache = {};
 
-  function spectrogram(blob, id) {
-    if (specCache[id]) { return Promise.resolve(specCache[id]); }
+  function spectrogram(blob, id, COLS, ROWS) {
+    COLS = COLS || 220; ROWS = ROWS || 64;
+    var key = id + ":" + COLS + "x" + ROWS;
+    if (specCache[key]) { return Promise.resolve(specCache[key]); }
     return blob.arrayBuffer().then(function (buf) {
       var Ctx = window.AudioContext || window.webkitAudioContext, ctx = new Ctx();
       return ctx.decodeAudioData(buf).then(function (ab) {
         var ch = ab.getChannelData(0), n = ch.length;
-        var N = 1024, COLS = 220, ROWS = 64, out = [];
+        var N = 1024, out = [];
         for (var c = 0; c < COLS; c++) {
           var off = Math.floor(c * Math.max(0, n - N) / (COLS - 1));
           var re = new Float64Array(N), im = new Float64Array(N), i;
@@ -2380,19 +2548,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         try { ctx.close(); } catch (e) { /* ignore */ }
         var peak = 0;
         out.forEach(function (col) { col.forEach(function (v) { if (v > peak) { peak = v; } }); });
-        specCache[id] = { cols: out, peak: peak || 1 };
-        return specCache[id];
+        specCache[key] = { cols: out, peak: peak || 1 };
+        return specCache[key];
       });
     });
   }
 
-  function drawSpectrogram(data) {
-    var bar = $("#rec-bar"), c = $("#rec-wave");
-    var w = bar.clientWidth || 200, h = bar.clientHeight || 56, r = window.devicePixelRatio || 1;
-    c.width = w * r; c.height = h * r;
-    var ctx = c.getContext("2d");
-    ctx.setTransform(r, 0, 0, r, 0, 0);
-    ctx.clearRect(0, 0, w, h);
+  function paintSpectro(ctx, data, w, h) {
     var cols = data.cols, rows = cols[0].length;
     for (var x = 0; x < w; x++) {
       var col = cols[Math.floor(x / w * cols.length)];
@@ -2404,6 +2566,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         ctx.fillRect(x, y * h / rows, 1, Math.ceil(h / rows));
       }
     }
+  }
+
+  function paintWave(ctx, peaks, w, h, colour) {
+    if (!peaks || !peaks.length) { return; }
+    ctx.fillStyle = colour || accent;
+    for (var i = 0; i < w; i++) {
+      var p = peaks[Math.floor(i / w * peaks.length)] || 0;
+      var bh = Math.max(1, p * (h - 4));
+      ctx.fillRect(i, (h - bh) / 2, 1, bh);
+    }
+  }
+
+  function drawSpectrogram(data) {
+    var bar = $("#rec-bar"), c = $("#rec-wave");
+    var w = bar.clientWidth || 200, h = bar.clientHeight || 56, r = window.devicePixelRatio || 1;
+    c.width = w * r; c.height = h * r;
+    var ctx = c.getContext("2d");
+    ctx.setTransform(r, 0, 0, r, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    paintSpectro(ctx, data, w, h);
   }
 
   /* ---------- Rendering ---------- */
