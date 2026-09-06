@@ -3163,7 +3163,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* A different instrument, so the two lines are told apart by timbre and not only by
        register: FM against the triangle and sine of the harmony voices. */
     var sectGain = new Tone.Gain(patch.sect.gain).connect(bus);
-    var sectSynth = new Tone.FMSynth().connect(sectGain);
+    /* Its own filter, because it joins the bus after the pad's one and was therefore the
+       only voice the morphs could not reach. Open at 9k so it starts as no filter at all. */
+    var sectFilter = new Tone.Filter(9000, "lowpass").connect(sectGain);
+    var sectSynth = new Tone.FMSynth().connect(sectFilter);
     /* Measured 10dB under the harmony bus at equal velocity — FM simply puts out less for
        the same trigger, and the line disappeared underneath the chords. Raising velocity and
        gain alone put it 7dB over the chords, 0 left it 10dB under. Measured: 3 lands the
@@ -3178,7 +3181,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
 
     return { fx: fx, bus: bus, filter: filter, synth: synth,
-             sect: { synth: sectSynth, gain: sectGain } };
+             sect: { synth: sectSynth, gain: sectGain, filter: sectFilter } };
   }
 
   /* Once a bar: commit whatever chord the position now asks for, and move bass and inner
@@ -3259,6 +3262,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!bed || !bed.on || !bed.voice || !bed.voice.sect || !pacer) { return; }
     var patch = pacer.patch;
     if (!patch.sect.on) { return; }
+
+    /* Above the stride gate: the morphs move on every sixteenth, not only on the notes.
+       A timbre that only changed when a note happened would step rather than morph. */
+    var V2 = bed.voice.sect, tNow = bed.Tone.Transport.seconds;
+    /* Each destination returns to its neutral value when nothing points at it any more.
+       Without this, turning off the last morph on a destination leaves the parameter
+       frozen wherever that morph happened to abandon it — and for the filter that can be
+       580Hz, so the voice would just be dark for ever with no control that explains it. */
+    var mCut = morphFor("sect.cutoff", tNow);
+    if (V2.filter) {
+      V2.filter.frequency.rampTo(mCut === null ? 9000 : 400 * Math.pow(22.5, mCut), 0.2);
+    }
+    var mIdx = morphFor("sect.index", tNow);
+    if (V2.synth.modulationIndex) {
+      V2.synth.modulationIndex.rampTo(mIdx === null ? 7.5 : 1.5 * Math.pow(10.7, mIdx), 0.2);
+    }
 
     var stride = SECT_STRIDE[patch.sect.rhythm] || 4;
     counter.tick = (counter.tick || 0) + 1;
@@ -3509,6 +3528,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      be a lie about what it is. Gestures, when they arrive, stay on divisions. */
 
   var MORPH_SHAPES = ["drift", "breath", "pulse", "ramp", "tide"];
+  /* Where a morph can point. Brightness for each voice, and for the FM voice its
+     modulation index — which is a timbre control, not a volume or a filter: it changes
+     what the voice is made of rather than how much of it gets through. */
+  var MORPH_DESTS = [
+    { k: "voice.cutoff", label: "pad filter" },
+    { k: "sect.cutoff",  label: "2nd filter" },
+    { k: "sect.index",   label: "2nd timbre" }
+  ];
+  function destLabel(k) {
+    for (var i = 0; i < MORPH_DESTS.length; i++) {
+      if (MORPH_DESTS[i].k === k) { return MORPH_DESTS[i].label; }
+    }
+    return k;
+  }
   var MORPH_SHAPE_NOTE = {
     drift:  "a smoothed random walk — never the same twice, never sudden",
     breath: "asymmetric: a short rise and a long fall",
@@ -3619,10 +3652,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var hue = rootColour(pc);
     var base = Math.min(cells.w, cells.h);
 
-    var pts = [];
+    /* The second voice follows the sectors, not the route, so its morphs take the sector's
+       colour rather than the chord's — the display says which layer a morph belongs to
+       before you have read a single label. */
+    var sHue = hue;
+    if (pacer && pacer.patch.sectors && pacer.patch.sectors.length) {
+      var sc = pacer.patch.sectors[(sect.idx || 0) % pacer.patch.sectors.length];
+      if (sc) { sHue = rootColour(pacer.patch.key + sc.r); }
+    }
+
+    var pts = [], orbits = [];
     for (var i = 0; i < list.length; i++) {
       if (!list[i].on) { continue; }
       var v = morphValue(list[i], t);
+      /* Anything aimed at the second voice is drawn as an open arc at the rim instead of
+         a body in the middle. Same data, a different kind of mark. */
+      if (list[i].dest && list[i].dest.indexOf("sect.") === 0) {
+        orbits.push({ v: v, k: orbits.length });
+        continue;
+      }
       /* Each cell keeps to its own slow orbit, on a period unrelated to its morph, so
          position never becomes a second readout of value. */
       var orb = t / (73 + i * 41) + i * 0.618;
@@ -3662,6 +3710,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     for (var q = 0; q < pts.length; q++) {
       g.strokeStyle = hexA(hue, 0.30 + 0.45 * pts[q].v);
       g.beginPath(); g.arc(pts[q].x, pts[q].y, pts[q].r, 0, 6.2832); g.stroke();
+    }
+
+    /* Rim orbits: the arc sweeps the morph's value, so it is read round the circle rather
+       than by area, and a travelling head marks where it has got to. Faint full circles
+       behind them keep the track visible when the value is near zero. */
+    var cx = cells.w / 2, cy = cells.h / 2, rim = Math.min(cells.w, cells.h) / 2;
+    for (var o = 0; o < orbits.length; o++) {
+      var rr = rim * (0.74 + 0.12 * orbits[o].k), ov = orbits[o].v;
+      g.lineWidth = 1;
+      g.strokeStyle = hexA(sHue, 0.13);
+      g.beginPath(); g.arc(cx, cy, rr, 0, 6.2832); g.stroke();
+      g.lineWidth = 2;
+      g.strokeStyle = hexA(sHue, 0.45 + 0.45 * ov);
+      g.beginPath();
+      g.arc(cx, cy, rr, -Math.PI / 2, -Math.PI / 2 + 6.2832 * ov);
+      g.stroke();
+      var ha = -Math.PI / 2 + 6.2832 * ov;
+      g.fillStyle = hexA(sHue, 0.85);
+      g.beginPath();
+      g.arc(cx + Math.cos(ha) * rr, cy + Math.sin(ha) * rr, 2.4, 0, 6.2832);
+      g.fill();
     }
   }
 
@@ -3800,14 +3869,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         { id: "m2", on: true, shape: "drift",  period: 190, depth: 0.70, bias: 0.15,
           phase: 0.31, dest: "voice.cutoff" },
         { id: "m3", on: true, shape: "breath", period: 47,  depth: 0.55, bias: 0.22,
-          phase: 0.62, dest: "voice.cutoff" }
+          phase: 0.62, dest: "voice.cutoff" },
+        /* The second voice gets shapes the pad does not have. Where the pad breathes and
+           drifts, this one mostly holds and then surges — so the two layers are told apart
+           by how they move, not only by timbre. */
+        { id: "m4", on: true, shape: "drift",  period: 310, depth: 0.80, bias: 0.10,
+          phase: 0.17, dest: "sect.index" },
+        { id: "m5", on: true, shape: "pulse",  period: 97,  depth: 0.85, bias: 0.12,
+          phase: 0.44, dest: "sect.cutoff" }
       ]
     };
   }
 
   function defaultPatch() {
     return {
-      version: 5, tempo: 72, key: 50, key2: 55,
+      version: 6, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -3828,7 +3904,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        4 to 5 is a different case: everything in a v4 patch is still correct and a tuned
        progression is worth more than a clean slate, so it is migrated, not replaced. */
     if (p && p.version === 4 && p.prog) { p.morph = defaultMorph(); p.version = 5; }
-    if (!p || p.version !== 5 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    /* 5 to 6 only adds the second voice's morphs. Anything the patch already had —
+       including three morphs you may have tuned — is left exactly as it is. */
+    if (p && p.version === 5 && p.morph && p.morph.list) {
+      var hasSect = false;
+      for (var mi = 0; mi < p.morph.list.length; mi++) {
+        if ((p.morph.list[mi].dest || "").indexOf("sect.") === 0) { hasSect = true; }
+      }
+      if (!hasSect) {
+        var add = defaultMorph().list.filter(function (m) {
+          return m.dest.indexOf("sect.") === 0;
+        });
+        p.morph.list = p.morph.list.concat(add);
+      }
+      p.version = 6;
+    }
+    if (!p || p.version !== 6 || !p.prog) { p = f.properties.patch = defaultPatch(); }
     if (!p.morph) { p.morph = defaultMorph(); }
     return p;
   }
@@ -4122,7 +4213,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var showPer = function () {
         var v = +per.value;
         perOut.textContent = Math.floor(v / 60) + ":" + String(v % 60).padStart(2, "0") +
-          " · " + m.shape;
+          " · " + destLabel(m.dest);
       };
       showPer();
       per.addEventListener("input", function () {
@@ -4135,8 +4226,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       dep.title = "Depth";
       dep.addEventListener("input", function () { m.depth = +dep.value; commitPatch(f, patch); });
 
+      var dst = document.createElement("select");
+      MORPH_DESTS.forEach(function (d) {
+        var o = document.createElement("option");
+        o.value = d.k; o.textContent = d.label;
+        dst.appendChild(o);
+      });
+      dst.value = m.dest;
+      dst.title = "What this morph moves";
+      dst.addEventListener("change", function () {
+        m.dest = dst.value; commitPatch(f, patch); showPer();
+      });
+
       cell.appendChild(onBtn);
       cell.appendChild(shape);
+      cell.appendChild(dst);
       cell.appendChild(per);
       cell.appendChild(dep);
       cell.appendChild(perOut);
