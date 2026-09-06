@@ -1376,6 +1376,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   sources.here = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.zones = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.progseg = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  sources.sectors = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
 
   /* MapLibre's colour parser has no notion of oklch() — it rejects the string and the whole
      style fails validation. So the tokens stay the single source of truth (C-1) and get
@@ -1477,6 +1478,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           filter: ["==", ["geometry-type"], "LineString"],
           paint: { "line-color": lamp, "line-width": 2, "line-dasharray": [2, 1.5] },
           layout: { "line-cap": "round", "line-join": "round" } },
+        /* The seven sectors, faint under everything. The one you are in lifts. */
+        { id: "sector-fill", type: "fill", source: "sectors",
+          paint: { "fill-color": ["get", "colour"],
+                   "fill-opacity": ["case", ["==", ["get", "active"], 1], 0.16, 0.05] } },
+        { id: "sector-line", type: "line", source: "sectors",
+          paint: { "line-color": ["get", "colour"],
+                   "line-width": ["case", ["==", ["get", "active"], 1], 1.6, 0.6],
+                   "line-opacity": 0.55 } },
+
         /* The progression drawn alongside the route rather than over it: the line stays the
            line, and the colour is an annotation you can read at a glance. Hue follows the
            chord root, so the same root always looks the same. */
@@ -2748,6 +2758,82 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     map.getSource("progseg").setData({ type: "FeatureCollection", features: feats });
   }
 
+  /* ---------- Sectors ----------
+     The area, not the route, cut into wedges around its own centre. Walking a route crosses
+     them on a completely different schedule from the sixteen chord segments, which is where
+     the counterpoint comes from: two partitions of the same ground that do not line up. */
+  var sect = { idx: null, centre: null, radius: 0 };
+
+  function sectorGeometry(m) {
+    var W = 180, S = 90, E = -180, N = -90;
+    m.coords.forEach(function (c) {
+      if (c[0] < W) { W = c[0]; } if (c[0] > E) { E = c[0]; }
+      if (c[1] < S) { S = c[1]; } if (c[1] > N) { N = c[1]; }
+    });
+    var centre = [(W + E) / 2, (S + N) / 2];
+    var far = 0;
+    m.coords.forEach(function (c) { far = Math.max(far, segment(centre, c)); });
+    sect.centre = centre;
+    sect.radius = Math.max(120, far * 1.45);
+  }
+
+  function sectorAt(pos, n) {
+    if (!sect.centre) { return 0; }
+    var kx = Math.cos(sect.centre[1] * Math.PI / 180);
+    var a = Math.atan2(pos[1] - sect.centre[1], (pos[0] - sect.centre[0]) * kx);
+    var raw = ((a + Math.PI) / (2 * Math.PI)) * n;
+    return Math.max(0, Math.min(n - 1, Math.floor(raw)));
+  }
+
+  /* Hysteresis again: an angular boundary is a hair's width at the centre, and without a
+     margin the second voice would change instrument every time you breathed. */
+  function sectorUpdate() {
+    if (!pacer || !pacer.patch.sect.on) { return; }
+    var n = pacer.patch.sect.n;
+    var i = sectorAt(pacer.pos, n);
+    if (sect.idx === null) { sect.idx = i; drawSectors(); return; }
+    if (i === sect.idx) { return; }
+    /* Only commit when comfortably inside the new wedge. */
+    var kx = Math.cos(sect.centre[1] * Math.PI / 180);
+    var a = Math.atan2(pacer.pos[1] - sect.centre[1], (pacer.pos[0] - sect.centre[0]) * kx);
+    var raw = ((a + Math.PI) / (2 * Math.PI)) * n;
+    var frac = raw - Math.floor(raw);
+    if (frac > 0.18 && frac < 0.82) {
+      sect.idx = i;
+      drawSectors();
+      var sc = pacer.patch.sectors[i % pacer.patch.sectors.length];
+      toast("◈ sector " + (i + 1) + " · " + NOTE_NAMES[((pacer.patch.key + sc.r) % 12 + 12) % 12] + " " + sc.mode);
+    }
+  }
+
+  function wedge(cx, cy, r0, a0, a1) {
+    var R = 6378137, dpr = 180 / Math.PI, kx = Math.cos(cy * Math.PI / 180) || 1e-6;
+    var pts = [[cx, cy]];
+    for (var i = 0; i <= 14; i++) {
+      var a = a0 + (a1 - a0) * i / 14;
+      pts.push([cx + (r0 * Math.cos(a) / (R * kx)) * dpr, cy + (r0 * Math.sin(a) / R) * dpr]);
+    }
+    pts.push([cx, cy]);
+    return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [pts] } };
+  }
+
+  function drawSectors() {
+    if (!map.getSource("sectors")) { return; }
+    var feats = [];
+    if (pacer && pacer.patch.sect.on && sect.centre) {
+      var n = pacer.patch.sect.n;
+      for (var i = 0; i < n; i++) {
+        var a0 = (i / n) * 2 * Math.PI - Math.PI, a1 = ((i + 1) / n) * 2 * Math.PI - Math.PI;
+        var w = wedge(sect.centre[0], sect.centre[1], sect.radius, a0, a1);
+        var sc = pacer.patch.sectors[i % pacer.patch.sectors.length];
+        w.properties = { idx: i, active: sect.idx === i ? 1 : 0,
+                         colour: rootColour(pacer.patch.key + sc.r) };
+        feats.push(w);
+      }
+    }
+    map.getSource("sectors").setData({ type: "FeatureCollection", features: feats });
+  }
+
   function drawZones() {
     if (!map.getSource("zones")) { return; }
     var feats = [];
@@ -2776,6 +2862,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       " · " + Math.round(pacer.t * 100) + "%" +
       (near ? " &nbsp; <b>nearest</b> " + near.z.name + " " + fmtLen(near.d) +
               (near.z.inside ? " · <em>inside</em>" : "") : "") +
+      (sect.idx !== null ? " &nbsp; <b>sector</b> " + (sect.idx + 1) : "") +
       " &nbsp; <b>zones</b> " + pacer.zones.filter(function (z) { return z.inside; }).length +
       "/" + pacer.zones.length;
   }
@@ -2807,6 +2894,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     pacer.pos = pointAlong(pacer.m, pacer.t);
     pacer.marker.setLngLat(pacer.pos);
     pacerCheckZones();
+    sectorUpdate();
     updateBed();
     pacerReadout();
   }
@@ -2817,6 +2905,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     pacer = null;
     window.__fa.pacer = null;
     drawProgSegments();
+    drawSectors();
     bedStop();
     $("#patchbar").hidden = true;
     $("#pacerbar").hidden = true;
@@ -2842,6 +2931,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     pacer = { f: f, m: m, t: 0, pos: m.coords[0], marker: marker,
               zones: buildZones(m), log: [], patch: patchOf(f) };
+    sectorGeometry(m);
+    sect.idx = null;
     ZONE_R = pacer.patch.zones.radius;
     BED.radius = pacer.patch.bed.radius;
     BED.maxVoices = pacer.patch.bed.voices;
@@ -2861,6 +2952,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        directly rather than inferred from screenshots. */
     window.__fa.pacer = pacer;
     window.__fa.harmony = harmony;   /* chord index, tones and last voiced pitches */
+    window.__fa.sect = sect;
+    window.__fa.counter = counter;
     window.__fa.pacerSet = pacerSet;
     window.__fa.projectToRoute = projectToRoute;
 
@@ -2868,6 +2961,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#patchbar").hidden = false;
     drawZones();
     drawProgSegments();
+    drawSectors();
     pacerSet(0);
   }
 
@@ -2908,11 +3002,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (bed.Tone) { try { bed.Tone.Transport.stop(); } catch (e) {} }
     if (bed.voice) {
       try {
+        bed.voice.sect.synth.triggerRelease();
         ["bass", "inner", "top"].forEach(function (k) { bed.voice.synth[k].synth.triggerRelease(); });
       } catch (e) { /* ignore */ }
     }
     harmony.idx = null; harmony.chord = null;
     harmony.last = { bass: null, inner: null, top: null };
+    counter.last = null; counter.restRun = 0;
     $("#patch-play").textContent = "Sound";
     $("#patch-play").setAttribute("aria-pressed", "false");
   }
@@ -2938,6 +3034,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (!bed.loop) {
           bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
           bed.barLoop = Tone.Transport.scheduleRepeat(harmonyBar, "1m");
+          bed.sectLoop = Tone.Transport.scheduleRepeat(sectorStep, patch.sect.rhythm);
         }
         Tone.Transport.start();
         $("#patch-play").textContent = "Stop";
@@ -2984,6 +3081,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                                  attackCurve: "linear", releaseCurve: "exponential" }, 0.8);
     var synth = { bass: bass, inner: inner, top: top };
 
+    /* A different instrument, so the two lines are told apart by timbre and not only by
+       register: FM against the triangle and sine of the harmony voices. */
+    var sectGain = new Tone.Gain(patch.sect.gain).connect(bus);
+    var sectSynth = new Tone.FMSynth().connect(sectGain);
+    sectSynth.set({
+      harmonicity: 2.02, modulationIndex: 7.5,
+      oscillator: { type: "sine" }, modulation: { type: "triangle" },
+      envelope: { attack: 0.012, decay: 0.35, sustain: 0.18, release: 1.1,
+                  attackCurve: "linear", releaseCurve: "exponential" },
+      modulationEnvelope: { attack: 0.04, decay: 0.5, sustain: 0.1, release: 0.8 }
+    });
+
     var noise = new Tone.Noise("pink");
     var noiseFilter = new Tone.Filter(900, "bandpass").connect(bus);
     var noiseGain = new Tone.Gain(0).connect(noiseFilter);
@@ -2991,6 +3100,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     noise.start();
 
     return { fx: fx, bus: bus, filter: filter, synth: synth,
+             sect: { synth: sectSynth, gain: sectGain },
              noise: noise, noiseGain: noiseGain, noiseFilter: noiseFilter };
   }
 
@@ -3037,6 +3147,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var pool = harmony.tones.length > 3 ? harmony.tones.slice(2) : harmony.tones;
     var pick = pool[Math.floor(Math.random() * pool.length)];
     var m = leadTo(harmony.last.top, [pick], patch.key + 7, patch.key + 31);
+    harmony.topDir = harmony.last.top === null ? 0 : Math.sign(m - harmony.last.top);
     harmony.last.top = m;
 
     /* A-11: never twice the same. */
@@ -3044,6 +3155,64 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var dur = 0.35 + Math.random() * 0.55;
     V.synth.top.synth.triggerAttackRelease(midiToFreq(m) * drift, dur, time,
       0.22 + Math.random() * 0.16);
+  }
+
+  /* ---------- Counterpoint ----------
+     The second voice belongs to the sector, not the route. It moves on its own grid, prefers
+     to answer the lead by going the other way, and is pulled toward the prevailing chord only
+     as much as the patch asks — enough to relate, not enough to obey. */
+  var counter = { last: null, restRun: 0 };
+
+  function sectorStep(time) {
+    if (!bed || !bed.on || !bed.voice || !bed.voice.sect || !pacer) { return; }
+    var patch = pacer.patch;
+    if (!patch.sect.on) { return; }
+
+    var i = sect.idx === null ? 0 : sect.idx;
+    var sc = patch.sectors[i % patch.sectors.length];
+    var mode = MODES[sc.mode] || MODES.dorian;
+    var root = patch.key + sc.r;
+
+    /* Phrases, not a stream of notes: rest sometimes, and rest for a while when you do. */
+    if (counter.restRun > 0) { counter.restRun--; return; }
+    if (Math.random() < 0.18) { counter.restRun = 1 + Math.floor(Math.random() * 2); return; }
+
+    var lo = patch.key + 2, hi = patch.key + 26, pool = [];
+    for (var oct = -2; oct <= 3; oct++) {
+      for (var k = 0; k < mode.length; k++) {
+        var mm = root + mode[k] + oct * 12;
+        if (mm >= lo && mm <= hi) { pool.push(mm); }
+      }
+    }
+    if (!pool.length) { return; }
+
+    var chordSet = {};
+    (harmony.tones || []).forEach(function (t) {
+      for (var o = -3; o <= 3; o++) { chordSet[t + o * 12] = 1; }
+    });
+
+    var prev = counter.last === null ? root + 12 : counter.last;
+    var leadDir = harmony.topDir || 0;
+    var pull = patch.sect.chordPull;
+    var best = null;
+
+    pool.forEach(function (m) {
+      var stepSize = Math.abs(m - prev);
+      if (stepSize === 0) { return; }
+      var score = -Math.min(stepSize, 14) * 0.55;                 /* stepwise preferred */
+      if (leadDir !== 0 && Math.sign(m - prev) === -leadDir) { score += 2.2; }  /* contrary */
+      if (chordSet[m]) { score += pull * 6; }                     /* consonance, on demand */
+      if (stepSize > 9) { score -= 2; }                           /* leaps are rare */
+      score += (Math.random() - 0.5) * 2.6;                       /* let it wander */
+      if (!best || score > best.score) { best = { m: m, score: score }; }
+    });
+    if (!best) { return; }
+
+    counter.last = best.m;
+    var drift = 1 + (Math.random() - 0.5) * 0.005;
+    var dur = 0.28 + Math.random() * 0.6;
+    bed.voice.sect.synth.triggerAttackRelease(midiToFreq(best.m) * drift, dur, time,
+      0.2 + Math.random() * 0.14);
   }
 
   function zoneFire(z) {
@@ -3186,6 +3355,33 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   };
   var CHORD_NAMES = Object.keys(CHORDS);
 
+  /* Modes for the sectors. The second voice lives in these, not in the route's chords —
+     related by ear, not by rule. */
+  var MODES = {
+    lydian:     [0, 2, 4, 6, 7, 9, 11],  dorian:    [0, 2, 3, 5, 7, 9, 10],
+    phrygian:   [0, 1, 3, 5, 7, 8, 10],  mixolydian:[0, 2, 4, 5, 7, 9, 10],
+    aeolian:    [0, 2, 3, 5, 7, 8, 10],  "lydian b7":[0, 2, 4, 6, 7, 9, 10],
+    altered:    [0, 1, 3, 4, 6, 8, 10],  "harmonic minor":[0, 2, 3, 5, 7, 8, 11],
+    "whole tone":[0, 2, 4, 6, 8, 10],    "pentatonic minor":[0, 3, 5, 7, 10],
+    "in sen":   [0, 1, 5, 7, 10],        locrian:   [0, 1, 3, 5, 6, 8, 10]
+  };
+  var MODE_NAMES = Object.keys(MODES);
+
+  /* Seven sectors, deliberately not all near the key. Two of them sit a tritone and a
+     minor second away so the second voice can pull right out of the route's harmony and
+     still have somewhere to come back from. */
+  function defaultSectors() {
+    return [
+      { mode: "lydian",           r: 0 },
+      { mode: "dorian",           r: 5 },
+      { mode: "lydian b7",        r: 10 },
+      { mode: "harmonic minor",   r: 2 },
+      { mode: "altered",          r: 6 },
+      { mode: "in sen",           r: 1 },
+      { mode: "pentatonic minor", r: 9 }
+    ];
+  }
+
   /* Dominant qualities, for chords acting as a V. */
   var DOM_Q = { "7": 1, "9": 1, "13": 1, "7b9": 1, "7alt": 1, "7#11": 1, "7sus4": 1 };
 
@@ -3273,22 +3469,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultPatch() {
     return {
-      version: 3, tempo: 72, key: 50, key2: 55,
+      version: 4, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
                bass: 0.9, inner: 0.7, top: 0.8 },
       /* The engine's own default for every effect is dry (A-8). These are a deliberate
          starting patch, written down where they can be seen and changed. */
-      fx:    { delayDiv: "8n.", delayWet: 0.22, delayFb: 0.34, revWet: 0.18, revDecay: 3.4 },
-      zones: { radius: 25, on: true }
+      fx:    { delayDiv: "8n.", delayWet: 0.75, delayFb: 0.85, revWet: 0.18, revDecay: 3.4 },
+      zones: { radius: 25, on: true },
+      sect:  { on: true, n: 7, gain: 0.42, rhythm: "4n.", chordPull: 0.35 },
+      sectors: defaultSectors()
     };
   }
 
   function patchOf(f) {
     var p = f.properties.patch;
     /* Version 1 was scale-based. There is nothing worth salvaging in half a migration. */
-    if (!p || p.version !== 3 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p || p.version !== 4 || !p.prog) { p = f.properties.patch = defaultPatch(); }
     return p;
   }
 
@@ -3412,6 +3610,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "voice.bass", label: "bass", min: 0, max: 1, step: 0.05 },
     { k: "voice.inner", label: "inner", min: 0, max: 1, step: 0.05 },
     { k: "voice.top", label: "top", min: 0, max: 1, step: 0.05 },
+
+    { sec: "Second voice — follows the sectors, not the route" },
+    { k: "sect.on", label: "second voice", toggle: true },
+    { k: "sect.gain", label: "gain", min: 0, max: 1, step: 0.05 },
+    { k: "sect.n", label: "sectors", min: 3, max: 12, step: 1 },
+    { k: "sect.rhythm", label: "its rhythm", options: function () { return DIVISIONS; },
+      fmt: function (v, p) { return (DIV_LABEL[v] || v) + " · " + divSeconds(v, p.tempo).toFixed(2) + " s"; } },
+    { k: "sect.chordPull", label: "pull to chord", min: 0, max: 1, step: 0.05 },
 
     { sec: "Effects" },
     { k: "fx.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
@@ -3646,6 +3852,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           bed.voice.synth.bass.gain.gain.rampTo(patch.voice.bass, 0.2);
           bed.voice.synth.inner.gain.gain.rampTo(patch.voice.inner, 0.2);
           bed.voice.synth.top.gain.gain.rampTo(patch.voice.top, 0.2);
+          bed.voice.sect.gain.gain.rampTo(patch.sect.on ? patch.sect.gain : 0, 0.2);
           bed.voice.fx.delay.delayTime.rampTo(divSeconds(patch.fx.delayDiv, patch.tempo), 0.2);
           bed.voice.fx.delay.wet.rampTo(patch.fx.delayWet, 0.2);
           bed.voice.fx.delay.feedback.rampTo(patch.fx.delayFb, 0.2);
