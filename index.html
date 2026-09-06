@@ -832,7 +832,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     <div class="overlays" role="group" aria-label="Forest boundary">
       <button type="button" data-forest="off"   aria-pressed="false" title="No boundary">Off</button>
       <button type="button" data-forest="frame" aria-pressed="true"  title="Outer frame — the main body of the forest">Frame</button>
-      <button type="button" data-forest="areas" aria-pressed="false" title="Frame plus sub-areas — the other polygons and the enclosed villages, reservoirs and clearings">Areas</button>
       <button type="button" class="ghost" id="fit-forest" title="Fit the view to the forest">Fit</button>
     </div>
     </div>
@@ -1233,11 +1232,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* The forest boundary is reference data, not archive data — it never enters `fc`,
      never appears in the list, and is not selectable. */
   sources.forest = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
-  /* Two levels. `forest-outer` is the main body's ring, smoothed — 90.9% of the forest's
-     102 km², so it is the frame without being arbitrary. `forest-detail` is everything else:
-     the other 12 polygons and all 154 interior holes (villages, reservoirs, clearings). */
+  /* `forest-outer` is the main body's ring, smoothed — 90.9% of Belgrad's 102 km², so it is
+     the frame without being arbitrary. */
   sources["forest-outer"] = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
-  sources["forest-detail"] = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.features = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.draft = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.here = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
@@ -1290,12 +1287,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
         { id: "forest-fill", type: "fill", source: "forest",
           paint: { "fill-color": accent, "fill-opacity": 0.12 } },
-        /* Sub-areas sit under the frame and are quieter: thinner, dimmer, tighter dash. */
-        { id: "forest-detail", type: "line", source: "forest-detail",
-          paint: { "line-color": ink, "line-width": 1.1, "line-opacity": 0.55,
-                   "line-dasharray": [3, 2] },
-          layout: { "line-join": "round", "visibility": "none" } },
-
         /* Frame: near-white dashed over a dark casing. Dashed distinguishes the boundary
            from the solid routes; the casing is what makes both hold over any basemap. */
         { id: "forest-casing", type: "line", source: "forest-outer",
@@ -1434,18 +1425,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     };
     map.getSource("forest-outer").setData({ type: "FeatureCollection", features: [line(frame)] });
 
-    var detail = { type: "FeatureCollection", features: [] };
-    rings.forEach(function (poly, i) {
-      if (i > 0) { detail.features.push(line(poly[0])); }
-      for (var h = 1; h < poly.length; h++) { detail.features.push(line(poly[h])); }
-    });
-    map.getSource("forest-detail").setData(detail);
 
     forestBounds = b;
     if (!b.isEmpty()) { map.fitBounds(b, { padding: 28, duration: initial ? 0 : 700 }); }
 
     window.__fa.frameStats = { place: p.properties.name, ringPoints: main.length,
-                               framePoints: frame.length, detailRings: detail.features.length };
+                               framePoints: frame.length };
 
     setSelected(null);
     closePlaceMenu();
@@ -3452,11 +3437,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   $("#tab-list").addEventListener("click", function () { showPane("list"); });
 
   function setForest(level) {
-    var frame = level !== "off", areas = level === "areas";
+    var frame = level !== "off";
     ["forest-fill", "forest-casing", "forest-line"].forEach(function (id) {
       map.setLayoutProperty(id, "visibility", frame ? "visible" : "none");
     });
-    map.setLayoutProperty("forest-detail", "visibility", areas ? "visible" : "none");
     document.querySelectorAll("[data-forest]").forEach(function (b) {
       b.setAttribute("aria-pressed", String(b.dataset.forest === level));
     });
