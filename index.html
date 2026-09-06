@@ -589,6 +589,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 #pacerbar b { font-weight: 400; color: var(--faint); }
 #pacerbar em { font-style: normal; color: var(--lamp); }
 
+#patchbar {
+  position: absolute; left: var(--s-4); top: calc(var(--s-4) + 2.1rem); z-index: 4;
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  background: color-mix(in oklch, var(--sunk) 84%, transparent);
+  border: 1px solid var(--bdr);
+  border-radius: 2px;
+  backdrop-filter: blur(6px);
+}
+#patch-info {
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums; color: var(--dim);
+}
+#patch-clip {
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: var(--track-meta); text-transform: uppercase;
+  color: var(--raised);
+}
+#patch-clip.lit { color: var(--sunk); background: var(--lamp); padding: 0 var(--s-1); border-radius: 2px; }
+
 #markbar {
   position: absolute;
   right: var(--s-4); bottom: var(--s-4);
@@ -1001,6 +1021,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     <div id="readout"><span><b>lat</b> —</span><span><b>lon</b> —</span></div>
 
     <p id="pacerbar" hidden></p>
+    <div id="patchbar" hidden>
+      <button type="button" id="patch-play" aria-pressed="false">Sound</button>
+      <span id="patch-info">—</span>
+      <span id="patch-clip" title="Clip — read from the master signal, not from fader positions">clip</span>
+    </div>
     <div id="markbar">
       <p id="marklive" hidden></p>
       <button type="button" id="mark" aria-label="Mark current location">Mark</button>
@@ -2657,6 +2682,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     pacer.pos = pointAlong(pacer.m, pacer.t);
     pacer.marker.setLngLat(pacer.pos);
     pacerCheckZones();
+    updateBed();
     pacerReadout();
   }
 
@@ -2665,6 +2691,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     pacer.marker.remove();
     pacer = null;
     window.__fa.pacer = null;
+    bedStop();
+    $("#patchbar").hidden = true;
     $("#pacerbar").hidden = true;
     drawZones();
   }
@@ -2703,8 +2731,142 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     window.__fa.projectToRoute = projectToRoute;
 
     $("#pacerbar").hidden = false;
+    $("#patchbar").hidden = false;
     drawZones();
     pacerSet(0);
+  }
+
+  /* ---------- The bed ----------
+     Recordings near you on the route, played back and processed by their own measured
+     qualities. The archive is the instrument: nothing here is invented, it is the forest
+     played back through what we already know about it. */
+  var bed = null;
+  var TONE_URL = "https://unpkg.com/tone@15/build/Tone.js";
+
+  function loadTone() {
+    if (window.Tone) { return Promise.resolve(window.Tone); }
+    if (loadTone.p) { return loadTone.p; }
+    loadTone.p = new Promise(function (res, rej) {
+      var s = document.createElement("script");
+      s.src = TONE_URL;
+      s.onload = function () { res(window.Tone); };
+      s.onerror = function () { rej(new Error("Tone.js could not be loaded")); };
+      document.head.appendChild(s);
+    });
+    return loadTone.p;
+  }
+
+  var BED = { radius: 140, maxVoices: 4, gain: 0.9, fade: 0.35 };
+
+  function bedStop() {
+    if (!bed) { return; }
+    Object.keys(bed.voices).forEach(function (id) {
+      var v = bed.voices[id];
+      try { v.gain.gain.rampTo(0, 0.2); } catch (e) { /* ignore */ }
+      setTimeout(function () {
+        try { v.player.stop(); v.player.dispose(); v.filter.dispose(); v.gain.dispose(); } catch (e) {}
+        if (v.url) { URL.revokeObjectURL(v.url); }
+      }, 300);
+    });
+    bed.voices = {};
+    bed.on = false;
+    $("#patch-play").textContent = "Sound";
+    $("#patch-play").setAttribute("aria-pressed", "false");
+  }
+
+  function bedStart() {
+    return loadTone().then(function (Tone) {
+      return Tone.start().then(function () {
+        if (!bed || !bed.master) {
+          /* A-6: a limiter on the master, and a meter that reads the signal rather than
+             inferring level from fader positions. */
+          var limiter = new Tone.Limiter(-1).toDestination();
+          var meter = new Tone.Meter();
+          limiter.connect(meter);
+          bed = { on: false, voices: {}, master: limiter, meter: meter, Tone: Tone };
+        }
+        bed.on = true;
+        window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
+        $("#patch-play").textContent = "Stop";
+        $("#patch-play").setAttribute("aria-pressed", "true");
+        updateBed();
+        meterLoop();
+      });
+    });
+  }
+
+  function ensureVoice(z, d) {
+    var Tone = bed.Tone, prox = Math.max(0, 1 - d / BED.radius);
+    var g = Math.pow(prox, 1.5) * BED.gain;
+
+    var v = bed.voices[z.id];
+    if (v) {
+      if (v.ready) {
+        /* A-2: every gain change ramps. A direct assignment on a live parameter zips. */
+        v.gain.gain.rampTo(g, BED.fade);
+        v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * prox, BED.fade);
+      }
+      v.idle = false;
+      return;
+    }
+
+    v = bed.voices[z.id] = { ready: false, idle: false };
+    getAudio(z.id).then(function (blob) {
+      if (!blob || !bed || !bed.voices[z.id]) { return; }
+      var f = feature(z.id), a = (f && f.properties.audio) || {};
+      v.url = URL.createObjectURL(blob);
+      v.gain = new Tone.Gain(0).connect(bed.master);
+      v.filter = new Tone.Filter(400, "lowpass").connect(v.gain);
+      /* Its own brightness sets how far the filter can open; proximity decides how far it
+         actually does. A dull recording stays dull however close you stand. */
+      v.cutoffHi = Math.max(600, Math.min(14000, (a.centroid_hz || 2000) * 2.2));
+      v.cutoffLo = 300;
+      v.player = new Tone.Player({
+        url: v.url, loop: true, fadeIn: 0.05, fadeOut: 0.1,
+        onload: function () {
+          if (!bed || !bed.voices[z.id]) { return; }
+          v.ready = true;
+          v.player.start();
+          var dd = segment(pacer ? pacer.pos : z.lonlat, z.lonlat);
+          var pr = Math.max(0, 1 - dd / BED.radius);
+          v.gain.gain.rampTo(Math.pow(pr, 1.5) * BED.gain, BED.fade);
+          v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * pr, BED.fade);
+        }
+      }).connect(v.filter);
+    }).catch(function () { delete bed.voices[z.id]; });
+  }
+
+  function updateBed() {
+    if (!bed || !bed.on || !pacer) { return; }
+    var near = pacer.zones
+      .filter(function (z) { return z.has_audio; })
+      .map(function (z) { return { z: z, d: segment(pacer.pos, z.lonlat) }; })
+      .sort(function (a, b) { return a.d - b.d; })
+      .slice(0, BED.maxVoices)
+      .filter(function (x) { return x.d <= BED.radius; });
+
+    var want = {};
+    near.forEach(function (x) { want[x.z.id] = true; ensureVoice(x.z, x.d); });
+
+    Object.keys(bed.voices).forEach(function (id) {
+      var v = bed.voices[id];
+      if (want[id] || v.idle || !v.ready) { return; }
+      v.idle = true;
+      v.gain.gain.rampTo(0, BED.fade);
+    });
+    bed.playing = near.length;
+  }
+
+  function meterLoop() {
+    if (!bed || !bed.on) { return; }
+    var db = bed.meter.getValue();
+    if (typeof db !== "number") { db = -100; }
+    var clipped = db > -0.5;
+    $("#patch-info").textContent =
+      (bed.playing || 0) + " voice" + ((bed.playing === 1) ? "" : "s") + " · " +
+      (db < -99 ? "—" : db.toFixed(1) + " dB");
+    $("#patch-clip").classList.toggle("lit", clipped);
+    setTimeout(meterLoop, 100);
   }
 
   /* ---------- Walks ----------
@@ -3591,6 +3753,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   flagToggle("#f-published", "published");
 
   $("#f-delete").addEventListener("click", removeSelected);
+  $("#patch-play").addEventListener("click", function () {
+    if (bed && bed.on) { bedStop(); return; }
+    var btn = this;
+    btn.textContent = "…";
+    bedStart().catch(function (err) {
+      btn.textContent = "Sound";
+      $("#saved").textContent = "Sound unavailable: " + (err && err.message ? err.message : err);
+    });
+  });
+
   $("#f-walk").addEventListener("click", function () {
     var f = feature(selected);
     if (!f || f.properties.kind !== "route") { return; }
