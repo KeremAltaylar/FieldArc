@@ -738,7 +738,32 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .pprow input[type=range] { width: 100%; accent-color: #bbceb5; }
 .pprow select { width: 100%; }
 .pprow button { width: 100%; }
-@media (max-width: 900px) { #pp-body { columns: 1; } .pprow { grid-template-columns: 7rem 1fr 5.5rem; } }
+.ppwide { column-span: all; }
+.ppgrid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s-2);
+  margin-bottom: var(--s-4);
+}
+.ppchord {
+  display: grid; grid-template-columns: 1.4rem 1fr 1fr; align-items: center; gap: var(--s-1);
+  padding: var(--s-2);
+  background: var(--panel);
+  border: 1px solid var(--bdr);
+  border-radius: 2px;
+}
+.ppchord b {
+  font-family: var(--font-mono); font-size: var(--t-xs); font-weight: 400;
+  color: var(--faint); text-align: right;
+}
+.ppchord select { min-width: 0; }
+/* The chord you are standing in, so the editor and the walk agree. */
+.ppchord.now { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 14%, var(--panel)); }
+.ppchord.now b { color: var(--accent); }
+
+@media (max-width: 900px) {
+  #pp-body { columns: 1; }
+  .pprow { grid-template-columns: 7rem 1fr 5.5rem; }
+  .ppgrid { grid-template-columns: repeat(2, 1fr); }
+}
 /* The readout tracks the playhead, so every figure is the value at the moment you are
    hearing, not an average over the whole recording. */
 #v-mir {
@@ -2696,8 +2721,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var d = segment(pacer.pos, z.lonlat);
       if (!near || d < near.d) { near = { d: d, z: z }; }
     });
+    var ch = harmony.chord != null && pacer.patch.prog[harmony.chord]
+      ? " &nbsp; <b>chord</b> " + (harmony.chord + 1) + " " + chordLabel(pacer.patch.prog[harmony.chord])
+      : "";
     $("#pacerbar").innerHTML =
-      "<b>along</b> " + fmtLen(pacer.t * pacer.m.total) + " / " + fmtLen(pacer.m.total) +
+      "<b>along</b> " + fmtLen(pacer.t * pacer.m.total) + " / " + fmtLen(pacer.m.total) + ch +
       " · " + Math.round(pacer.t * 100) + "%" +
       (near ? " &nbsp; <b>nearest</b> " + near.z.name + " " + fmtLen(near.d) +
               (near.z.inside ? " · <em>inside</em>" : "") : "") +
@@ -2770,7 +2798,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     BED.radius = pacer.patch.bed.radius;
     BED.maxVoices = pacer.patch.bed.voices;
     BED.gain = pacer.patch.bed.gain;
-    degreeState.idx = null;
+    harmony.idx = null; harmony.chord = null; harmony.tones = null;
+    harmony.last = { bass: null, inner: null, top: null };
 
     /* Dragging is free-hand; the walker is not. Every drag snaps back onto the line, which
        is what makes desk testing and a real walk the same code path. */
@@ -2783,6 +2812,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* Exposed on the debug hook so the geometry and the hysteresis can be measured
        directly rather than inferred from screenshots. */
     window.__fa.pacer = pacer;
+    window.__fa.harmony = harmony;   /* chord index, tones and last voiced pitches */
     window.__fa.pacerSet = pacerSet;
     window.__fa.projectToRoute = projectToRoute;
 
@@ -2827,7 +2857,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     bed.voices = {};
     bed.on = false;
     if (bed.Tone) { try { bed.Tone.Transport.stop(); } catch (e) {} }
-    if (bed.voice) { try { bed.voice.synth.releaseAll(); } catch (e) {} }
+    if (bed.voice) {
+      try {
+        ["bass", "inner", "top"].forEach(function (k) { bed.voice.synth[k].synth.triggerRelease(); });
+      } catch (e) { /* ignore */ }
+    }
+    harmony.idx = null; harmony.chord = null;
+    harmony.last = { bass: null, inner: null, top: null };
     $("#patch-play").textContent = "Sound";
     $("#patch-play").setAttribute("aria-pressed", "false");
   }
@@ -2850,7 +2886,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         /* A-1: the Transport is a lookahead scheduler. Never a UI callback or a draw loop. */
         Tone.Transport.bpm.value = patch.tempo;
         if (!bed.voice) { bed.voice = buildVoice(Tone, patch); }
-        if (!bed.loop) { bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n"); }
+        if (!bed.loop) {
+          bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
+          bed.barLoop = Tone.Transport.scheduleRepeat(harmonyBar, "1m");
+        }
         Tone.Transport.start();
         $("#patch-play").textContent = "Stop";
         $("#patch-play").setAttribute("aria-pressed", "true");
@@ -2879,19 +2918,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var bus = new Tone.Gain(patch.voice.gain).connect(fx.delay);
     var filter = new Tone.Filter(1200, "lowpass").connect(bus);
 
-    var synth = new Tone.PolySynth(Tone.Synth).connect(filter);
-    /* Applied with set() rather than constructor options: in this form the constructor
-       silently keeps its defaults, which is how a 5ms attack and a 1s release slipped in
-       unnoticed. A-3 wants floors and an exponential release that reaches silence — a linear
-       one stops at a level and that stop ticks on short notes. */
-    synth.set({
-      oscillator: { type: "triangle" },
-      envelope: { attack: 0.03, decay: 0.4, sustain: 0.25, release: 1.6,
-                  attackCurve: "linear", releaseCurve: "exponential" }
-    });
-    /* A-5, set explicitly: passing maxPolyphony in the constructor options is silently
-       ignored in this form, and the default of 32 steals abruptly under a long release. */
-    synth.maxPolyphony = 6;
+    /* Three voices, each its own synth so voice leading can be reasoned about one line at
+       a time: a bass that moves rarely, an inner voice that sustains, and a top voice that
+       is where the generative activity lives. */
+    function mk(type, env, gain) {
+      var g = new Tone.Gain(gain).connect(filter);
+      var sy = new Tone.Synth().connect(g);
+      sy.set({ oscillator: { type: type }, envelope: env });
+      return { synth: sy, gain: g };
+    }
+    var bass  = mk("triangle", { attack: 0.06, decay: 0.5, sustain: 0.55, release: 2.4,
+                                 attackCurve: "linear", releaseCurve: "exponential" }, 0.9);
+    var inner = mk("sine",     { attack: 0.35, decay: 0.6, sustain: 0.5, release: 3.2,
+                                 attackCurve: "linear", releaseCurve: "exponential" }, 0.7);
+    var top   = mk("triangle", { attack: 0.03, decay: 0.4, sustain: 0.22, release: 1.6,
+                                 attackCurve: "linear", releaseCurve: "exponential" }, 0.8);
+    var synth = { bass: bass, inner: inner, top: top };
 
     var noise = new Tone.Noise("pink");
     var noiseFilter = new Tone.Filter(900, "bandpass").connect(bus);
@@ -2903,26 +2945,55 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
              noise: noise, noiseGain: noiseGain, noiseFilter: noiseFilter };
   }
 
-  function voiceStep(time) {
+  /* Once a bar: commit whatever chord the position now asks for, and move bass and inner
+     voice to it by the shortest path. */
+  function harmonyBar(time) {
     if (!bed || !bed.on || !bed.voice || !pacer) { return; }
-    var patch = pacer.patch, ch = localCharacter(), Tone = bed.Tone;
+    if (!$("#patchpanel").hidden) { setTimeout(markProgression, 0); }
+    var patch = pacer.patch, V = bed.voice;
+    var step = chordIndexFor(patch, pacer.t);
+    var tones = chordTones(patch, step);
+    var changed = harmony.chord !== step;
+    harmony.chord = step;
 
-    /* Everything the synth does is downstream of the corpus around you. */
+    var root = tones[0];
+    var b = leadTo(harmony.last.bass, [root], patch.key - 24, patch.key - 5);
+    var inner = leadTo(harmony.last.inner, tones.slice(1), patch.key - 2, patch.key + 12);
+
+    if (changed || harmony.last.bass === null) {
+      V.synth.bass.synth.triggerAttackRelease(midiToFreq(b), "1m", time, 0.5);
+      V.synth.inner.synth.triggerAttackRelease(midiToFreq(inner), "1m", time, 0.32);
+      harmony.last.bass = b;
+      harmony.last.inner = inner;
+    }
+    harmony.tones = tones;
+  }
+
+  /* Eighths: the top voice, generated inside the current chord. Density, brightness and the
+     noise balance all come from the recordings around you. */
+  function voiceStep(time) {
+    if (!bed || !bed.on || !bed.voice || !pacer || !harmony.tones) { return; }
+    var patch = pacer.patch, ch = localCharacter(), V = bed.voice;
+
     var density = Math.max(0.05, Math.min(0.95,
       patch.voice.density * (0.35 + Math.min(2.5, ch.onsets) / 2.5)));
-    bed.voice.filter.frequency.rampTo(
-      Math.max(300, Math.min(12000, ch.centroid * 1.6)), 0.25);
-    bed.voice.noiseGain.gain.rampTo(Math.min(0.5, ch.flatness * 0.7) * patch.voice.gain, 0.4);
-    bed.voice.noiseFilter.frequency.rampTo(Math.max(200, Math.min(9000, ch.centroid)), 0.4);
+    V.filter.frequency.rampTo(Math.max(300, Math.min(12000, ch.centroid * 1.6)), 0.25);
+    V.noiseGain.gain.rampTo(Math.min(0.5, ch.flatness * 0.7) * patch.voice.gain, 0.4);
+    V.noiseFilter.frequency.rampTo(Math.max(200, Math.min(9000, ch.centroid)), 0.4);
 
     if (Math.random() > density) { return; }
 
-    var midi = degreeFor(patch, pacer.t);
-    /* A-11: two identical hits in a row is what gives a synthetic instrument away. */
+    /* Upper chord tones are favoured — the colour of an extended chord lives at the top. */
+    var pool = harmony.tones.length > 3 ? harmony.tones.slice(2) : harmony.tones;
+    var pick = pool[Math.floor(Math.random() * pool.length)];
+    var m = leadTo(harmony.last.top, [pick], patch.key + 7, patch.key + 31);
+    harmony.last.top = m;
+
+    /* A-11: never twice the same. */
     var drift = 1 + (Math.random() - 0.5) * 0.006;
-    var dur = 0.45 + Math.random() * 0.5;
-    bed.voice.synth.triggerAttackRelease(midiToFreq(midi) * drift, dur, time,
-      0.28 + Math.random() * 0.18);
+    var dur = 0.35 + Math.random() * 0.55;
+    V.synth.top.synth.triggerAttackRelease(midiToFreq(m) * drift, dur, time,
+      0.22 + Math.random() * 0.16);
   }
 
   function zoneFire(z) {
@@ -2947,7 +3018,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
 
     var tim = ZONE_TIMBRE[z.icon] || ZONE_TIMBRE.tree;
-    var midi = degreeFor(patch, pacer.t) + tim.oct * 12;
+    /* A zone sings inside the chord you are standing in, so an event never fights the
+       harmony underneath it. */
+    var tones = harmony.tones || chordTones(patch, chordIndexFor(patch, pacer.t));
+    var midi = tones[Math.floor(Math.random() * tones.length)] + tim.oct * 12;
     if (tim.osc === "noise") {
       var n = new Tone.NoiseSynth({
         noise: { type: "pink" },
@@ -3044,14 +3118,34 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* ---------- Patch ----------
      Declarative, stored on the route, exported with the archive. Not code: it cannot execute
      anything, and it survives every version of this app. */
-  var SCALES = {
-    Hijaz:      [0, 1, 4, 5, 7, 8, 11],
-    Rast:       [0, 2, 4, 5, 7, 9, 11],
-    Nahawand:   [0, 2, 3, 5, 7, 8, 10],
-    Saba:       [0, 2, 3, 5, 6, 8, 10],
-    Kurd:       [0, 1, 3, 5, 7, 8, 10],
-    Pentatonic: [0, 2, 4, 7, 9]
+  /* Extended harmony rather than a mode: each quality is intervals from its root. */
+  var CHORDS = {
+    "maj7":   [0, 4, 7, 11],        "maj9":    [0, 4, 7, 11, 14],
+    "maj7#11":[0, 4, 6, 11, 14],    "6/9":     [0, 4, 7, 9, 14],
+    "m7":     [0, 3, 7, 10],        "m9":      [0, 3, 7, 10, 14],
+    "m11":    [0, 3, 7, 10, 14, 17],"m6":      [0, 3, 7, 9],
+    "mMaj7":  [0, 3, 7, 11],
+    "7":      [0, 4, 7, 10],        "9":       [0, 4, 7, 10, 14],
+    "13":     [0, 4, 7, 10, 14, 21],"7#11":    [0, 4, 6, 10, 14],
+    "7b9":    [0, 4, 7, 10, 13],    "7alt":    [0, 4, 8, 10, 13],
+    "7sus4":  [0, 5, 7, 10],
+    "m7b5":   [0, 3, 6, 10],        "dim7":    [0, 3, 6, 9],
+    "aug":    [0, 4, 8],            "add9":    [0, 4, 7, 14],
+    "sus2":   [0, 2, 7],            "sus4":    [0, 5, 7],
+    "quartal":[0, 5, 10, 15]
   };
+  var CHORD_NAMES = Object.keys(CHORDS);
+
+  /* A default worth hearing: modal centre, a real ii-V home at the end, and enough colour
+     that the generative layer has something to say inside each chord. */
+  function defaultProgression() {
+    return [
+      { r: 0, q: "m9" },   { r: 0, q: "m11" },  { r: 5, q: "maj7#11" }, { r: 5, q: "6/9" },
+      { r: 10, q: "maj9" },{ r: 10, q: "maj7" },{ r: 3, q: "maj7#11" }, { r: 3, q: "6/9" },
+      { r: 8, q: "maj9" }, { r: 8, q: "13" },   { r: 1, q: "maj7" },    { r: 1, q: "maj9" },
+      { r: 2, q: "m7b5" }, { r: 7, q: "7alt" }, { r: 0, q: "m9" },      { r: 0, q: "m6" }
+    ];
+  }
   var DIVISIONS = ["4n", "4n.", "8n", "8n.", "16n", "2n"];
   var DIV_LABEL = { "1n": "1/1", "2n": "1/2", "4n": "1/4", "4n.": "1/4·", "8n": "1/8",
                     "8n.": "1/8·", "16n": "1/16" };
@@ -3070,9 +3164,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultPatch() {
     return {
-      version: 1, tempo: 72, root: 50, scale: "Hijaz",
+      version: 2, tempo: 72, key: 50,
+      prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
-      voice: { on: true, gain: 0.45, density: 0.5, spanOct: 2 },
+      voice: { on: true, gain: 0.45, density: 0.5,
+               bass: 0.9, inner: 0.7, top: 0.8 },
       /* The engine's own default for every effect is dry (A-8). These are a deliberate
          starting patch, written down where they can be seen and changed. */
       fx:    { delayDiv: "8n.", delayWet: 0.22, delayFb: 0.34, revWet: 0.18, revDecay: 3.4 },
@@ -3081,26 +3177,51 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function patchOf(f) {
-    if (!f.properties.patch) { f.properties.patch = defaultPatch(); }
-    return f.properties.patch;
+    var p = f.properties.patch;
+    /* Version 1 was scale-based. There is nothing worth salvaging in half a migration. */
+    if (!p || p.version !== 2 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    return p;
   }
 
   function midiToFreq(m) { return 440 * Math.pow(2, (m - 69) / 12); }
 
-  /* Position picks a scale degree, but only commits when it has moved past the edge by a
-     margin. Without this a slow walk sits on a boundary and the melody stutters between two
-     notes — the same failure hysteresis fixes for zones. */
-  var degreeState = { idx: null };
-  function degreeFor(patch, t) {
-    var sc = SCALES[patch.scale] || SCALES.Hijaz;
-    var steps = sc.length * Math.max(1, patch.voice.spanOct);
-    var raw = t * steps;
-    var cur = degreeState.idx;
-    if (cur === null) { degreeState.idx = Math.floor(raw); }
-    else if (raw > cur + 1.3) { degreeState.idx = Math.floor(raw); }
-    else if (raw < cur - 0.3) { degreeState.idx = Math.floor(raw); }
-    var i = Math.max(0, Math.min(steps - 1, degreeState.idx));
-    return patch.root + sc[i % sc.length] + 12 * Math.floor(i / sc.length);
+  /* Which chord you are standing in. The index is hysteretic so a slow walk does not
+     oscillate between two chords at a boundary, and the change itself is deferred to the
+     next bar — harmony that switches mid-bar sounds like a mistake, not a movement. */
+  var harmony = { idx: null, pending: null, chord: null, last: { bass: null, inner: null, top: null } };
+
+  function chordIndexFor(patch, t) {
+    var n = patch.prog.length;
+    var raw = t * n;
+    if (harmony.idx === null) { harmony.idx = Math.max(0, Math.min(n - 1, Math.floor(raw))); }
+    else if (raw > harmony.idx + 1.25 || raw < harmony.idx - 0.25) {
+      harmony.idx = Math.max(0, Math.min(n - 1, Math.floor(raw)));
+    }
+    return harmony.idx;
+  }
+
+  function chordTones(patch, step) {
+    var c = patch.prog[step] || patch.prog[0];
+    var iv = CHORDS[c.q] || CHORDS.m7;
+    var root = patch.key + c.r;
+    return iv.map(function (i) { return root + i; });
+  }
+
+  function chordLabel(c) { return NOTE_NAMES[((c.r % 12) + 12) % 12] + c.q; }
+
+  /* Voice leading: from the pitch classes available, take the one nearest where this voice
+     already was. It is the difference between a progression and a sequence of stabs. */
+  function leadTo(prev, tones, lo, hi) {
+    var best = null;
+    tones.forEach(function (t) {
+      for (var oct = -3; oct <= 3; oct++) {
+        var m = t + oct * 12;
+        if (m < lo || m > hi) { continue; }
+        var d = prev === null ? Math.abs(m - (lo + hi) / 2) : Math.abs(m - prev);
+        if (!best || d < best.d) { best = { m: m, d: d }; }
+      }
+    });
+    return best ? best.m : tones[0];
   }
 
   /* What the recordings around you are like right now — the control signal for the synth. */
@@ -3139,8 +3260,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   var PATCH_FIELDS = [
     { sec: "Transport" },
     { k: "tempo", label: "tempo", min: 40, max: 140, step: 1, unit: " bpm" },
-    { k: "scale", label: "scale", options: function () { return Object.keys(SCALES); } },
-    { k: "root", label: "root", min: 36, max: 72, step: 1, fmt: noteName },
+    { k: "key", label: "key", min: 38, max: 62, step: 1, fmt: noteName },
 
     { sec: "Bed — the recordings around you" },
     { k: "bed.on", label: "bed", toggle: true },
@@ -3152,7 +3272,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "voice.on", label: "voice", toggle: true },
     { k: "voice.gain", label: "gain", min: 0, max: 1, step: 0.05 },
     { k: "voice.density", label: "density", min: 0.05, max: 1, step: 0.05 },
-    { k: "voice.spanOct", label: "range", min: 1, max: 4, step: 1, unit: " oct" },
+    { k: "voice.bass", label: "bass", min: 0, max: 1, step: 0.05 },
+    { k: "voice.inner", label: "inner", min: 0, max: 1, step: 0.05 },
+    { k: "voice.top", label: "top", min: 0, max: 1, step: 0.05 },
 
     { sec: "Effects" },
     { k: "fx.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
@@ -3247,6 +3369,67 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       row.appendChild(val);
       body.appendChild(row);
     });
+
+    renderProgression(f, patch, body);
+  }
+
+  /* Sixteen chords across the route. Walking from one end to the other plays the whole
+     progression; the position decides which one you are standing in. */
+  function renderProgression(f, patch, body) {
+    var h = document.createElement("h2");
+    h.className = "ppwide";
+    h.textContent = "Progression — 16 chords across the route";
+    body.appendChild(h);
+
+    var grid = document.createElement("div");
+    grid.className = "ppgrid ppwide";
+
+    patch.prog.forEach(function (c, i) {
+      var cell = document.createElement("div");
+      cell.className = "ppchord";
+      cell.dataset.step = i;
+
+      var n = document.createElement("b");
+      n.textContent = (i + 1);
+      cell.appendChild(n);
+
+      var rootSel = document.createElement("select");
+      for (var k = 0; k < 12; k++) {
+        var o = document.createElement("option");
+        o.value = k;
+        o.textContent = NOTE_NAMES[(patch.key + k) % 12];
+        rootSel.appendChild(o);
+      }
+      rootSel.value = c.r;
+      rootSel.addEventListener("change", function () {
+        c.r = +rootSel.value; commitPatch(f, patch); markProgression();
+      });
+
+      var qSel = document.createElement("select");
+      CHORD_NAMES.forEach(function (q) {
+        var o = document.createElement("option");
+        o.value = q; o.textContent = q;
+        qSel.appendChild(o);
+      });
+      qSel.value = c.q;
+      qSel.addEventListener("change", function () {
+        c.q = qSel.value; commitPatch(f, patch); markProgression();
+      });
+
+      cell.appendChild(rootSel);
+      cell.appendChild(qSel);
+      grid.appendChild(cell);
+    });
+    body.appendChild(grid);
+    markProgression();
+  }
+
+  /* The chord you are actually in lights up, so the editor and the walk agree. */
+  function markProgression() {
+    var cur = harmony.chord;
+    document.querySelectorAll(".ppchord").forEach(function (el) {
+      el.classList.toggle("now", +el.dataset.step === cur);
+    });
   }
 
   /* Applied live where it can be, so you hear an edit while standing in the patch. */
@@ -3264,6 +3447,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         bed.Tone.Transport.bpm.rampTo(patch.tempo, 0.2);
         if (bed.voice) {
           bed.voice.bus.gain.rampTo(patch.voice.on ? patch.voice.gain : 0, 0.2);
+          bed.voice.synth.bass.gain.gain.rampTo(patch.voice.bass, 0.2);
+          bed.voice.synth.inner.gain.gain.rampTo(patch.voice.inner, 0.2);
+          bed.voice.synth.top.gain.gain.rampTo(patch.voice.top, 0.2);
           bed.voice.fx.delay.delayTime.rampTo(divSeconds(patch.fx.delayDiv, patch.tempo), 0.2);
           bed.voice.fx.delay.wet.rampTo(patch.fx.delayWet, 0.2);
           bed.voice.fx.delay.feedback.rampTo(patch.fx.delayFb, 0.2);
