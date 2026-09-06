@@ -2764,71 +2764,111 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      the counterpoint comes from: two partitions of the same ground that do not line up. */
   var sect = { idx: null, centre: null, radius: 0 };
 
-  function sectorGeometry(m) {
+  /* Seeds placed along the route and pushed alternately to either side of it. Because the
+     route bends, the cells that fall out of this are irregular and unequal — regions of the
+     map rather than slices of a compass. */
+  function sectorGeometry(m, n) {
     var W = 180, S = 90, E = -180, N = -90;
     m.coords.forEach(function (c) {
       if (c[0] < W) { W = c[0]; } if (c[0] > E) { E = c[0]; }
       if (c[1] < S) { S = c[1]; } if (c[1] > N) { N = c[1]; }
     });
-    var centre = [(W + E) / 2, (S + N) / 2];
-    var far = 0;
-    m.coords.forEach(function (c) { far = Math.max(far, segment(centre, c)); });
-    sect.centre = centre;
-    sect.radius = Math.max(120, far * 1.45);
+    var padX = Math.max((E - W) * 0.35, 0.004), padY = Math.max((N - S) * 0.35, 0.003);
+    sect.bbox = [W - padX, S - padY, E + padX, N + padY];
+    sect.kx = Math.cos(((S + N) / 2) * Math.PI / 180) || 1e-6;
+
+    var seeds = [];
+    for (var i = 0; i < n; i++) {
+      /* Uneven along the route on purpose: equal spacing would give back the regularity
+         we are trying to lose. */
+      var t = (i + 0.5) / n + (i % 3 - 1) * 0.045;
+      t = Math.max(0.02, Math.min(0.98, t));
+      var p0 = pointAlong(m, Math.max(0, t - 0.02));
+      var p1 = pointAlong(m, Math.min(1, t + 0.02));
+      var at = pointAlong(m, t);
+      /* Perpendicular to the local heading, alternating sides, varying distance. */
+      var dx = (p1[0] - p0[0]) * sect.kx, dy = p1[1] - p0[1];
+      var len = Math.sqrt(dx * dx + dy * dy) || 1;
+      var side = (i % 2 ? 1 : -1) * (0.35 + ((i * 7) % 5) / 8);
+      var off = padY * side;
+      seeds.push([at[0] - (dy / len) * off / sect.kx, at[1] + (dx / len) * off]);
+    }
+    sect.seeds = seeds;
   }
 
-  function sectorAt(pos, n) {
-    if (!sect.centre) { return 0; }
-    var kx = Math.cos(sect.centre[1] * Math.PI / 180);
-    var a = Math.atan2(pos[1] - sect.centre[1], (pos[0] - sect.centre[0]) * kx);
-    var raw = ((a + Math.PI) / (2 * Math.PI)) * n;
-    return Math.max(0, Math.min(n - 1, Math.floor(raw)));
+  function toPlanar(p) { return [p[0] * sect.kx, p[1]]; }
+  function fromPlanar(p) { return [p[0] / sect.kx, p[1]]; }
+
+  /* Keep the half of the polygon nearer to a than to b: one Voronoi edge at a time. */
+  function clipToward(poly, a, b) {
+    var nx = b[0] - a[0], ny = b[1] - a[1];
+    var d = nx * (a[0] + b[0]) / 2 + ny * (a[1] + b[1]) / 2;
+    var out = [];
+    for (var k = 0; k < poly.length; k++) {
+      var p = poly[k], q = poly[(k + 1) % poly.length];
+      var dp = nx * p[0] + ny * p[1] - d, dq = nx * q[0] + ny * q[1] - d;
+      if (dp <= 0) { out.push(p); }
+      if ((dp <= 0) !== (dq <= 0)) {
+        var t = dp / (dp - dq);
+        out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+      }
+    }
+    return out;
   }
 
-  /* Hysteresis again: an angular boundary is a hair's width at the centre, and without a
-     margin the second voice would change instrument every time you breathed. */
+  function voronoiCell(i) {
+    var bb = sect.bbox;
+    var poly = [[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]]].map(toPlanar);
+    var a = toPlanar(sect.seeds[i]);
+    for (var j = 0; j < sect.seeds.length; j++) {
+      if (j === i) { continue; }
+      poly = clipToward(poly, a, toPlanar(sect.seeds[j]));
+      if (!poly.length) { break; }
+    }
+    return poly.map(fromPlanar);
+  }
+
+  function sectorAt(pos) {
+    if (!sect.seeds || !sect.seeds.length) { return 0; }
+    var best = 0, bd = Infinity;
+    for (var i = 0; i < sect.seeds.length; i++) {
+      var d = segment(pos, sect.seeds[i]);
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+
+  /* A cell boundary is a line you can stand on, so a switch needs the new seed to be clearly
+     nearer — 12% — rather than nearer by a hair. */
   function sectorUpdate() {
-    if (!pacer || !pacer.patch.sect.on) { return; }
-    var n = pacer.patch.sect.n;
-    var i = sectorAt(pacer.pos, n);
+    if (!pacer || !pacer.patch.sect.on || !sect.seeds) { return; }
+    var i = sectorAt(pacer.pos);
     if (sect.idx === null) { sect.idx = i; drawSectors(); return; }
     if (i === sect.idx) { return; }
-    /* Only commit when comfortably inside the new wedge. */
-    var kx = Math.cos(sect.centre[1] * Math.PI / 180);
-    var a = Math.atan2(pacer.pos[1] - sect.centre[1], (pacer.pos[0] - sect.centre[0]) * kx);
-    var raw = ((a + Math.PI) / (2 * Math.PI)) * n;
-    var frac = raw - Math.floor(raw);
-    if (frac > 0.18 && frac < 0.82) {
+    var dNew = segment(pacer.pos, sect.seeds[i]);
+    var dCur = segment(pacer.pos, sect.seeds[sect.idx]);
+    if (dNew < dCur * 0.88) {
       sect.idx = i;
       drawSectors();
       var sc = pacer.patch.sectors[i % pacer.patch.sectors.length];
-      toast("◈ sector " + (i + 1) + " · " + NOTE_NAMES[((pacer.patch.key + sc.r) % 12 + 12) % 12] + " " + sc.mode);
+      toast("◈ sector " + (i + 1) + " · " +
+        NOTE_NAMES[((pacer.patch.key + sc.r) % 12 + 12) % 12] + " " + sc.mode);
     }
-  }
-
-  function wedge(cx, cy, r0, a0, a1) {
-    var R = 6378137, dpr = 180 / Math.PI, kx = Math.cos(cy * Math.PI / 180) || 1e-6;
-    var pts = [[cx, cy]];
-    for (var i = 0; i <= 14; i++) {
-      var a = a0 + (a1 - a0) * i / 14;
-      pts.push([cx + (r0 * Math.cos(a) / (R * kx)) * dpr, cy + (r0 * Math.sin(a) / R) * dpr]);
-    }
-    pts.push([cx, cy]);
-    return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [pts] } };
   }
 
   function drawSectors() {
     if (!map.getSource("sectors")) { return; }
     var feats = [];
-    if (pacer && pacer.patch.sect.on && sect.centre) {
-      var n = pacer.patch.sect.n;
-      for (var i = 0; i < n; i++) {
-        var a0 = (i / n) * 2 * Math.PI - Math.PI, a1 = ((i + 1) / n) * 2 * Math.PI - Math.PI;
-        var w = wedge(sect.centre[0], sect.centre[1], sect.radius, a0, a1);
+    if (pacer && pacer.patch.sect.on && sect.seeds) {
+      for (var i = 0; i < sect.seeds.length; i++) {
+        var ring = voronoiCell(i);
+        if (ring.length < 3) { continue; }
+        ring.push(ring[0]);
         var sc = pacer.patch.sectors[i % pacer.patch.sectors.length];
-        w.properties = { idx: i, active: sect.idx === i ? 1 : 0,
-                         colour: rootColour(pacer.patch.key + sc.r) };
-        feats.push(w);
+        feats.push({ type: "Feature",
+          properties: { idx: i, active: sect.idx === i ? 1 : 0,
+                        colour: rootColour(pacer.patch.key + sc.r) },
+          geometry: { type: "Polygon", coordinates: [ring] } });
       }
     }
     map.getSource("sectors").setData({ type: "FeatureCollection", features: feats });
@@ -2931,7 +2971,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     pacer = { f: f, m: m, t: 0, pos: m.coords[0], marker: marker,
               zones: buildZones(m), log: [], patch: patchOf(f) };
-    sectorGeometry(m);
+    sectorGeometry(m, patchOf(f).sect.n);
     sect.idx = null;
     ZONE_R = pacer.patch.zones.radius;
     BED.radius = pacer.patch.bed.radius;
@@ -3085,6 +3125,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        register: FM against the triangle and sine of the harmony voices. */
     var sectGain = new Tone.Gain(patch.sect.gain).connect(bus);
     var sectSynth = new Tone.FMSynth().connect(sectGain);
+    /* Measured 10dB under the harmony bus at equal velocity — FM simply puts out less for
+       the same trigger, and the line disappeared underneath the chords. Raising velocity and
+       gain alone put it 7dB over the chords, 0 left it 10dB under. Measured: 3 lands the
+       line about 7dB below the chord bed — followable as its own part, not covering it. */
+    sectSynth.volume.value = 3;
     sectSynth.set({
       harmonicity: 2.02, modulationIndex: 7.5,
       oscillator: { type: "sine" }, modulation: { type: "triangle" },
@@ -3212,7 +3257,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var drift = 1 + (Math.random() - 0.5) * 0.005;
     var dur = 0.28 + Math.random() * 0.6;
     bed.voice.sect.synth.triggerAttackRelease(midiToFreq(best.m) * drift, dur, time,
-      0.2 + Math.random() * 0.14);
+      0.42 + Math.random() * 0.2);
   }
 
   function zoneFire(z) {
@@ -3478,7 +3523,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          starting patch, written down where they can be seen and changed. */
       fx:    { delayDiv: "8n.", delayWet: 0.75, delayFb: 0.85, revWet: 0.18, revDecay: 3.4 },
       zones: { radius: 25, on: true },
-      sect:  { on: true, n: 7, gain: 0.42, rhythm: "4n.", chordPull: 0.35 },
+      sect:  { on: true, n: 7, gain: 0.8, rhythm: "4n.", chordPull: 0.35 },
       sectors: defaultSectors()
     };
   }
@@ -3843,8 +3888,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       BED.maxVoices = patch.bed.voices;
       BED.gain = patch.bed.gain;
       pacer.zones.forEach(function (z) { z.r = patch.zones.radius; });
+      if (!sect.seeds || sect.seeds.length !== patch.sect.n) {
+        sectorGeometry(pacer.m, patch.sect.n);
+        sect.idx = null;
+      }
       drawZones();
       drawProgSegments();
+      drawSectors();
       if (bed && bed.on) {
         bed.Tone.Transport.bpm.rampTo(patch.tempo, 0.2);
         if (bed.voice) {
