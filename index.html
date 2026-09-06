@@ -3046,7 +3046,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         ["bass", "inner", "top"].forEach(function (k) { bed.voice.synth[k].synth.triggerRelease(); });
       } catch (e) { /* ignore */ }
     }
-    harmony.idx = null; harmony.chord = null;
+    harmony.idx = null; harmony.chord = null; harmony.held = false;
     harmony.last = { bass: null, inner: null, top: null };
     counter.last = null; counter.restRun = 0;
     $("#patch-play").textContent = "Sound";
@@ -3075,6 +3075,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
           bed.barLoop = Tone.Transport.scheduleRepeat(harmonyBar, "1m");
           bed.sectLoop = Tone.Transport.scheduleRepeat(sectorStep, patch.sect.rhythm);
+          bed.sectDiv = patch.sect.rhythm;
         }
         Tone.Transport.start();
         $("#patch-play").textContent = "Stop";
@@ -3095,7 +3096,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* Seconds, not notation: a division string is resolved against whatever the Transport
        tempo happens to be at construction, which is not necessarily the patch tempo. */
     fx.delay = new Tone.FeedbackDelay({
-      delayTime: divSeconds(patch.fx.delayDiv, patch.tempo),
+      maxDelay: MAX_DELAY_S,
+      delayTime: delaySeconds(patch),
       feedback: patch.fx.delayFb, wet: 0
     }).connect(fx.reverb);
     fx.reverb.wet.rampTo(patch.fx.revWet, 0.3);
@@ -3165,11 +3167,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var b = leadTo(harmony.last.bass, [root], patch.key - 24, patch.key - 5);
     var inner = leadTo(harmony.last.inner, tones.slice(1), patch.key - 2, patch.key + 12);
 
-    if (changed || harmony.last.bass === null) {
-      V.synth.bass.synth.triggerAttackRelease(midiToFreq(b), "1m", time, 0.5);
-      V.synth.inner.synth.triggerAttackRelease(midiToFreq(inner), "1m", time, 0.32);
+    /* Held, not one bar long. A note that ends at the bar line leaves the harmony silent
+       through every bar the chord does not change — which is exactly what happens the moment
+       you stand still to reach the patch panel. Measured on a parked walker: bass and inner
+       triggered once, then nothing for twelve seconds, output at -100 dB. They sustain now
+       and are re-voiced only when the chord actually moves. */
+    if (changed || !harmony.held) {
+      V.synth.bass.synth.triggerAttack(midiToFreq(b), time, 0.5);
+      V.synth.inner.synth.triggerAttack(midiToFreq(inner), time, 0.32);
       harmony.last.bass = b;
       harmony.last.inner = inner;
+      harmony.held = true;
     }
     harmony.tones = tones;
   }
@@ -3348,7 +3356,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function updateBed() {
     if (!bed || !bed.on || !pacer) { return; }
-    var near = pacer.zones
+    /* The panel's bed toggle used to be decorative — patch.bed.on was written and never
+       read. Off means no recordings sound, so the nearest set is empty. */
+    var near = !pacer.patch.bed.on ? [] : pacer.zones
       .filter(function (z) { return z.has_audio; })
       .map(function (z) { return { z: z, d: segment(pacer.pos, z.lonlat) }; })
       .sort(function (a, b) { return a.d - b.d; })
@@ -3540,7 +3550,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* Which chord you are standing in. The index is hysteretic so a slow walk does not
      oscillate between two chords at a boundary, and the change itself is deferred to the
      next bar — harmony that switches mid-bar sounds like a mistake, not a movement. */
-  var harmony = { idx: null, pending: null, chord: null, last: { bass: null, inner: null, top: null } };
+  var harmony = { idx: null, pending: null, chord: null, held: false,
+                  last: { bass: null, inner: null, top: null } };
 
   function chordIndexFor(patch, t) {
     var n = patch.prog.length;
@@ -3622,6 +3633,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function noteName(m) { return NOTE_NAMES[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1); }
 
   /* A-9: a division alone does not tell you whether a delay is short or long. */
+  /* The delay node fixes its maximum at construction and throws a RangeError for anything
+     longer — and a half note at 40bpm is 3s, well past Tone's 1s default. The ceiling and the
+     clamp are the same number, so the UI can never ask for a value the node will refuse. */
+  var MAX_DELAY_S = 4;
+  function delaySeconds(patch) {
+    return Math.min(MAX_DELAY_S - 0.01, divSeconds(patch.fx.delayDiv, patch.tempo));
+  }
+
   function divSeconds(div, bpm) {
     var beat = 60 / bpm;
     var base = { "1n": 4, "2n": 2, "4n": 1, "8n": 0.5, "16n": 0.25 };
@@ -3879,6 +3898,42 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   /* Applied live where it can be, so you hear an edit while standing in the patch. */
+  /* A reverb decay change means a new impulse response, which Tone generates asynchronously.
+     Dragging the slider fires a request per pixel, so only the last one is honoured and the
+     wet signal is held down until it lands — regenerating under a live wet signal drops the
+     tail with a click. Both this and the rhythm below were written to the patch and read
+     only at construction, so the two controls did nothing at all once the sound was running. */
+  var revPending = null;
+  function applyRevDecay(patch) {
+    var rv = bed.voice.fx.reverb;
+    if (Math.abs(rv.decay - patch.fx.revDecay) < 0.05) { return; }
+    revPending = patch.fx.revDecay;
+    if (rv.__busy) { return; }
+    rv.__busy = true;
+    (function run() {
+      var want = revPending;
+      revPending = null;
+      rv.wet.rampTo(0, 0.08);
+      setTimeout(function () {
+        try { rv.decay = want; } catch (e) { rv.__busy = false; return; }
+        rv.generate().then(function () {
+          if (revPending !== null) { run(); return; }
+          rv.__busy = false;
+          if (pacer) { rv.wet.rampTo(pacer.patch.fx.revWet, 0.2); }
+        }).catch(function () { rv.__busy = false; });
+      }, 90);
+    })();
+  }
+
+  function applySectRhythm(patch) {
+    if (patch.sect.rhythm === bed.sectDiv) { return; }
+    bed.sectDiv = patch.sect.rhythm;
+    if (bed.sectLoop !== undefined && bed.sectLoop !== null) {
+      bed.Tone.Transport.clear(bed.sectLoop);
+    }
+    bed.sectLoop = bed.Tone.Transport.scheduleRepeat(sectorStep, patch.sect.rhythm);
+  }
+
   function commitPatch(f, patch) {
     save();
     if (pacer && pacer.f === f) {
@@ -3903,10 +3958,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           bed.voice.synth.inner.gain.gain.rampTo(patch.voice.inner, 0.2);
           bed.voice.synth.top.gain.gain.rampTo(patch.voice.top, 0.2);
           bed.voice.sect.gain.gain.rampTo(patch.sect.on ? patch.sect.gain : 0, 0.2);
-          bed.voice.fx.delay.delayTime.rampTo(divSeconds(patch.fx.delayDiv, patch.tempo), 0.2);
+          bed.voice.fx.delay.delayTime.rampTo(delaySeconds(patch), 0.2);
           bed.voice.fx.delay.wet.rampTo(patch.fx.delayWet, 0.2);
           bed.voice.fx.delay.feedback.rampTo(patch.fx.delayFb, 0.2);
           bed.voice.fx.reverb.wet.rampTo(patch.fx.revWet, 0.2);
+          applyRevDecay(patch);
+          applySectRhythm(patch);
         }
         updateBed();
       }
