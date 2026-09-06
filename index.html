@@ -754,7 +754,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   font-family: var(--font-mono); font-size: var(--t-xs); font-weight: 400;
   color: var(--faint); text-align: right;
 }
+.ppchord { grid-template-columns: 1.4rem 1fr 1fr auto auto; grid-row-gap: var(--s-1); }
 .ppchord select { min-width: 0; }
+.ppmini { padding: 2px var(--s-1); font-size: 10px; letter-spacing: 0.06em; }
+.ppres {
+  grid-column: 1 / -1;
+  font-style: normal; font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.04em; text-transform: none; color: var(--dim);
+}
+.ppgen { margin-bottom: var(--s-3); }
 /* The chord you are standing in, so the editor and the walk agree. */
 .ppchord.now { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 14%, var(--panel)); }
 .ppchord.now b { color: var(--accent); }
@@ -1367,6 +1375,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   sources.draft = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.here = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.zones = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  sources.progseg = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
 
   /* MapLibre's colour parser has no notion of oklch() — it rejects the string and the whole
      style fails validation. So the tokens stay the single source of truth (C-1) and get
@@ -1468,6 +1477,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           filter: ["==", ["geometry-type"], "LineString"],
           paint: { "line-color": lamp, "line-width": 2, "line-dasharray": [2, 1.5] },
           layout: { "line-cap": "round", "line-join": "round" } },
+        /* The progression drawn alongside the route rather than over it: the line stays the
+           line, and the colour is an annotation you can read at a glance. Hue follows the
+           chord root, so the same root always looks the same. */
+        { id: "prog-seg", type: "line", source: "progseg",
+          paint: { "line-color": ["get", "colour"], "line-width": 5, "line-opacity": 0.85,
+                   "line-offset": 8 },
+          layout: { "line-cap": "butt", "line-join": "round" } },
+        { id: "prog-active", type: "line", source: "progseg",
+          filter: ["==", ["get", "active"], 1],
+          paint: { "line-color": ["get", "colour"], "line-width": 11, "line-opacity": 1,
+                   "line-offset": 8 },
+          layout: { "line-cap": "butt", "line-join": "round" } },
+
         { id: "zone-fill", type: "fill", source: "zones",
           paint: { "fill-color": ["case", ["==", ["get", "inside"], 1], lamp, accent],
                    "fill-opacity": ["case", ["==", ["get", "inside"], 1], 0.28, 0.10] } },
@@ -2701,6 +2723,31 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return list;
   }
 
+  function segmentCoords(m, t0, t1) {
+    var d0 = t0 * m.total, d1 = t1 * m.total;
+    var out = [pointAlong(m, t0)];
+    for (var i = 0; i < m.cum.length; i++) {
+      if (m.cum[i] > d0 && m.cum[i] < d1) { out.push(m.coords[i]); }
+    }
+    out.push(pointAlong(m, t1));
+    return out;
+  }
+
+  function drawProgSegments() {
+    if (!map.getSource("progseg")) { return; }
+    var feats = [];
+    if (pacer && pacer.patch && pacer.patch.prog) {
+      var n = pacer.patch.prog.length;
+      for (var i = 0; i < n; i++) {
+        feats.push({ type: "Feature",
+          properties: { step: i, colour: rootColour(chordRoot(pacer.patch, i)),
+                        active: harmony.chord === i ? 1 : 0 },
+          geometry: { type: "LineString", coordinates: segmentCoords(pacer.m, i / n, (i + 1) / n) } });
+      }
+    }
+    map.getSource("progseg").setData({ type: "FeatureCollection", features: feats });
+  }
+
   function drawZones() {
     if (!map.getSource("zones")) { return; }
     var feats = [];
@@ -2722,7 +2769,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!near || d < near.d) { near = { d: d, z: z }; }
     });
     var ch = harmony.chord != null && pacer.patch.prog[harmony.chord]
-      ? " &nbsp; <b>chord</b> " + (harmony.chord + 1) + " " + chordLabel(pacer.patch.prog[harmony.chord])
+      ? " &nbsp; <b>chord</b> " + (harmony.chord + 1) + " " + chordLabel(pacer.patch, harmony.chord)
       : "";
     $("#pacerbar").innerHTML =
       "<b>along</b> " + fmtLen(pacer.t * pacer.m.total) + " / " + fmtLen(pacer.m.total) + ch +
@@ -2769,6 +2816,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     pacer.marker.remove();
     pacer = null;
     window.__fa.pacer = null;
+    drawProgSegments();
     bedStop();
     $("#patchbar").hidden = true;
     $("#pacerbar").hidden = true;
@@ -2819,6 +2867,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#pacerbar").hidden = false;
     $("#patchbar").hidden = false;
     drawZones();
+    drawProgSegments();
     pacerSet(0);
   }
 
@@ -2955,6 +3004,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var tones = chordTones(patch, step);
     var changed = harmony.chord !== step;
     harmony.chord = step;
+    if (changed) { drawProgSegments(); }
 
     var root = tones[0];
     var b = leadTo(harmony.last.bass, [root], patch.key - 24, patch.key - 5);
@@ -3136,6 +3186,65 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   };
   var CHORD_NAMES = Object.keys(CHORDS);
 
+  /* Dominant qualities, for chords acting as a V. */
+  var DOM_Q = { "7": 1, "9": 1, "13": 1, "7b9": 1, "7alt": 1, "7#11": 1, "7sus4": 1 };
+
+  function hslHex(h, sPct, lPct) {
+    var sN = sPct / 100, lN = lPct / 100;
+    var c = (1 - Math.abs(2 * lN - 1)) * sN, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = lN - c / 2;
+    var r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; b = x; } else if (h < 240) { g = x; b = c; }
+    else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+    return "#" + [r, g, b].map(function (v) {
+      return Math.round((v + m) * 255).toString(16).padStart(2, "0");
+    }).join("");
+  }
+  /* A chord's colour follows its root, so the same root always reads the same and the
+     harmonic rhythm of a route is visible at a glance. */
+  function rootColour(pc) { return hslHex(((pc % 12) + 12) % 12 * 30, 42, 62); }
+
+  /* Rules, not dice: fourth-motion bias, qualities that suit each degree, and a real
+     cadence at the end. Random progressions that ignore function sound random. */
+  var DEGREE_Q = {
+    0:  ["maj9", "6/9", "maj7", "maj7#11"],
+    2:  ["m9", "m11", "m7"],
+    4:  ["m7", "m9"],
+    5:  ["maj7#11", "maj7", "6/9"],
+    7:  ["13", "9", "7sus4", "7"],
+    9:  ["m9", "m7", "m11"],
+    11: ["m7b5"]
+  };
+  var DEGREES = [0, 2, 4, 5, 7, 9, 11];
+  var NEXT = { 0: [5, 7, 9, 2], 2: [7, 5, 0], 4: [9, 2, 5], 5: [0, 7, 2, 9],
+               7: [0, 9, 5], 9: [2, 5, 7, 0], 11: [7, 0] };
+
+  function randomProgression() {
+    var prog = [], deg = 0;
+    for (var i = 0; i < 16; i++) {
+      if (i === 13) { deg = 2; }            /* ii  */
+      else if (i === 14) { deg = 7; }       /* V   */
+      else if (i === 15) { deg = 0; }       /* I   */
+      var qs = DEGREE_Q[deg] || ["m9"];
+      var c = { r: deg, q: qs[Math.floor(Math.random() * qs.length)], k: 1 };
+
+      /* A modulation in the middle third, and a secondary dominant to lead into it. */
+      if (i > 5 && i < 11 && Math.random() < 0.28) { c.k = 2; }
+      if (i > 1 && i < 13 && Math.random() < 0.18) { c.sd = true; }
+      prog.push(c);
+
+      if (i < 12) {
+        var opts = NEXT[deg] || DEGREES;
+        deg = opts[Math.floor(Math.random() * opts.length)];
+        /* Hold a chord sometimes: constant change is its own kind of monotony. */
+        if (Math.random() < 0.3 && i % 2 === 0) { deg = prog[prog.length - 1].r; }
+      }
+    }
+    prog[14].q = Math.random() < 0.5 ? "7alt" : "13";
+    prog[15].q = Math.random() < 0.5 ? "maj9" : "6/9";
+    return prog;
+  }
+
   /* A default worth hearing: modal centre, a real ii-V home at the end, and enough colour
      that the generative layer has something to say inside each chord. */
   function defaultProgression() {
@@ -3164,7 +3273,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultPatch() {
     return {
-      version: 2, tempo: 72, key: 50,
+      version: 3, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -3179,7 +3288,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function patchOf(f) {
     var p = f.properties.patch;
     /* Version 1 was scale-based. There is nothing worth salvaging in half a migration. */
-    if (!p || p.version !== 2 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p || p.version !== 3 || !p.prog) { p = f.properties.patch = defaultPatch(); }
     return p;
   }
 
@@ -3200,14 +3309,35 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return harmony.idx;
   }
 
-  function chordTones(patch, step) {
+  function chordRoot(patch, step) {
     var c = patch.prog[step] || patch.prog[0];
-    var iv = CHORDS[c.q] || CHORDS.m7;
-    var root = patch.key + c.r;
+    var base = (c.k === 2 ? patch.key2 : patch.key) + c.r;
+    if (!c.sd) { return base; }
+    /* A secondary dominant is defined by where it goes, not where it is: V7 of the next
+       chord, a fifth above whatever follows. */
+    var nx = patch.prog[(step + 1) % patch.prog.length];
+    var nRoot = (nx.k === 2 ? patch.key2 : patch.key) + nx.r;
+    return nRoot + 7;
+  }
+
+  function chordQuality(patch, step) {
+    var c = patch.prog[step] || patch.prog[0];
+    /* A chord acting as a dominant has to sound like one. */
+    if (c.sd && !DOM_Q[c.q]) { return "7b9"; }
+    return c.q;
+  }
+
+  function chordTones(patch, step) {
+    var iv = CHORDS[chordQuality(patch, step)] || CHORDS.m7;
+    var root = chordRoot(patch, step);
     return iv.map(function (i) { return root + i; });
   }
 
-  function chordLabel(c) { return NOTE_NAMES[((c.r % 12) + 12) % 12] + c.q; }
+  function chordLabel(patch, step) {
+    var root = chordRoot(patch, step);
+    return NOTE_NAMES[((root % 12) + 12) % 12] + chordQuality(patch, step) +
+      ((patch.prog[step] || {}).sd ? " (V/)" : "");
+  }
 
   /* Voice leading: from the pitch classes available, take the one nearest where this voice
      already was. It is the difference between a progression and a sequence of stabs. */
@@ -3261,6 +3391,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { sec: "Transport" },
     { k: "tempo", label: "tempo", min: 40, max: 140, step: 1, unit: " bpm" },
     { k: "key", label: "key", min: 38, max: 62, step: 1, fmt: noteName },
+    { k: "key2", label: "second key", min: 38, max: 62, step: 1,
+      fmt: function (v, p) {
+        var iv = ((v - p.key) % 12 + 12) % 12;
+        var rel = { 0: "unison", 5: "subdominant", 7: "dominant", 2: "supertonic",
+                    9: "relative", 3: "mediant", 10: "subtonic" }[iv];
+        return noteName(v) + (rel ? " · " + rel : "");
+      } },
 
     { sec: "Bed — the recordings around you" },
     { k: "bed.on", label: "bed", toggle: true },
@@ -3381,6 +3518,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     h.textContent = "Progression — 16 chords across the route";
     body.appendChild(h);
 
+    var gen = document.createElement("button");
+    gen.type = "button";
+    gen.className = "ghost ppwide ppgen";
+    gen.textContent = "Generate a progression";
+    gen.title = "Functional harmony: fourth motion, degree-appropriate qualities, a modulation and a real cadence";
+    gen.addEventListener("click", function () {
+      patch.prog = randomProgression();
+      commitPatch(f, patch);
+      renderPatchPanel();
+      toast("New progression");
+    });
+    body.appendChild(gen);
+
     var grid = document.createElement("div");
     grid.className = "ppgrid ppwide";
 
@@ -3413,11 +3563,44 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
       qSel.value = c.q;
       qSel.addEventListener("change", function () {
-        c.q = qSel.value; commitPatch(f, patch); markProgression();
+        c.q = qSel.value; commitPatch(f, patch); refreshProgression(f, patch);
       });
+
+      /* Which key centre this chord belongs to — the modulation switch. */
+      var kBtn = document.createElement("button");
+      kBtn.type = "button"; kBtn.className = "ghost ppmini";
+      kBtn.title = "Key centre for this chord";
+      var setK = function () {
+        kBtn.textContent = "K" + (c.k === 2 ? "2" : "1");
+        kBtn.setAttribute("aria-pressed", String(c.k === 2));
+      };
+      setK();
+      kBtn.addEventListener("click", function () {
+        c.k = c.k === 2 ? 1 : 2; setK(); commitPatch(f, patch); refreshProgression(f, patch);
+      });
+
+      /* Turn this chord into the dominant of whatever follows it. */
+      var vBtn = document.createElement("button");
+      vBtn.type = "button"; vBtn.className = "ghost ppmini";
+      vBtn.textContent = "V/";
+      vBtn.title = "Secondary dominant — become the V7 of the next chord";
+      vBtn.setAttribute("aria-pressed", String(!!c.sd));
+      vBtn.addEventListener("click", function () {
+        c.sd = !c.sd;
+        vBtn.setAttribute("aria-pressed", String(!!c.sd));
+        commitPatch(f, patch); refreshProgression(f, patch);
+      });
+
+      var res = document.createElement("em");
+      res.className = "ppres";
+      res.textContent = chordLabel(patch, i);
 
       cell.appendChild(rootSel);
       cell.appendChild(qSel);
+      cell.appendChild(kBtn);
+      cell.appendChild(vBtn);
+      cell.appendChild(res);
+      cell.style.borderLeft = "3px solid " + rootColour(chordRoot(patch, i));
       grid.appendChild(cell);
     });
     body.appendChild(grid);
@@ -3425,6 +3608,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   /* The chord you are actually in lights up, so the editor and the walk agree. */
+  /* Resolved labels and colours change whenever a key or a V/ does. */
+  function refreshProgression(f, patch) {
+    document.querySelectorAll(".ppchord").forEach(function (el) {
+      var i = +el.dataset.step;
+      var r = el.querySelector(".ppres");
+      if (r) { r.textContent = chordLabel(patch, i); }
+      el.style.borderLeft = "3px solid " + rootColour(chordRoot(patch, i));
+    });
+    drawProgSegments();
+    markProgression();
+  }
+
   function markProgression() {
     var cur = harmony.chord;
     document.querySelectorAll(".ppchord").forEach(function (el) {
@@ -3443,6 +3638,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       BED.gain = patch.bed.gain;
       pacer.zones.forEach(function (z) { z.r = patch.zones.radius; });
       drawZones();
+      drawProgSegments();
       if (bed && bed.on) {
         bed.Tone.Transport.bpm.rampTo(patch.tempo, 0.2);
         if (bed.voice) {
