@@ -186,6 +186,12 @@ button[aria-pressed="true"] {
   border-color: var(--accent);
 }
 button.ghost { background: transparent; }
+/* A ghost button that is pressed must still get the pressed background. Declared after
+   .ghost because the two rules have equal specificity, and the earlier one was losing its
+   background while keeping its near-black text — invisible on a dark panel. */
+button.ghost[aria-pressed="true"] {
+  color: var(--sunk); background: var(--accent); border-color: var(--accent);
+}
 button.danger:hover { color: var(--sunk); background: var(--lamp); border-color: var(--lamp); }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -700,6 +706,39 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 #v-close { flex: none; }
 #v-canvas { flex: 1; width: 100%; min-height: 0; cursor: crosshair; display: block; }
+
+/* ---- Patch panel ---- */
+#patchpanel {
+  position: fixed; inset: 0; z-index: 62;
+  display: flex; flex-direction: column;
+  background: var(--sunk);
+}
+#pp-title {
+  flex: 1; font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: var(--track-meta); text-transform: uppercase; color: var(--dim);
+}
+#pp-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: var(--s-4) var(--s-5);
+  columns: 2; column-gap: var(--s-8);
+}
+#pp-body h2 { margin: var(--s-4) 0 var(--s-2); break-after: avoid; }
+#pp-body h2:first-child { margin-top: 0; }
+.pprow {
+  display: grid; grid-template-columns: 9rem 1fr 7rem; align-items: center;
+  gap: var(--s-3); margin-bottom: var(--s-2);
+  break-inside: avoid;
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: var(--track-meta); text-transform: uppercase; color: var(--faint);
+}
+.pprow i {
+  font-style: normal; text-align: right; color: var(--ink);
+  font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0;
+}
+.pprow input[type=range] { width: 100%; accent-color: #bbceb5; }
+.pprow select { width: 100%; }
+.pprow button { width: 100%; }
+@media (max-width: 900px) { #pp-body { columns: 1; } .pprow { grid-template-columns: 7rem 1fr 5.5rem; } }
 /* The readout tracks the playhead, so every figure is the value at the moment you are
    hearing, not an average over the whole recording. */
 #v-mir {
@@ -958,6 +997,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
       <div class="actions">
         <button type="button" class="ghost" id="f-walk" hidden>Walk</button>
+        <button type="button" class="ghost" id="f-patch" hidden>Patch</button>
         <button type="button" class="ghost" id="f-zoom">Zoom to</button>
         <button type="button" class="danger" id="f-delete">Delete</button>
       </div>
@@ -976,6 +1016,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
              accept=".geojson,.json,.gpx,audio/*,.wav,.bwf,.aif,.aiff,.caf,.w64,.wv,application/geo+json" hidden>
       <p class="hint" id="saved">Saved to this browser.</p>
     </div>
+  </div>
+
+  <div id="patchpanel" hidden>
+    <div class="viewerbar">
+      <span id="pp-title">Patch</span>
+      <button type="button" id="pp-reset" class="ghost">Reset to default</button>
+      <button type="button" id="pp-close">Close</button>
+    </div>
+    <div id="pp-body"></div>
   </div>
 
   <div id="viewer" hidden>
@@ -2606,7 +2655,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return m.coords[m.coords.length - 1];
   }
 
-  var ZONE_R = 25;        /* metres — a zone you can stand in */
+  var ZONE_R = 25;        /* metres — a zone you can stand in; the patch may override */
   var ZONE_NEAR = 60;     /* how far off the route a point still counts */
   var ZONE_MARGIN = 1.3;  /* A-14: leave at 130% of the radius. 325 flickers to 0. */
   var ZONE_COOLDOWN = 8000;
@@ -2668,6 +2717,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         changed = true;
         pacer.log.push({ at: now, zone: z.name, event: "enter" });
         toast("▲ " + z.name);
+        if (pacer.patch.zones.on) { zoneFire(z); }
       } else if (z.inside && d > z.r * ZONE_MARGIN) {
         z.inside = false;
         changed = true;
@@ -2714,7 +2764,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var marker = new maplibregl.Marker({ element: el, draggable: true })
       .setLngLat(m.coords[0]).addTo(map);
 
-    pacer = { f: f, m: m, t: 0, pos: m.coords[0], marker: marker, zones: buildZones(m), log: [] };
+    pacer = { f: f, m: m, t: 0, pos: m.coords[0], marker: marker,
+              zones: buildZones(m), log: [], patch: patchOf(f) };
+    ZONE_R = pacer.patch.zones.radius;
+    BED.radius = pacer.patch.bed.radius;
+    BED.maxVoices = pacer.patch.bed.voices;
+    BED.gain = pacer.patch.bed.gain;
+    degreeState.idx = null;
 
     /* Dragging is free-hand; the walker is not. Every drag snaps back onto the line, which
        is what makes desk testing and a real walk the same code path. */
@@ -2770,6 +2826,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
     bed.voices = {};
     bed.on = false;
+    if (bed.Tone) { try { bed.Tone.Transport.stop(); } catch (e) {} }
+    if (bed.voice) { try { bed.voice.synth.releaseAll(); } catch (e) {} }
     $("#patch-play").textContent = "Sound";
     $("#patch-play").setAttribute("aria-pressed", "false");
   }
@@ -2787,12 +2845,126 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         }
         bed.on = true;
         window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
+
+        var patch = pacer ? pacer.patch : defaultPatch();
+        /* A-1: the Transport is a lookahead scheduler. Never a UI callback or a draw loop. */
+        Tone.Transport.bpm.value = patch.tempo;
+        if (!bed.voice) { bed.voice = buildVoice(Tone, patch); }
+        if (!bed.loop) { bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n"); }
+        Tone.Transport.start();
         $("#patch-play").textContent = "Stop";
         $("#patch-play").setAttribute("aria-pressed", "true");
         updateBed();
         meterLoop();
       });
     });
+  }
+
+  /* ---------- Voice and effects ----------
+     A synth layer over the bed, driven by the same archive: density from how eventful the
+     nearby recordings are, timbre balance from how noisy they are, filter from how bright. */
+  function buildVoice(Tone, patch) {
+    var fx = {};
+    /* Every effect is built dry and opened only to what the patch asks for (A-8). */
+    fx.reverb = new Tone.Reverb({ decay: patch.fx.revDecay, wet: 0 }).connect(bed.master);
+    /* Seconds, not notation: a division string is resolved against whatever the Transport
+       tempo happens to be at construction, which is not necessarily the patch tempo. */
+    fx.delay = new Tone.FeedbackDelay({
+      delayTime: divSeconds(patch.fx.delayDiv, patch.tempo),
+      feedback: patch.fx.delayFb, wet: 0
+    }).connect(fx.reverb);
+    fx.reverb.wet.rampTo(patch.fx.revWet, 0.3);
+    fx.delay.wet.rampTo(patch.fx.delayWet, 0.3);
+
+    var bus = new Tone.Gain(patch.voice.gain).connect(fx.delay);
+    var filter = new Tone.Filter(1200, "lowpass").connect(bus);
+
+    var synth = new Tone.PolySynth(Tone.Synth).connect(filter);
+    /* Applied with set() rather than constructor options: in this form the constructor
+       silently keeps its defaults, which is how a 5ms attack and a 1s release slipped in
+       unnoticed. A-3 wants floors and an exponential release that reaches silence — a linear
+       one stops at a level and that stop ticks on short notes. */
+    synth.set({
+      oscillator: { type: "triangle" },
+      envelope: { attack: 0.03, decay: 0.4, sustain: 0.25, release: 1.6,
+                  attackCurve: "linear", releaseCurve: "exponential" }
+    });
+    /* A-5, set explicitly: passing maxPolyphony in the constructor options is silently
+       ignored in this form, and the default of 32 steals abruptly under a long release. */
+    synth.maxPolyphony = 6;
+
+    var noise = new Tone.Noise("pink");
+    var noiseFilter = new Tone.Filter(900, "bandpass").connect(bus);
+    var noiseGain = new Tone.Gain(0).connect(noiseFilter);
+    noise.connect(noiseGain);
+    noise.start();
+
+    return { fx: fx, bus: bus, filter: filter, synth: synth,
+             noise: noise, noiseGain: noiseGain, noiseFilter: noiseFilter };
+  }
+
+  function voiceStep(time) {
+    if (!bed || !bed.on || !bed.voice || !pacer) { return; }
+    var patch = pacer.patch, ch = localCharacter(), Tone = bed.Tone;
+
+    /* Everything the synth does is downstream of the corpus around you. */
+    var density = Math.max(0.05, Math.min(0.95,
+      patch.voice.density * (0.35 + Math.min(2.5, ch.onsets) / 2.5)));
+    bed.voice.filter.frequency.rampTo(
+      Math.max(300, Math.min(12000, ch.centroid * 1.6)), 0.25);
+    bed.voice.noiseGain.gain.rampTo(Math.min(0.5, ch.flatness * 0.7) * patch.voice.gain, 0.4);
+    bed.voice.noiseFilter.frequency.rampTo(Math.max(200, Math.min(9000, ch.centroid)), 0.4);
+
+    if (Math.random() > density) { return; }
+
+    var midi = degreeFor(patch, pacer.t);
+    /* A-11: two identical hits in a row is what gives a synthetic instrument away. */
+    var drift = 1 + (Math.random() - 0.5) * 0.006;
+    var dur = 0.45 + Math.random() * 0.5;
+    bed.voice.synth.triggerAttackRelease(midiToFreq(midi) * drift, dur, time,
+      0.28 + Math.random() * 0.18);
+  }
+
+  function zoneFire(z) {
+    if (!bed || !bed.on || !bed.voice) { return; }
+    var Tone = bed.Tone, patch = pacer.patch;
+    /* A-10: a touch ahead of the audio clock, past the render-block boundary, so the attack
+       is not truncated into a click. */
+    var at = Tone.now() + 0.008;
+
+    if (z.has_audio) {
+      getAudio(z.id).then(function (blob) {
+        if (!blob || !bed || !bed.on) { return; }
+        var url = URL.createObjectURL(blob);
+        var p = new Tone.Player({
+          url: url, autostart: true, fadeIn: 0.02, fadeOut: 0.3,
+          onstop: function () {
+            setTimeout(function () { try { p.dispose(); } catch (e) {} URL.revokeObjectURL(url); }, 50);
+          }
+        }).connect(bed.voice.fx.delay);
+      });
+      return;
+    }
+
+    var tim = ZONE_TIMBRE[z.icon] || ZONE_TIMBRE.tree;
+    var midi = degreeFor(patch, pacer.t) + tim.oct * 12;
+    if (tim.osc === "noise") {
+      var n = new Tone.NoiseSynth({
+        noise: { type: "pink" },
+        envelope: { attack: 0.08, decay: 0.6, sustain: 0.2, release: tim.dur,
+                    releaseCurve: "exponential" }
+      }).connect(bed.voice.fx.delay);
+      n.triggerAttackRelease(tim.dur, at, 0.35);
+      setTimeout(function () { try { n.dispose(); } catch (e) {} }, (tim.dur + 3) * 1000);
+      return;
+    }
+    var s = new Tone.Synth({
+      oscillator: { type: tim.osc },
+      envelope: { attack: 0.02, decay: 0.5, sustain: 0.3, release: tim.dur,
+                  releaseCurve: "exponential" }
+    }).connect(bed.voice.fx.delay);
+    s.triggerAttackRelease(midiToFreq(midi), tim.dur, at, 0.4);
+    setTimeout(function () { try { s.dispose(); } catch (e) {} }, (tim.dur + 3) * 1000);
   }
 
   function ensureVoice(z, d) {
@@ -2868,6 +3040,249 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#patch-clip").classList.toggle("lit", clipped);
     setTimeout(meterLoop, 100);
   }
+
+  /* ---------- Patch ----------
+     Declarative, stored on the route, exported with the archive. Not code: it cannot execute
+     anything, and it survives every version of this app. */
+  var SCALES = {
+    Hijaz:      [0, 1, 4, 5, 7, 8, 11],
+    Rast:       [0, 2, 4, 5, 7, 9, 11],
+    Nahawand:   [0, 2, 3, 5, 7, 8, 10],
+    Saba:       [0, 2, 3, 5, 6, 8, 10],
+    Kurd:       [0, 1, 3, 5, 7, 8, 10],
+    Pentatonic: [0, 2, 4, 7, 9]
+  };
+  var DIVISIONS = ["4n", "4n.", "8n", "8n.", "16n", "2n"];
+  var DIV_LABEL = { "1n": "1/1", "2n": "1/2", "4n": "1/4", "4n.": "1/4·", "8n": "1/8",
+                    "8n.": "1/8·", "16n": "1/16" };
+
+  /* Each point type gets its own voice. A water zone and an insect zone should not sound
+     the same, and the icons already say which is which. */
+  var ZONE_TIMBRE = {
+    tree:   { osc: "triangle", oct: -1, dur: 2.4 },
+    animal: { osc: "sawtooth", oct: 0,  dur: 1.1 },
+    flower: { osc: "sine",     oct: 1,  dur: 1.8 },
+    insect: { osc: "square",   oct: 2,  dur: 0.22 },
+    fish:   { osc: "sine",     oct: -1, dur: 3.2 },
+    soil:   { osc: "triangle", oct: -2, dur: 3.6 },
+    water:  { osc: "noise",    oct: 0,  dur: 2.6 }
+  };
+
+  function defaultPatch() {
+    return {
+      version: 1, tempo: 72, root: 50, scale: "Hijaz",
+      bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
+      voice: { on: true, gain: 0.45, density: 0.5, spanOct: 2 },
+      /* The engine's own default for every effect is dry (A-8). These are a deliberate
+         starting patch, written down where they can be seen and changed. */
+      fx:    { delayDiv: "8n.", delayWet: 0.22, delayFb: 0.34, revWet: 0.18, revDecay: 3.4 },
+      zones: { radius: 25, on: true }
+    };
+  }
+
+  function patchOf(f) {
+    if (!f.properties.patch) { f.properties.patch = defaultPatch(); }
+    return f.properties.patch;
+  }
+
+  function midiToFreq(m) { return 440 * Math.pow(2, (m - 69) / 12); }
+
+  /* Position picks a scale degree, but only commits when it has moved past the edge by a
+     margin. Without this a slow walk sits on a boundary and the melody stutters between two
+     notes — the same failure hysteresis fixes for zones. */
+  var degreeState = { idx: null };
+  function degreeFor(patch, t) {
+    var sc = SCALES[patch.scale] || SCALES.Hijaz;
+    var steps = sc.length * Math.max(1, patch.voice.spanOct);
+    var raw = t * steps;
+    var cur = degreeState.idx;
+    if (cur === null) { degreeState.idx = Math.floor(raw); }
+    else if (raw > cur + 1.3) { degreeState.idx = Math.floor(raw); }
+    else if (raw < cur - 0.3) { degreeState.idx = Math.floor(raw); }
+    var i = Math.max(0, Math.min(steps - 1, degreeState.idx));
+    return patch.root + sc[i % sc.length] + 12 * Math.floor(i / sc.length);
+  }
+
+  /* What the recordings around you are like right now — the control signal for the synth. */
+  function localCharacter() {
+    var c = { centroid: 2000, flatness: 0.3, onsets: 1, n: 0 };
+    if (!pacer) { return c; }
+    var sumC = 0, sumF = 0, sumO = 0, n = 0;
+    pacer.zones.forEach(function (z) {
+      if (!z.has_audio) { return; }
+      var d = segment(pacer.pos, z.lonlat);
+      if (d > BED.radius) { return; }
+      var f = feature(z.id), a = (f && f.properties.audio) || {};
+      var w = Math.max(0, 1 - d / BED.radius);
+      sumC += (a.centroid_hz || 2000) * w;
+      sumF += (a.flatness_mean != null ? a.flatness_mean : 0.3) * w;
+      sumO += (a.onset_rate != null ? a.onset_rate : 1) * w;
+      n += w;
+    });
+    if (n > 0) { c.centroid = sumC / n; c.flatness = sumF / n; c.onsets = sumO / n; c.n = n; }
+    return c;
+  }
+
+  /* ---------- Patch panel ---------- */
+  var NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  function noteName(m) { return NOTE_NAMES[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1); }
+
+  /* A-9: a division alone does not tell you whether a delay is short or long. */
+  function divSeconds(div, bpm) {
+    var beat = 60 / bpm;
+    var base = { "1n": 4, "2n": 2, "4n": 1, "8n": 0.5, "16n": 0.25 };
+    var dotted = /\.$/.test(div);
+    var b = base[div.replace(".", "")] || 1;
+    return beat * b * (dotted ? 1.5 : 1);
+  }
+
+  var PATCH_FIELDS = [
+    { sec: "Transport" },
+    { k: "tempo", label: "tempo", min: 40, max: 140, step: 1, unit: " bpm" },
+    { k: "scale", label: "scale", options: function () { return Object.keys(SCALES); } },
+    { k: "root", label: "root", min: 36, max: 72, step: 1, fmt: noteName },
+
+    { sec: "Bed — the recordings around you" },
+    { k: "bed.on", label: "bed", toggle: true },
+    { k: "bed.gain", label: "gain", min: 0, max: 1, step: 0.05 },
+    { k: "bed.radius", label: "audible radius", min: 40, max: 400, step: 10, unit: " m" },
+    { k: "bed.voices", label: "max voices", min: 1, max: 8, step: 1 },
+
+    { sec: "Voice — synth over the bed" },
+    { k: "voice.on", label: "voice", toggle: true },
+    { k: "voice.gain", label: "gain", min: 0, max: 1, step: 0.05 },
+    { k: "voice.density", label: "density", min: 0.05, max: 1, step: 0.05 },
+    { k: "voice.spanOct", label: "range", min: 1, max: 4, step: 1, unit: " oct" },
+
+    { sec: "Effects" },
+    { k: "fx.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
+      fmt: function (v, p) { return (DIV_LABEL[v] || v) + " · " + divSeconds(v, p.tempo).toFixed(2) + " s"; } },
+    { k: "fx.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
+    { k: "fx.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
+    { k: "fx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
+    { k: "fx.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
+
+    { sec: "Zones" },
+    { k: "zones.on", label: "zone events", toggle: true },
+    { k: "zones.radius", label: "zone radius", min: 8, max: 120, step: 1, unit: " m" }
+  ];
+
+  function pget(o, path) {
+    return path.split(".").reduce(function (a, k) { return a[k]; }, o);
+  }
+  function pset(o, path, v) {
+    var ks = path.split("."), last = ks.pop();
+    ks.reduce(function (a, k) { return a[k]; }, o)[last] = v;
+  }
+
+  function renderPatchPanel() {
+    var f = feature(selected);
+    if (!f || f.properties.kind !== "route") { return; }
+    var patch = patchOf(f), body = $("#pp-body");
+    $("#pp-title").textContent = "Patch · " + label(f);
+    body.textContent = "";
+
+    PATCH_FIELDS.forEach(function (fl) {
+      if (fl.sec) {
+        var h = document.createElement("h2");
+        h.textContent = fl.sec;
+        body.appendChild(h);
+        return;
+      }
+      var row = document.createElement("label");
+      row.className = "pprow";
+      var name = document.createElement("span");
+      name.textContent = fl.label;
+      row.appendChild(name);
+
+      var val = document.createElement("i");
+      var input;
+
+      if (fl.toggle) {
+        input = document.createElement("button");
+        input.type = "button";
+        input.className = "ghost";
+        var setT = function () {
+          var on = !!pget(patch, fl.k);
+          input.setAttribute("aria-pressed", String(on));
+          input.textContent = on ? "on" : "off";
+        };
+        setT();
+        input.addEventListener("click", function () {
+          pset(patch, fl.k, !pget(patch, fl.k));
+          setT(); commitPatch(f, patch);
+        });
+      } else if (fl.options) {
+        input = document.createElement("select");
+        fl.options().forEach(function (o) {
+          var op = document.createElement("option");
+          op.value = o;
+          op.textContent = fl.fmt ? fl.fmt(o, patch) : o;
+          input.appendChild(op);
+        });
+        input.value = pget(patch, fl.k);
+        input.addEventListener("change", function () {
+          pset(patch, fl.k, input.value); commitPatch(f, patch); renderPatchPanel();
+        });
+      } else {
+        input = document.createElement("input");
+        input.type = "range";
+        input.min = fl.min; input.max = fl.max; input.step = fl.step;
+        input.value = pget(patch, fl.k);
+        var show = function () {
+          var v = +input.value;
+          val.textContent = fl.fmt ? fl.fmt(v, patch)
+            : (fl.step < 1 ? v.toFixed(2) : v) + (fl.unit || "");
+        };
+        show();
+        input.addEventListener("input", function () {
+          pset(patch, fl.k, +input.value); show(); commitPatch(f, patch);
+        });
+        if (fl.k === "tempo") {
+          /* Division labels carry seconds, and seconds depend on tempo. */
+          input.addEventListener("change", function () { renderPatchPanel(); });
+        }
+      }
+      row.appendChild(input);
+      row.appendChild(val);
+      body.appendChild(row);
+    });
+  }
+
+  /* Applied live where it can be, so you hear an edit while standing in the patch. */
+  function commitPatch(f, patch) {
+    save();
+    if (pacer && pacer.f === f) {
+      pacer.patch = patch;
+      ZONE_R = patch.zones.radius;
+      BED.radius = patch.bed.radius;
+      BED.maxVoices = patch.bed.voices;
+      BED.gain = patch.bed.gain;
+      pacer.zones.forEach(function (z) { z.r = patch.zones.radius; });
+      drawZones();
+      if (bed && bed.on) {
+        bed.Tone.Transport.bpm.rampTo(patch.tempo, 0.2);
+        if (bed.voice) {
+          bed.voice.bus.gain.rampTo(patch.voice.on ? patch.voice.gain : 0, 0.2);
+          bed.voice.fx.delay.delayTime.rampTo(divSeconds(patch.fx.delayDiv, patch.tempo), 0.2);
+          bed.voice.fx.delay.wet.rampTo(patch.fx.delayWet, 0.2);
+          bed.voice.fx.delay.feedback.rampTo(patch.fx.delayFb, 0.2);
+          bed.voice.fx.reverb.wet.rampTo(patch.fx.revWet, 0.2);
+        }
+        updateBed();
+      }
+    }
+  }
+
+  $("#pp-close").addEventListener("click", function () { $("#patchpanel").hidden = true; });
+  $("#pp-reset").addEventListener("click", function () {
+    var f = feature(selected);
+    if (!f) { return; }
+    f.properties.patch = defaultPatch();
+    commitPatch(f, f.properties.patch);
+    renderPatchPanel();
+    toast("Patch reset");
+  });
 
   /* ---------- Walks ----------
      Derived, never stored. Features in the active place split into walks wherever more than
@@ -3689,6 +4104,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#f-published").setAttribute("aria-pressed", String(!!f.properties.published));
 
     $("#f-walk").hidden = f.properties.kind !== "route";
+    $("#f-patch").hidden = f.properties.kind !== "route";
     $("#f-walk").setAttribute("aria-pressed", String(!!pacer && pacer.f === f));
 
     $("#card-icons").hidden = f.properties.kind !== "point";
@@ -3768,6 +4184,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!f || f.properties.kind !== "route") { return; }
     if (pacer && pacer.f === f) { pacerStop(); } else { pacerStart(f); }
     this.setAttribute("aria-pressed", String(!!pacer));
+  });
+
+  $("#f-patch").addEventListener("click", function () {
+    var f = feature(selected);
+    if (!f || f.properties.kind !== "route") { return; }
+    $("#patchpanel").hidden = false;
+    renderPatchPanel();
   });
 
   $("#f-zoom").addEventListener("click", function () {
