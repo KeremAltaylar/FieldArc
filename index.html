@@ -3095,7 +3095,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var limiter = new Tone.Limiter(-1).toDestination();
           var meter = new Tone.Meter();
           limiter.connect(meter);
-          bed = { on: false, voices: {}, master: limiter, meter: meter, Tone: Tone };
+          /* Where the recordings go to be used as material rather than heard. They still
+             reach the master directly as well — stage 4 is what crossfades that away. */
+          var fieldTap = new Tone.Gain(1);
+          bed = { on: false, voices: {}, master: limiter, meter: meter,
+                  fieldTap: fieldTap, Tone: Tone };
         }
         bed.on = true;
         window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
@@ -3123,6 +3127,97 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   }
 
+  /* ---------- B2 · Vocoder bank ----------
+     The first stage where the recording and the synth meet in the signal path rather than
+     in a mixer. Each band takes its level from the recording and applies it to the same
+     band of the synth, so the synth wears the recording's spectrum instead of playing
+     beside it.
+
+     Bands are mel-spaced because that is how hearing is spaced: a bank spread evenly in Hz
+     spends most of its bands where almost nothing lives and gives the whole bottom two
+     octaves a single band.
+
+     Dry is the untouched signal, not the sum of the dry bands. A bandpass bank does not
+     reconstruct flat, so summing its bands to make the dry path would colour the sound
+     even at zero — and a bridge at zero has to be inaudible (A-8). One crossfade, the
+     original signal on the dry side, and the null test is then structural. */
+  function melOf(f) { return 2595 * Math.log(1 + f / 700) / Math.LN10; }
+  function melInv(m) { return 700 * (Math.pow(10, m / 2595) - 1); }
+
+  function vocoderBands() {
+    /* A phone gets half the bank. Chosen once at build time — the graph is never rebuilt
+       while it is running (A-16). */
+    var small = (window.matchMedia && window.matchMedia("(max-width: 860px)").matches) ||
+                (navigator.hardwareConcurrency || 4) <= 4;
+    return small ? 16 : 32;
+  }
+
+  function buildVocoder(Tone, tap, out) {
+    var N = vocoderBands(), LO = 120, HI = 8000;
+    var mLo = melOf(LO), mHi = melOf(HI), step = (mHi - mLo) / N;
+    var input = new Tone.Gain(1);
+    var wet = new Tone.Gain(0);              /* closed until something asks for it (A-8) */
+    var xf = new Tone.CrossFade(0);          /* 0 = dry, and dry is bit-for-bit the input */
+    input.connect(xf.a);
+    wet.connect(xf.b);
+    xf.connect(out);
+
+    var bands = [];
+    for (var i = 0; i < N; i++) {
+      var fLo = melInv(mLo + step * i), fHi = melInv(mLo + step * (i + 1));
+      var fc = Math.sqrt(fLo * fHi);
+      var q = Math.max(0.7, fc / Math.max(1, fHi - fLo));
+
+      /* Synth side: this band of the voice, its level about to be dictated from outside.
+         The gain starts at 0 and is fed entirely by signals — connecting anything to a Tone
+         Param zeroes the value you constructed it with, so a band that "rests at 1" by
+         virtue of its constructor argument is silent the moment a follower is attached.
+         Measured: every band read 0 with the bank fully wet. Both terms are signals now
+         and Web Audio sums them into the parameter. */
+      var bg = new Tone.Gain(0).connect(wet);
+      var base = new Tone.Signal(1);
+      base.connect(bg.gain);
+      var sf = new Tone.Filter({ frequency: fc, type: "bandpass", Q: q }).connect(bg);
+      input.connect(sf);
+
+      /* Field side: the same band of the recording, rectified and smoothed into a level. */
+      var af = new Tone.Filter({ frequency: fc, type: "bandpass", Q: q });
+      tap.connect(af);
+      var fol = new Tone.Follower(0.06);
+      af.connect(fol);
+      /* Depth lives here: the follower is multiplied by it before it reaches the band, and
+         the band rests at 1 - depth. At depth 0 the band passes the synth untouched; at 1
+         it is entirely the recording's envelope. */
+      var mul = new Tone.Multiply(0);
+      fol.connect(mul);
+      mul.connect(bg.gain);
+
+      var group = i < N / 3 ? 0 : (i < (2 * N) / 3 ? 1 : 2);
+      bands.push({ fc: Math.round(fc), q: +q.toFixed(2), gain: bg, mul: mul,
+                   base: base, follow: fol, group: group });
+    }
+    return { input: input, xf: xf, wet: wet, bands: bands, n: N,
+             depth: [0, 0, 0], amount: 0 };
+  }
+
+  /* Ramped, and only when it has actually moved: this runs on every eighth and there are
+     up to thirty-two bands to touch. */
+  /* A follower tracking a field recording sits well below full scale, so at full depth the
+     band would be roughly 10dB under where the dry signal was. The follower is scaled on
+     its way to the band rather than the wet bus being made up, which would also lift the
+     bands that are not being modulated at all. */
+  var FOLLOW_GAIN = 3;
+
+  function vocoderDepth(voc, g, d) {
+    if (Math.abs(voc.depth[g] - d) < 0.01) { return; }
+    voc.depth[g] = d;
+    for (var i = 0; i < voc.bands.length; i++) {
+      if (voc.bands[i].group !== g) { continue; }
+      voc.bands[i].mul.factor.rampTo(d * FOLLOW_GAIN, 0.2);
+      voc.bands[i].base.rampTo(1 - d, 0.2);
+    }
+  }
+
   /* ---------- Voice and effects ----------
      A synth layer over the bed, driven by the same archive: density from how eventful the
      nearby recordings are, timbre balance from how noisy they are, filter from how bright. */
@@ -3144,7 +3239,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* Modulation gets its own node. The patch panel owns bus.gain and the morphs own this
        one; sharing a node would mean two writers ramping the same parameter and the last
        one to fire winning. Neutral at 1, so with nothing routed it is not in the path. */
-    var padMod = new Tone.Gain(1).connect(bus);
+    var voc = buildVocoder(Tone, bed.fieldTap, bus);
+    var padMod = new Tone.Gain(1).connect(voc.input);
     var filter = new Tone.Filter(1200, "lowpass").connect(padMod);
 
     /* Three voices, each its own synth so voice leading can be reasoned about one line at
@@ -3184,7 +3280,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       modulationEnvelope: { attack: 0.04, decay: 0.5, sustain: 0.1, release: 0.8 }
     });
 
-    return { fx: fx, bus: bus, filter: filter, padMod: padMod, synth: synth,
+    return { fx: fx, bus: bus, filter: filter, padMod: padMod, voc: voc, synth: synth,
              sect: { synth: sectSynth, gain: sectGain, filter: sectFilter } };
   }
 
@@ -3236,6 +3332,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        harmony — losing it entirely loses the chord you are standing in. */
     var mg = morphFor("voice.gain", bed.Tone.Transport.seconds);
     if (V.padMod) { V.padMod.gain.rampTo(mg === null ? 1 : 0.25 + 0.75 * mg, 0.25); }
+
+    /* The bank. Wet at zero is the untouched signal, so nothing routed here costs nothing. */
+    if (V.voc) {
+      var tv = bed.Tone.Transport.seconds;
+      var amt = morphFor("b2.amount", tv);
+      amt = amt === null ? 0 : amt;
+      if (Math.abs(V.voc.amount - amt) > 0.005) {
+        V.voc.amount = amt;
+        V.voc.xf.fade.rampTo(amt, 0.25);
+        /* The crossfade is not bit-exact at its ends — measured, the wet side still leaked
+           through at -66dB with the fade at zero, against a -100dB null when the wet bus
+           happened to be silent. A-8 asks for silence, not for quiet, so the bus is closed
+           rather than merely faded away from. */
+        V.voc.wet.gain.rampTo(amt < 0.01 ? 0 : 1, 0.25);
+      }
+      var gl = morphFor("b2.low", tv), gm = morphFor("b2.mid", tv), gh = morphFor("b2.high", tv);
+      vocoderDepth(V.voc, 0, gl === null ? 0 : gl);
+      vocoderDepth(V.voc, 1, gm === null ? 0 : gm);
+      vocoderDepth(V.voc, 2, gh === null ? 0 : gh);
+    }
 
     var cut = Math.max(300, Math.min(12000, ch.centroid * 1.6));
     var mc = morphFor("voice.cutoff", bed.Tone.Transport.seconds);
@@ -3407,6 +3523,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var f = feature(z.id), a = (f && f.properties.audio) || {};
       v.url = URL.createObjectURL(blob);
       v.gain = new Tone.Gain(0).connect(bed.master);
+      if (bed.fieldTap) { v.gain.connect(bed.fieldTap); }
       v.filter = new Tone.Filter(400, "lowpass").connect(v.gain);
       /* Its own brightness sets how far the filter can open; proximity decides how far it
          actually does. A dull recording stays dull however close you stand. */
@@ -3546,7 +3663,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "voice.cutoff", label: "pad filter" },
     { k: "sect.cutoff",  label: "2nd filter" },
     { k: "sect.index",   label: "2nd timbre" },
-    { k: "voice.gain",   label: "pad level" }
+    { k: "voice.gain",   label: "pad level" },
+    { k: "b2.amount",    label: "vocode wet" },
+    { k: "b2.low",       label: "vocode low" },
+    { k: "b2.mid",       label: "vocode mid" },
+    { k: "b2.high",      label: "vocode high" }
   ];
   function destLabel(k) {
     for (var i = 0; i < MORPH_DESTS.length; i++) {
@@ -3966,14 +4087,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
            earshot of a recording, which is the point: this morph exists only where the
            archive does. */
         { id: "m6", on: true, shape: "field",  period: 90,  depth: 0.90, bias: 0.05,
-          phase: 0,    dest: "voice.gain" }
+          phase: 0,    dest: "voice.gain" },
+        /* The bank opens and closes slowly; the top of it flickers. Lows and mids are left
+           unrouted so there is somewhere obvious to point a morph of your own. */
+        { id: "m7", on: true, shape: "breath", period: 140, depth: 0.75, bias: 0.05,
+          phase: 0.5,  dest: "b2.amount" },
+        { id: "m8", on: true, shape: "drift",  period: 33,  depth: 0.85, bias: 0.10,
+          phase: 0.2,  dest: "b2.high" }
       ]
     };
   }
 
   function defaultPatch() {
     return {
-      version: 7, tempo: 72, key: 50, key2: 55,
+      version: 8, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -4022,7 +4149,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       }
       p.version = 7;
     }
-    if (!p || p.version !== 7 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    /* 7 to 8 appends the two vocoder morphs and nothing else. */
+    if (p && p.version === 7 && p.morph && p.morph.list) {
+      var hasVoc = false;
+      for (var vi = 0; vi < p.morph.list.length; vi++) {
+        if ((p.morph.list[vi].dest || "").indexOf("b2.") === 0) { hasVoc = true; }
+      }
+      if (!hasVoc) {
+        p.morph.list = p.morph.list.concat(defaultMorph().list.filter(function (m) {
+          return m.dest.indexOf("b2.") === 0;
+        }));
+      }
+      p.version = 8;
+    }
+    if (!p || p.version !== 8 || !p.prog) { p = f.properties.patch = defaultPatch(); }
     if (!p.morph) { p.morph = defaultMorph(); }
     return p;
   }
@@ -4275,6 +4415,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     h.textContent = "Morphs — slow shapes, each on its own clock";
     body.appendChild(h);
 
+    var add = document.createElement("button");
+    add.type = "button";
+    add.className = "ghost ppwide ppgen";
+    add.textContent = "Add a morph";
+    add.title = "A new drift on a free destination";
+    add.addEventListener("click", function () {
+      /* Points at whichever destination nothing is using yet, so a new morph does something
+         the moment it exists rather than piling onto one that is already driven. */
+      var used = {};
+      patch.morph.list.forEach(function (x) { used[x.dest] = true; });
+      var free = MORPH_DESTS.filter(function (d) { return !used[d.k]; })[0] || MORPH_DESTS[0];
+      var ids = patch.morph.list.map(function (x) { return x.id; }), k = 1;
+      while (ids.indexOf("m" + k) !== -1) { k++; }
+      patch.morph.list.push({ id: "m" + k, on: true, shape: "drift", period: 120,
+                              depth: 0.7, bias: 0.1, phase: Math.random(), dest: free.k });
+      commitPatch(f, patch); renderPatchPanel();
+      toast("Morph on " + free.label);
+    });
+    body.appendChild(add);
+
     var grid = document.createElement("div");
     grid.className = "ppgrid ppwide";
 
@@ -4341,7 +4501,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         m.dest = dst.value; commitPatch(f, patch); showPer();
       });
 
+      var del = document.createElement("button");
+      del.type = "button"; del.className = "ghost ppmini";
+      del.textContent = "×";
+      del.title = "Remove this morph";
+      del.addEventListener("click", function () {
+        patch.morph.list = patch.morph.list.filter(function (x) { return x !== m; });
+        commitPatch(f, patch); renderPatchPanel();
+      });
+
       cell.appendChild(onBtn);
+      cell.appendChild(del);
       cell.appendChild(shape);
       cell.appendChild(dst);
       cell.appendChild(per);
