@@ -2367,10 +2367,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       f.properties.audio = {
         name: file.name, type: file.type || "audio/*", size: file.size,
         added_at: new Date().toISOString(),
-        recorded_at: file.lastModified ? new Date(file.lastModified).toISOString() : undefined
+        recorded_at: file.lastModified ? new Date(file.lastModified).toISOString() : undefined,
+        time_source: file.lastModified ? "file_mtime" : "import_time"
       };
       commit();
       renderDetail();
+      recordingTime(file).then(function (t) {
+        if (t.source !== "bwf") { return; }
+        f.properties.audio.recorded_at = new Date(t.ms).toISOString();
+        f.properties.audio.time_source = "bwf";
+        if (t.originator) { f.properties.audio.recorder = t.originator; }
+        save();
+        if (selected === f.properties.id) { renderDetail(); }
+      });
       /* Descriptors arrive after the player does — the recording is usable immediately. */
       analyseAudio(file).then(function (a) {
         var t = f.properties.audio;
@@ -2498,6 +2507,62 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       routes.push({ coords: coords, times: times });
     }
     return routes;
+  }
+
+  /* ---------- BWF timestamps ----------
+     A recorder writes the true origination time into the file's bext chunk. The filesystem
+     mtime is a copy of a copy — some transfers and cloud syncs rewrite it, and then a
+     recording is placed at the wrong point on the trace with nothing to show it went wrong. */
+  function ascii(dv, off, len) {
+    var s = "";
+    for (var i = 0; i < len; i++) {
+      var c = dv.getUint8(off + i);
+      if (!c) { break; }
+      s += String.fromCharCode(c);
+    }
+    return s.trim();
+  }
+
+  function readBWF(file) {
+    /* Chunks live near the front; a WAV's audio data does not need reading. */
+    return file.slice(0, 262144).arrayBuffer().then(function (buf) {
+      var dv = new DataView(buf);
+      if (dv.byteLength < 16 || ascii(dv, 0, 4) !== "RIFF" || ascii(dv, 8, 4) !== "WAVE") {
+        return null;
+      }
+      var pos = 12;
+      while (pos + 8 <= dv.byteLength) {
+        var id = ascii(dv, pos, 4);
+        var size = dv.getUint32(pos + 4, true);
+        if (id === "bext") {
+          var o = pos + 8;
+          if (o + 348 > dv.byteLength) { return null; }
+          var date = ascii(dv, o + 320, 10);        /* yyyy-mm-dd */
+          var time = ascii(dv, o + 330, 8);         /* hh:mm:ss   */
+          if (!/^\d{4}[-:]\d{2}[-:]\d{2}$/.test(date) || !/^\d{2}:\d{2}:\d{2}$/.test(time)) {
+            return null;
+          }
+          /* BWF carries no timezone, so this is the recorder's own clock. Parsed without a
+             Z, which makes it local time — right when the recorder is set to your zone. */
+          var d = new Date(date.replace(/:/g, "-") + "T" + time);
+          if (isNaN(d.getTime())) { return null; }
+          return { ms: d.getTime(), originator: ascii(dv, o + 256, 32) };
+        }
+        if (size <= 0) { break; }
+        pos += 8 + size + (size % 2);
+      }
+      return null;
+    }).catch(function () { return null; });
+  }
+
+  /* The best time we can claim for a recording, and where it came from. */
+  function recordingTime(file) {
+    return readBWF(file).then(function (b) {
+      if (b) { return { ms: b.ms, source: "bwf", originator: b.originator }; }
+      return file.lastModified
+        ? { ms: file.lastModified, source: "file_mtime" }
+        : { ms: Date.now(), source: "import_time" };
+    });
   }
 
   /* Where were you at time t, according to any imported trace? */
@@ -3104,6 +3169,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var wx = fmtWeather(f.properties.weather);
     if (wx) { extra += "<br>" + wx; }
     var a = f.properties.audio;
+    if (a && a.recorded_at) {
+      extra += "<br>recorded " + fmtWhen(a.recorded_at) +
+        (a.time_source === "bwf" ? " · BWF" + (a.recorder ? " · " + a.recorder : "") : " · file time");
+    }
     if (a && a.sample_rate) {
       extra += "<br>" + (a.sample_rate / 1000) + " kHz · " +
         (a.channels === 1 ? "mono" : a.channels === 2 ? "stereo" : a.channels + "ch") +
@@ -3312,10 +3381,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
 
     snd.forEach(function (file) {
-      chain = chain.then(function () {
-        var when = file.lastModified;
-        var at = when ? positionAt(when) : null;
-        if (!at) { report.push("no trace covers " + file.name); return; }
+      chain = chain.then(function () { return recordingTime(file); }).then(function (t) {
+        var when = t.ms;
+        var at = positionAt(when);
+        if (!at) {
+          report.push("no trace covers " + file.name +
+            (t.source === "bwf" ? " (BWF " + fmtWhen(new Date(when).toISOString()) + ")" : ""));
+          return;
+        }
         var f = { type: "Feature", properties: {
           id: uid(), kind: "point", name: "", note: "",
           place: place ? place.properties.id : DEFAULT_PLACE,
@@ -3325,7 +3398,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           has_audio: true,
           audio: { name: file.name, type: file.type || "audio/*", size: file.size,
                    added_at: new Date().toISOString(),
-                   recorded_at: new Date(when).toISOString() }
+                   recorded_at: new Date(when).toISOString(),
+                   time_source: t.source,          /* bwf beats a filesystem mtime */
+                   recorder: t.originator || undefined }
         }, geometry: { type: "Point", coordinates: at.coord } };
         fc.features.push(f);
         return putAudio(f.properties.id, file).then(function () {
@@ -3335,7 +3410,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           f.properties.audio.undecodable = true;   /* kept, but no descriptors here */
           report.push(file.name + " stored (not decodable in this browser)");
         });
-        }).then(function () { report.push("placed " + file.name); });
+        }).then(function () {
+          report.push("placed " + file.name + " by " +
+            (t.source === "bwf" ? "its BWF timestamp" : "file time"));
+        });
       });
     });
 
