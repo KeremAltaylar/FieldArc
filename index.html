@@ -673,6 +673,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   white-space: nowrap; pointer-events: none;
   max-width: 88%; overflow: hidden; text-overflow: ellipsis;
 }
+/* The toast and the walk readouts both sat at the same top edge, so every sector change
+   printed itself across the distance readout. During a walk it drops below both bars. */
+#map:has(#pacerbar:not([hidden])) #toast { top: 6.4rem; }
+@media (max-width: 860px) {
+  #map:has(#pacerbar:not([hidden])) #toast { top: 7.6rem; }
+}
 
 /* ---- Full-screen analyser ---- */
 #viewer {
@@ -717,6 +723,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   flex: 1; font-family: var(--font-mono); font-size: var(--t-xs);
   letter-spacing: var(--track-meta); text-transform: uppercase; color: var(--dim);
 }
+/* The morph cells. First attempt drew them across the whole map: measured 2314 painted
+   samples at peak alpha 200 and it was still invisible, because additive light over a
+   bright satellite basemap has nothing to add to. They get their own dark ground now —
+   a display, framed like every other bar over this map, rather than a fog across it.
+   No pointer events, and out of the accessibility tree: it says nothing the patch panel
+   does not already say in words. */
+#cells {
+  position: absolute; left: var(--s-4); bottom: 3.6rem;
+  width: 15rem; height: 15rem;
+  pointer-events: none; z-index: 2;
+  border: 1px solid var(--bdr); border-radius: 50%;
+  background: color-mix(in oklch, var(--sunk) 78%, transparent);
+  backdrop-filter: blur(3px);
+}
+@media (max-width: 860px) {
+  #cells { width: 8.5rem; height: 8.5rem; bottom: 5.4rem; }
+}
+
 #pp-body {
   flex: 1; min-height: 0; overflow-y: auto;
   padding: var(--s-4) var(--s-5);
@@ -1099,12 +1123,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   <div id="map">
     <div id="loading">Loading basemap…</div>
+    <canvas id="cells" aria-hidden="true" hidden></canvas>
     <p id="toast" hidden></p>
     <div id="readout"><span><b>lat</b> —</span><span><b>lon</b> —</span></div>
 
     <p id="pacerbar" hidden></p>
     <div id="patchbar" hidden>
       <button type="button" id="patch-play" aria-pressed="false">Sound</button>
+      <button type="button" id="cells-btn" class="ghost" aria-pressed="false"
+              title="Morph cells — one cell per morph, breathing on its own clock">Cells</button>
       <span id="patch-info">—</span>
       <span id="patch-clip" title="Clip — read from the master signal, not from fader positions">clip</span>
     </div>
@@ -2947,6 +2974,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     drawProgSegments();
     drawSectors();
     bedStop();
+    cellsSet(false);
     $("#patchbar").hidden = true;
     $("#pacerbar").hidden = true;
     drawZones();
@@ -2979,6 +3007,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     BED.gain = pacer.patch.bed.gain;
     harmony.idx = null; harmony.chord = null; harmony.tones = null;
     harmony.last = { bass: null, inner: null, top: null };
+    cellsSet(!!(pacer.patch.morph && pacer.patch.morph.cells));
 
     /* Dragging is free-hand; the walker is not. Every drag snaps back onto the line, which
        is what makes desk testing and a real walk the same code path. */
@@ -2995,6 +3024,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     window.__fa.sect = sect;
     window.__fa.counter = counter;
     window.__fa.pacerSet = pacerSet;
+    /* Measurable: a morph is a pure function of time, so a test can ask for its value at
+       any instant instead of waiting out an eleven-minute period in real time. */
+    window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
+                          clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
     window.__fa.projectToRoute = projectToRoute;
 
     $("#pacerbar").hidden = false;
@@ -3187,7 +3220,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     var density = Math.max(0.05, Math.min(0.95,
       patch.voice.density * (0.35 + Math.min(2.5, ch.onsets) / 2.5)));
-    V.filter.frequency.rampTo(Math.max(300, Math.min(12000, ch.centroid * 1.6)), 0.25);
+    /* The recordings still choose the centre; the morphs decide how far above or below it
+       the voice sits. Multiplicative, so the archive keeps its say — a morph that replaced
+       the centroid outright would sound like an LFO, not like a place changing. */
+    var cut = Math.max(300, Math.min(12000, ch.centroid * 1.6));
+    var mc = morphFor("voice.cutoff", bed.Tone.Transport.seconds);
+    if (mc !== null) { cut = Math.max(180, Math.min(14000, cut * 0.35 * Math.pow(6.3, mc))); }
+    V.filter.frequency.rampTo(cut, 0.25);
 
     if (Math.random() > density) { return; }
 
@@ -3459,6 +3498,229 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      harmonic rhythm of a route is visible at a glance. */
   function rootColour(pc) { return hslHex(((pc % 12) + 12) % 12 * 30, 42, 62); }
 
+  /* ---------- Morphs ----------
+     A morph is a number between 0 and 1 with a period measured in minutes, and nothing
+     else. It does not know what it drives; a bridge does not know what drives it. That
+     separation is the whole design: any morph can be pointed at any destination, and a
+     destination can take several at once.
+
+     Periods are seconds, not bar divisions. This is a deliberate exception to A-9: an
+     eleven-minute morph is a formal shape, not a rhythm, and quantising it to bars would
+     be a lie about what it is. Gestures, when they arrive, stay on divisions. */
+
+  var MORPH_SHAPES = ["drift", "breath", "pulse", "ramp", "tide"];
+  var MORPH_SHAPE_NOTE = {
+    drift:  "a smoothed random walk — never the same twice, never sudden",
+    breath: "asymmetric: a short rise and a long fall",
+    pulse:  "flat, with a rare narrow swell",
+    ramp:   "one very slow climb, then back",
+    tide:   "two sines beating — repeats far later than either alone"
+  };
+
+  /* Deterministic value noise. A morph seeded from its id gives the same walk every
+     session, so a patch you liked is a patch you can return to. */
+  function hash01(n, seed) {
+    var x = Math.sin(n * 127.1 + seed * 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  /* Takes an UNWRAPPED phase. Two of these shapes are defined by never coming back to
+     where they started, and wrapping the phase at 1 quietly destroyed both: measured,
+     tide and drift repeated after exactly one period, difference 0.000000. The periodic
+     shapes wrap here, deliberately and one at a time; the other two must not. */
+  function morphShape(shape, u, seed) {
+    var TAU = Math.PI * 2;
+    var p = u - Math.floor(u);
+    if (shape === "ramp") { return p; }
+    if (shape === "pulse") {
+      var sp = Math.sin(Math.PI * p);
+      return Math.pow(sp < 0 ? 0 : sp, 12);
+    }
+    if (shape === "breath") {
+      /* Rise over the first third, fall over the rest — the asymmetry is the point. */
+      var w = p < 0.35 ? (p / 0.35) * 0.5 : 0.5 + ((p - 0.35) / 0.65) * 0.5;
+      return 0.5 - 0.5 * Math.cos(TAU * w);
+    }
+    if (shape === "tide") {
+      /* Two incommensurable rates on the unwrapped phase. Because the ratio is irrational
+         the sum never exactly recurs — the period is how long one crest takes, not how
+         long the pattern takes. */
+      return 0.5 + (Math.sin(TAU * u) + Math.sin(TAU * u * 1.6180339887)) / 4;
+    }
+    /* drift: value noise, five knots per period, smoothstepped so it never steps. The
+       knot index is unbounded, so the walk never revisits its own sequence. */
+    var K = 5, x = u * K, i = Math.floor(x), f = x - i;
+    var a = hash01(i, seed), b = hash01(i + 1, seed);
+    return a + (b - a) * (f * f * (3 - 2 * f));
+  }
+
+  function morphValue(m, t) {
+    if (!m.on) { return 0; }
+    var per = Math.max(4, m.period || 60);
+    var u = (t / per) + (m.phase || 0);   /* unwrapped — the shape decides whether to wrap */
+    var seed = (m.id || "m").charCodeAt(m.id ? m.id.length - 1 : 0) || 7;
+    var v = (m.bias || 0) + (m.depth === undefined ? 1 : m.depth) * morphShape(m.shape, u, seed);
+    return v < 0 ? 0 : v > 1 ? 1 : v;
+  }
+
+  /* The clock. Audio reads the Transport, because a value that reaches a filter must come
+     off the audio clock (A-1). The visualisation falls back to wall time so the cells still
+     breathe before you press Sound — drawing from a wall clock is not scheduling. */
+  var MORPH_T0 = (typeof performance !== "undefined" ? performance.now() : Date.now()) / 1000;
+  function morphClock() {
+    if (bed && bed.on && bed.Tone) { return bed.Tone.Transport.seconds; }
+    return (typeof performance !== "undefined" ? performance.now() : Date.now()) / 1000 - MORPH_T0;
+  }
+
+  function morphList() {
+    if (!pacer || !pacer.patch.morph || !pacer.patch.morph.on) { return []; }
+    return pacer.patch.morph.list || [];
+  }
+
+  /* Everything aimed at one destination, averaged. Summing would let three morphs pin a
+     destination at its ceiling and stay there, which is the opposite of a morph. */
+  /* ---------- Cells ----------
+     One cell per morph. Radius is its current value, so the texture is visible thickening
+     before you hear it; hue is the chord root, reusing the colour already drawn along the
+     route so the visualisation and the progression agree. Cells drift toward each other and
+     fuse while their values are close, which is the only thing here that is genuinely a
+     life cycle: convergence you can see coming.
+
+     It draws and never decides. Nothing in the audio path reads a pixel, and the canvas is
+     paused whenever it is hidden — it competes with the audio for a phone's CPU, and the
+     audio wins. */
+  var cells = { on: false, raf: null, last: 0, dpr: 1, w: 0, h: 0, reduced: false };
+
+  function cellsResize() {
+    var c = $("#cells");
+    if (!c) { return; }
+    var r = c.getBoundingClientRect();
+    if (!r.width) { return; }
+    cells.dpr = Math.min(2, window.devicePixelRatio || 1);
+    cells.w = r.width; cells.h = r.height;
+    c.width = Math.round(r.width * cells.dpr);
+    c.height = Math.round(r.height * cells.dpr);
+  }
+
+  function cellsDraw() {
+    var c = $("#cells");
+    if (!c || !cells.on) { return; }
+    var g = c.getContext("2d");
+    if (!g) { return; }
+    if (!cells.w || !cells.h) { cellsResize(); }
+    g.setTransform(cells.dpr, 0, 0, cells.dpr, 0, 0);
+    g.clearRect(0, 0, cells.w, cells.h);
+
+    var list = morphList();
+    if (!list.length) { return; }
+    var t = morphClock();
+    var pc = (pacer && harmony.chord !== null) ? chordRoot(pacer.patch, harmony.chord)
+           : (pacer ? pacer.patch.key : 0);
+    var hue = rootColour(pc);
+    var base = Math.min(cells.w, cells.h);
+
+    var pts = [];
+    for (var i = 0; i < list.length; i++) {
+      if (!list[i].on) { continue; }
+      var v = morphValue(list[i], t);
+      /* Each cell keeps to its own slow orbit, on a period unrelated to its morph, so
+         position never becomes a second readout of value. */
+      var orb = t / (73 + i * 41) + i * 0.618;
+      pts.push({
+        v: v,
+        x: cells.w * (0.5 + 0.20 * Math.cos(orb * 6.283) * (0.6 + 0.4 * v)),
+        y: cells.h * (0.5 + 0.20 * Math.sin(orb * 6.283 * 0.77) * (0.6 + 0.4 * v)),
+        r: base * (0.055 + 0.20 * v)
+      });
+    }
+
+    g.globalCompositeOperation = "lighter";
+
+    /* Fusion: while two morphs hold near the same value, the space between their cells is
+       filled, and they read as one body until they drift apart again. */
+    for (var a = 0; a < pts.length; a++) {
+      for (var b = a + 1; b < pts.length; b++) {
+        var close = 1 - Math.min(1, Math.abs(pts[a].v - pts[b].v) / 0.14);
+        if (close <= 0) { continue; }
+        var steps = 6;
+        for (var k = 1; k < steps; k++) {
+          var f = k / steps;
+          cellBlob(g, pts[a].x + (pts[b].x - pts[a].x) * f,
+                      pts[a].y + (pts[b].y - pts[a].y) * f,
+                      (pts[a].r + (pts[b].r - pts[a].r) * f) * 0.55 * close,
+                      hue, 0.16 * close * Math.min(pts[a].v, pts[b].v));
+        }
+      }
+    }
+    for (var j = 0; j < pts.length; j++) {
+      cellBlob(g, pts[j].x, pts[j].y, pts[j].r, hue, 0.16 + 0.46 * pts[j].v);
+    }
+    /* A membrane. Without an edge the cells are weather; with one they are bodies, and
+       you can see a value rather than only a mood. */
+    g.globalCompositeOperation = "source-over";
+    g.lineWidth = 1;
+    for (var q = 0; q < pts.length; q++) {
+      g.strokeStyle = hexA(hue, 0.30 + 0.45 * pts[q].v);
+      g.beginPath(); g.arc(pts[q].x, pts[q].y, pts[q].r, 0, 6.2832); g.stroke();
+    }
+  }
+
+  function cellBlob(g, x, y, r, hex, alpha) {
+    if (r <= 0.5) { return; }
+    var grd = g.createRadialGradient(x, y, 0, x, y, r);
+    grd.addColorStop(0, hexA(hex, alpha));
+    grd.addColorStop(0.55, hexA(hex, alpha * 0.45));
+    grd.addColorStop(1, hexA(hex, 0));
+    g.fillStyle = grd;
+    g.beginPath(); g.arc(x, y, r, 0, 6.2832); g.fill();
+  }
+
+  function hexA(hex, a) {
+    var n = parseInt(hex.slice(1), 16);
+    return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," +
+           (a < 0 ? 0 : a > 1 ? 1 : a).toFixed(3) + ")";
+  }
+
+  /* 30fps is plenty for something whose fastest motion takes forty seconds, and it leaves
+     the frame budget to the map. Reduced motion (C-6) gets one frame a second — the state
+     stays truthful, the movement stops. */
+  function cellsTick(now) {
+    if (!cells.on) { cells.raf = null; return; }
+    cells.raf = requestAnimationFrame(cellsTick);
+    if (document.hidden) { return; }
+    var gap = cells.reduced ? 1000 : 33;
+    if (now - cells.last < gap) { return; }
+    cells.last = now;
+    cellsDraw();
+  }
+
+  function cellsSet(on) {
+    cells.on = !!on;
+    var c = $("#cells"), b = $("#cells-btn");
+    if (c) { c.hidden = !cells.on; }
+    if (b) { b.setAttribute("aria-pressed", String(cells.on)); }
+    if (pacer && pacer.patch.morph) { pacer.patch.morph.cells = cells.on; }
+    if (cells.on) {
+      cells.reduced = window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      cellsResize();
+      if (!cells.raf) { cells.raf = requestAnimationFrame(cellsTick); }
+    } else if (cells.raf) {
+      cancelAnimationFrame(cells.raf); cells.raf = null;
+    }
+  }
+
+  window.addEventListener("resize", function () { if (cells.on) { cellsResize(); } });
+
+  function morphFor(dest, t) {
+    var list = morphList(), n = 0, sum = 0;
+    for (var i = 0; i < list.length; i++) {
+      if (!list[i].on || list[i].dest !== dest) { continue; }
+      sum += morphValue(list[i], t); n++;
+    }
+    return n ? sum / n : null;
+  }
+
   /* Rules, not dice: fourth-motion bias, qualities that suit each degree, and a real
      cadence at the end. Random progressions that ignore function sound random. */
   var DEGREE_Q = {
@@ -3526,9 +3788,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     water:  { osc: "noise",    oct: 0,  dur: 2.6 }
   };
 
+  /* Three clocks chosen not to divide into one another, so the combination they make
+     does not return for far longer than any of them. Stage 1 points all three at the
+     voice filter; the bridges they will drive do not exist yet. */
+  function defaultMorph() {
+    return {
+      on: true, cells: true,
+      list: [
+        { id: "m1", on: true, shape: "tide",   period: 660, depth: 0.85, bias: 0.08,
+          phase: 0,    dest: "voice.cutoff" },
+        { id: "m2", on: true, shape: "drift",  period: 190, depth: 0.70, bias: 0.15,
+          phase: 0.31, dest: "voice.cutoff" },
+        { id: "m3", on: true, shape: "breath", period: 47,  depth: 0.55, bias: 0.22,
+          phase: 0.62, dest: "voice.cutoff" }
+      ]
+    };
+  }
+
   function defaultPatch() {
     return {
-      version: 4, tempo: 72, key: 50, key2: 55,
+      version: 5, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -3538,14 +3817,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       fx:    { delayDiv: "8n.", delayWet: 0.75, delayFb: 0.85, revWet: 0.18, revDecay: 3.4 },
       zones: { radius: 25, on: true },
       sect:  { on: true, n: 7, gain: 0.8, rhythm: "4n.", chordPull: 0.35 },
+      morph: defaultMorph(),
       sectors: defaultSectors()
     };
   }
 
   function patchOf(f) {
     var p = f.properties.patch;
-    /* Version 1 was scale-based. There is nothing worth salvaging in half a migration. */
-    if (!p || p.version !== 4 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    /* Version 1 was scale-based. There is nothing worth salvaging in half a migration.
+       4 to 5 is a different case: everything in a v4 patch is still correct and a tuned
+       progression is worth more than a clean slate, so it is migrated, not replaced. */
+    if (p && p.version === 4 && p.prog) { p.morph = defaultMorph(); p.version = 5; }
+    if (!p || p.version !== 5 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p.morph) { p.morph = defaultMorph(); }
     return p;
   }
 
@@ -3695,6 +3979,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "fx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
     { k: "fx.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
 
+    { sec: "Morphs" },
+    { k: "morph.on", label: "morphs", toggle: true },
+
     { sec: "Zones" },
     { k: "zones.on", label: "zone events", toggle: true },
     { k: "zones.radius", label: "zone radius", min: 8, max: 120, step: 1, unit: " m" }
@@ -3782,6 +4069,80 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
 
     renderProgression(f, patch, body);
+    renderMorphs(f, patch, body);
+  }
+
+  /* One row per morph: what it is, how long it takes, how far it swings, and where it
+     goes. Period is shown in minutes and seconds because that is the unit it is set in
+     — a morph shown in bars would be pretending to be a rhythm. */
+  function renderMorphs(f, patch, body) {
+    var h = document.createElement("h2");
+    h.className = "ppwide";
+    h.textContent = "Morphs — slow shapes, each on its own clock";
+    body.appendChild(h);
+
+    var grid = document.createElement("div");
+    grid.className = "ppgrid ppwide";
+
+    patch.morph.list.forEach(function (m, i) {
+      var cell = document.createElement("div");
+      cell.className = "ppchord";
+
+      var n = document.createElement("b");
+      n.textContent = (i + 1);
+      cell.appendChild(n);
+
+      var onBtn = document.createElement("button");
+      onBtn.type = "button"; onBtn.className = "ghost ppmini";
+      var setOn = function () {
+        onBtn.textContent = m.on ? "on" : "off";
+        onBtn.setAttribute("aria-pressed", String(!!m.on));
+      };
+      setOn();
+      onBtn.addEventListener("click", function () { m.on = !m.on; setOn(); commitPatch(f, patch); });
+
+      var shape = document.createElement("select");
+      MORPH_SHAPES.forEach(function (sh) {
+        var o = document.createElement("option");
+        o.value = sh; o.textContent = sh;
+        shape.appendChild(o);
+      });
+      shape.value = m.shape;
+      shape.title = MORPH_SHAPE_NOTE[m.shape] || "";
+      shape.addEventListener("change", function () {
+        m.shape = shape.value; shape.title = MORPH_SHAPE_NOTE[m.shape] || "";
+        commitPatch(f, patch);
+      });
+
+      var per = document.createElement("input");
+      per.type = "range"; per.min = 10; per.max = 1200; per.step = 5; per.value = m.period;
+      per.title = "Period";
+      var perOut = document.createElement("em");
+      perOut.className = "ppres";
+      var showPer = function () {
+        var v = +per.value;
+        perOut.textContent = Math.floor(v / 60) + ":" + String(v % 60).padStart(2, "0") +
+          " · " + m.shape;
+      };
+      showPer();
+      per.addEventListener("input", function () {
+        m.period = +per.value; showPer(); commitPatch(f, patch);
+      });
+      shape.addEventListener("change", showPer);
+
+      var dep = document.createElement("input");
+      dep.type = "range"; dep.min = 0; dep.max = 1; dep.step = 0.05; dep.value = m.depth;
+      dep.title = "Depth";
+      dep.addEventListener("input", function () { m.depth = +dep.value; commitPatch(f, patch); });
+
+      cell.appendChild(onBtn);
+      cell.appendChild(shape);
+      cell.appendChild(per);
+      cell.appendChild(dep);
+      cell.appendChild(perOut);
+      grid.appendChild(cell);
+    });
+    body.appendChild(grid);
   }
 
   /* Sixteen chords across the route. Walking from one end to the other plays the whole
@@ -4866,6 +5227,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   flagToggle("#f-published", "published");
 
   $("#f-delete").addEventListener("click", removeSelected);
+  $("#cells-btn").addEventListener("click", function () { cellsSet(!cells.on); });
+
   $("#patch-play").addEventListener("click", function () {
     if (bed && bed.on) { bedStop(); return; }
     var btn = this;
