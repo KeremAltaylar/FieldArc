@@ -3141,7 +3141,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     fx.delay.wet.rampTo(patch.fx.delayWet, 0.3);
 
     var bus = new Tone.Gain(patch.voice.gain).connect(fx.delay);
-    var filter = new Tone.Filter(1200, "lowpass").connect(bus);
+    /* Modulation gets its own node. The patch panel owns bus.gain and the morphs own this
+       one; sharing a node would mean two writers ramping the same parameter and the last
+       one to fire winning. Neutral at 1, so with nothing routed it is not in the path. */
+    var padMod = new Tone.Gain(1).connect(bus);
+    var filter = new Tone.Filter(1200, "lowpass").connect(padMod);
 
     /* Three voices, each its own synth so voice leading can be reasoned about one line at
        a time: a bass that moves rarely, an inner voice that sustains, and a top voice that
@@ -3180,7 +3184,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       modulationEnvelope: { attack: 0.04, decay: 0.5, sustain: 0.1, release: 0.8 }
     });
 
-    return { fx: fx, bus: bus, filter: filter, synth: synth,
+    return { fx: fx, bus: bus, filter: filter, padMod: padMod, synth: synth,
              sect: { synth: sectSynth, gain: sectGain, filter: sectFilter } };
   }
 
@@ -3226,6 +3230,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* The recordings still choose the centre; the morphs decide how far above or below it
        the voice sits. Multiplicative, so the archive keeps its say — a morph that replaced
        the centroid outright would sound like an LFO, not like a place changing. */
+    fieldSourceUpdate();
+
+    /* Never all the way down: a level morph that mutes is a gate, and the pad is the
+       harmony — losing it entirely loses the chord you are standing in. */
+    var mg = morphFor("voice.gain", bed.Tone.Transport.seconds);
+    if (V.padMod) { V.padMod.gain.rampTo(mg === null ? 1 : 0.25 + 0.75 * mg, 0.25); }
+
     var cut = Math.max(300, Math.min(12000, ch.centroid * 1.6));
     var mc = morphFor("voice.cutoff", bed.Tone.Transport.seconds);
     if (mc !== null) { cut = Math.max(180, Math.min(14000, cut * 0.35 * Math.pow(6.3, mc))); }
@@ -3527,14 +3538,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      eleven-minute morph is a formal shape, not a rhythm, and quantising it to bars would
      be a lie about what it is. Gestures, when they arrive, stay on divisions. */
 
-  var MORPH_SHAPES = ["drift", "breath", "pulse", "ramp", "tide"];
+  var MORPH_SHAPES = ["drift", "breath", "pulse", "ramp", "tide", "field"];
   /* Where a morph can point. Brightness for each voice, and for the FM voice its
      modulation index — which is a timbre control, not a volume or a filter: it changes
      what the voice is made of rather than how much of it gets through. */
   var MORPH_DESTS = [
     { k: "voice.cutoff", label: "pad filter" },
     { k: "sect.cutoff",  label: "2nd filter" },
-    { k: "sect.index",   label: "2nd timbre" }
+    { k: "sect.index",   label: "2nd timbre" },
+    { k: "voice.gain",   label: "pad level" }
   ];
   function destLabel(k) {
     for (var i = 0; i < MORPH_DESTS.length; i++) {
@@ -3547,7 +3559,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     breath: "asymmetric: a short rise and a long fall",
     pulse:  "flat, with a rare narrow swell",
     ramp:   "one very slow climb, then back",
-    tide:   "two sines beating — repeats far later than either alone"
+    tide:   "two sines beating — repeats far later than either alone",
+    field:  "the envelope of the nearest recording, read as a curve"
   };
 
   /* Deterministic value noise. A morph seeded from its id gives the same walk every
@@ -3574,6 +3587,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var w = p < 0.35 ? (p / 0.35) * 0.5 : 0.5 + ((p - 0.35) / 0.65) * 0.5;
       return 0.5 - 0.5 * Math.cos(TAU * w);
     }
+    if (shape === "field") { return fieldAt(p); }
     if (shape === "tide") {
       /* Two incommensurable rates on the unwrapped phase. Because the ratio is irrational
          the sum never exactly recurs — the period is how long one crest takes, not how
@@ -3587,12 +3601,71 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return a + (b - a) * (f * f * (3 - 2 * f));
   }
 
+  /* ---------- B1 · Envelope transfer ----------
+     Every recording already carries about 200 peak magnitudes, computed once on attach.
+     That array is the shape of a real gesture in a real place, and it costs nothing to
+     read — no decode, no analysis, no audio node. Stretched over a minute or two it stops
+     being a waveform and becomes a slow contour, which is the first point at which the
+     archive is playing the synth rather than sitting beside it.
+
+     Unlike every other shape this one is not a pure function of time: it depends on which
+     recording you are near. When you are near none, it reports nothing at all rather than
+     a neutral value, so its destination falls back to neutral and its cell goes out. */
+  var field = { id: null, peaks: null, norm: 1, d: Infinity };
+
+  function fieldSourceUpdate() {
+    if (!pacer) { field.id = null; field.peaks = null; return; }
+    var bestId = null, bestD = Infinity;
+    pacer.zones.forEach(function (z) {
+      if (!z.has_audio) { return; }
+      var d = segment(pacer.pos, z.lonlat);
+      if (d > BED.radius) { return; }
+      if (d < bestD) { bestD = d; bestId = z.id; }
+    });
+    if (bestId === null) { field.id = null; field.peaks = null; field.d = Infinity; return; }
+    /* A-14: two recordings a similar distance away would otherwise swap the whole contour
+       back and forth every few metres. The newcomer has to be clearly nearer. */
+    if (field.id !== null && bestId !== field.id && bestD > field.d * 0.88) {
+      field.d = segment(pacer.pos, (function () {
+        var z = null;
+        pacer.zones.forEach(function (q) { if (q.id === field.id) { z = q; } });
+        return z ? z.lonlat : pacer.pos;
+      })());
+      return;
+    }
+    field.d = bestD;
+    if (bestId === field.id) { return; }
+    var f = feature(bestId), a = (f && f.properties.audio) || {};
+    if (!a.peaks || !a.peaks.length) { field.id = null; field.peaks = null; return; }
+    field.id = bestId;
+    field.peaks = a.peaks;
+    /* Normalised by its own loudest moment: a quiet recording is still a full gesture,
+       and without this a distant dawn chorus would barely move the destination at all. */
+    var mx = 0;
+    for (var i = 0; i < a.peaks.length; i++) { if (a.peaks[i] > mx) { mx = a.peaks[i]; } }
+    field.norm = mx > 0.0001 ? 1 / mx : 1;
+  }
+
+  /* Read with its neighbours averaged in. A raw peak array is spiky at this scale and a
+     control that jumps is not a morph. */
+  function fieldAt(p) {
+    if (!field.peaks || !field.peaks.length) { return null; }
+    var n = field.peaks.length, x = p * n, i = Math.floor(x), f = x - i;
+    var at = function (k) { return field.peaks[((k % n) + n) % n] || 0; };
+    var a = (at(i - 1) + at(i) * 2 + at(i + 1)) / 4;
+    var b = (at(i) + at(i + 1) * 2 + at(i + 2)) / 4;
+    var v = (a + (b - a) * f) * field.norm;
+    return v < 0 ? 0 : v > 1 ? 1 : v;
+  }
+
   function morphValue(m, t) {
     if (!m.on) { return 0; }
     var per = Math.max(4, m.period || 60);
     var u = (t / per) + (m.phase || 0);   /* unwrapped — the shape decides whether to wrap */
     var seed = (m.id || "m").charCodeAt(m.id ? m.id.length - 1 : 0) || 7;
-    var v = (m.bias || 0) + (m.depth === undefined ? 1 : m.depth) * morphShape(m.shape, u, seed);
+    var sh = morphShape(m.shape, u, seed);
+    if (sh === null) { return null; }   /* no recording in range — reports nothing, not zero */
+    var v = (m.bias || 0) + (m.depth === undefined ? 1 : m.depth) * sh;
     return v < 0 ? 0 : v > 1 ? 1 : v;
   }
 
@@ -3665,17 +3738,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     for (var i = 0; i < list.length; i++) {
       if (!list[i].on) { continue; }
       var v = morphValue(list[i], t);
+      /* A field morph out of range reports nothing, and a cell that is not being fed does
+         not exist. Walking into earshot of a recording brings one into being. */
+      if (v === null) { continue; }
       /* Anything aimed at the second voice is drawn as an open arc at the rim instead of
          a body in the middle. Same data, a different kind of mark. */
       if (list[i].dest && list[i].dest.indexOf("sect.") === 0) {
         orbits.push({ v: v, k: orbits.length });
         continue;
       }
+      var isField = list[i].shape === "field";
       /* Each cell keeps to its own slow orbit, on a period unrelated to its morph, so
          position never becomes a second readout of value. */
       var orb = t / (73 + i * 41) + i * 0.618;
       pts.push({
-        v: v,
+        v: v, field: isField,
         x: cells.w * (0.5 + 0.20 * Math.cos(orb * 6.283) * (0.6 + 0.4 * v)),
         y: cells.h * (0.5 + 0.20 * Math.sin(orb * 6.283 * 0.77) * (0.6 + 0.4 * v)),
         r: base * (0.055 + 0.20 * v)
@@ -3710,6 +3787,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     for (var q = 0; q < pts.length; q++) {
       g.strokeStyle = hexA(hue, 0.30 + 0.45 * pts[q].v);
       g.beginPath(); g.arc(pts[q].x, pts[q].y, pts[q].r, 0, 6.2832); g.stroke();
+      /* A second membrane marks a cell whose shape comes from a recording rather than
+         from arithmetic — the ones that only exist where the archive does. */
+      if (pts[q].field) {
+        g.strokeStyle = hexA(hue, 0.22 + 0.34 * pts[q].v);
+        g.beginPath(); g.arc(pts[q].x, pts[q].y, pts[q].r * 0.58, 0, 6.2832); g.stroke();
+      }
     }
 
     /* Rim orbits: the arc sweeps the morph's value, so it is read round the circle rather
@@ -3785,7 +3868,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var list = morphList(), n = 0, sum = 0;
     for (var i = 0; i < list.length; i++) {
       if (!list[i].on || list[i].dest !== dest) { continue; }
-      sum += morphValue(list[i], t); n++;
+      var v = morphValue(list[i], t);
+      if (v === null) { continue; }
+      sum += v; n++;
     }
     return n ? sum / n : null;
   }
@@ -3876,14 +3961,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         { id: "m4", on: true, shape: "drift",  period: 310, depth: 0.80, bias: 0.10,
           phase: 0.17, dest: "sect.index" },
         { id: "m5", on: true, shape: "pulse",  period: 97,  depth: 0.85, bias: 0.12,
-          phase: 0.44, dest: "sect.cutoff" }
+          phase: 0.44, dest: "sect.cutoff" },
+        /* The archive itself, stretched over ninety seconds. Silent until you are within
+           earshot of a recording, which is the point: this morph exists only where the
+           archive does. */
+        { id: "m6", on: true, shape: "field",  period: 90,  depth: 0.90, bias: 0.05,
+          phase: 0,    dest: "voice.gain" }
       ]
     };
   }
 
   function defaultPatch() {
     return {
-      version: 6, tempo: 72, key: 50, key2: 55,
+      version: 7, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -3919,7 +4009,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       }
       p.version = 6;
     }
-    if (!p || p.version !== 6 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    /* 6 to 7 appends the field morph and nothing else. */
+    if (p && p.version === 6 && p.morph && p.morph.list) {
+      var hasField = false;
+      for (var fi = 0; fi < p.morph.list.length; fi++) {
+        if (p.morph.list[fi].shape === "field") { hasField = true; }
+      }
+      if (!hasField) {
+        p.morph.list = p.morph.list.concat(defaultMorph().list.filter(function (m) {
+          return m.shape === "field";
+        }));
+      }
+      p.version = 7;
+    }
+    if (!p || p.version !== 7 || !p.prog) { p = f.properties.patch = defaultPatch(); }
     if (!p.morph) { p.morph = defaultMorph(); }
     return p;
   }
