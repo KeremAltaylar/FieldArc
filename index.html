@@ -3048,7 +3048,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     harmony.idx = null; harmony.chord = null; harmony.held = false;
     harmony.last = { bass: null, inner: null, top: null };
-    counter.last = null; counter.restRun = 0;
+    counter.last = null; counter.restRun = 0; counter.tick = 0;
     $("#patch-play").textContent = "Sound";
     $("#patch-play").setAttribute("aria-pressed", "false");
   }
@@ -3074,7 +3074,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (!bed.loop) {
           bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
           bed.barLoop = Tone.Transport.scheduleRepeat(harmonyBar, "1m");
-          bed.sectLoop = Tone.Transport.scheduleRepeat(sectorStep, patch.sect.rhythm);
+          /* A fixed grid, with the division applied inside the callback. Clearing a repeat
+             and scheduling a replacement while the Transport runs means an id to keep in
+             step and a new phase starting from bar zero; getting either wrong takes the
+             voice out with it. Nothing is torn down here, so a rhythm change cannot. */
+          bed.sectLoop = Tone.Transport.scheduleRepeat(sectorStep, SECT_GRID);
           bed.sectDiv = patch.sect.rhythm;
         }
         Tone.Transport.start();
@@ -3140,15 +3144,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       modulationEnvelope: { attack: 0.04, decay: 0.5, sustain: 0.1, release: 0.8 }
     });
 
-    var noise = new Tone.Noise("pink");
-    var noiseFilter = new Tone.Filter(900, "bandpass").connect(bus);
-    var noiseGain = new Tone.Gain(0).connect(noiseFilter);
-    noise.connect(noiseGain);
-    noise.start();
-
     return { fx: fx, bus: bus, filter: filter, synth: synth,
-             sect: { synth: sectSynth, gain: sectGain },
-             noise: noise, noiseGain: noiseGain, noiseFilter: noiseFilter };
+             sect: { synth: sectSynth, gain: sectGain } };
   }
 
   /* Once a bar: commit whatever chord the position now asks for, and move bass and inner
@@ -3182,8 +3179,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     harmony.tones = tones;
   }
 
-  /* Eighths: the top voice, generated inside the current chord. Density, brightness and the
-     noise balance all come from the recordings around you. */
+  /* Eighths: the top voice, generated inside the current chord. Density and brightness come
+     from the recordings around you. */
   function voiceStep(time) {
     if (!bed || !bed.on || !bed.voice || !pacer || !harmony.tones) { return; }
     var patch = pacer.patch, ch = localCharacter(), V = bed.voice;
@@ -3191,8 +3188,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var density = Math.max(0.05, Math.min(0.95,
       patch.voice.density * (0.35 + Math.min(2.5, ch.onsets) / 2.5)));
     V.filter.frequency.rampTo(Math.max(300, Math.min(12000, ch.centroid * 1.6)), 0.25);
-    V.noiseGain.gain.rampTo(Math.min(0.5, ch.flatness * 0.7) * patch.voice.gain, 0.4);
-    V.noiseFilter.frequency.rampTo(Math.max(200, Math.min(9000, ch.centroid)), 0.4);
 
     if (Math.random() > density) { return; }
 
@@ -3214,12 +3209,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      The second voice belongs to the sector, not the route. It moves on its own grid, prefers
      to answer the lead by going the other way, and is pulled toward the prevailing chord only
      as much as the patch asks — enough to relate, not enough to obey. */
-  var counter = { last: null, restRun: 0 };
+  var counter = { last: null, restRun: 0, tick: 0 };
+
+  /* Every division the panel offers is a whole number of sixteenths, so one sixteenth-note
+     grid can express all of them by counting. */
+  var SECT_GRID = "16n";
+  var SECT_STRIDE = { "16n": 1, "8n": 2, "8n.": 3, "4n": 4, "4n.": 6, "2n": 8, "2n.": 12, "1n": 16 };
 
   function sectorStep(time) {
     if (!bed || !bed.on || !bed.voice || !bed.voice.sect || !pacer) { return; }
     var patch = pacer.patch;
     if (!patch.sect.on) { return; }
+
+    var stride = SECT_STRIDE[patch.sect.rhythm] || 4;
+    counter.tick = (counter.tick || 0) + 1;
+    if ((counter.tick - 1) % stride !== 0) { return; }
 
     var i = sect.idx === null ? 0 : sect.idx;
     var sc = patch.sectors[i % patch.sectors.length];
@@ -3928,10 +3932,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function applySectRhythm(patch) {
     if (patch.sect.rhythm === bed.sectDiv) { return; }
     bed.sectDiv = patch.sect.rhythm;
-    if (bed.sectLoop !== undefined && bed.sectLoop !== null) {
-      bed.Tone.Transport.clear(bed.sectLoop);
-    }
-    bed.sectLoop = bed.Tone.Transport.scheduleRepeat(sectorStep, patch.sect.rhythm);
+    counter.tick = 0;   /* heard on the next sixteenth rather than whenever the old phase lands */
   }
 
   function commitPatch(f, patch) {
