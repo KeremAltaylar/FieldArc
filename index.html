@@ -562,6 +562,33 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
 /* ---- Mark ----
    Thumb-reachable and touch-sized (M-4: ≥44pt, and this one is the primary field control). */
+/* The walker, and the bar that reports where it is. */
+.pacer {
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  color: var(--sunk);
+  background: var(--lamp);
+  border: 2px solid var(--sunk);
+  border-radius: 50%;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+  cursor: grab;
+}
+.pacer:active { cursor: grabbing; }
+#pacerbar {
+  position: absolute; left: var(--s-4); top: var(--s-4); z-index: 4;
+  margin: 0; padding: var(--s-2) var(--s-3);
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: color-mix(in oklch, var(--sunk) 84%, transparent);
+  border: 1px solid var(--bdr);
+  border-radius: 2px;
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+#pacerbar b { font-weight: 400; color: var(--faint); }
+#pacerbar em { font-style: normal; color: var(--lamp); }
+
 #markbar {
   position: absolute;
   right: var(--s-4); bottom: var(--s-4);
@@ -910,6 +937,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       </div>
 
       <div class="actions">
+        <button type="button" class="ghost" id="f-walk" hidden>Walk</button>
         <button type="button" class="ghost" id="f-zoom">Zoom to</button>
         <button type="button" class="danger" id="f-delete">Delete</button>
       </div>
@@ -972,6 +1000,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     <p id="toast" hidden></p>
     <div id="readout"><span><b>lat</b> —</span><span><b>lon</b> —</span></div>
 
+    <p id="pacerbar" hidden></p>
     <div id="markbar">
       <p id="marklive" hidden></p>
       <button type="button" id="mark" aria-label="Mark current location">Mark</button>
@@ -1238,6 +1267,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   sources.features = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.draft = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.here = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  sources.zones = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
 
   /* MapLibre's colour parser has no notion of oklch() — it rejects the string and the whole
      style fails validation. So the tokens stay the single source of truth (C-1) and get
@@ -1339,6 +1369,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           filter: ["==", ["geometry-type"], "LineString"],
           paint: { "line-color": lamp, "line-width": 2, "line-dasharray": [2, 1.5] },
           layout: { "line-cap": "round", "line-join": "round" } },
+        { id: "zone-fill", type: "fill", source: "zones",
+          paint: { "fill-color": ["case", ["==", ["get", "inside"], 1], lamp, accent],
+                   "fill-opacity": ["case", ["==", ["get", "inside"], 1], 0.28, 0.10] } },
+        { id: "zone-line", type: "line", source: "zones",
+          paint: { "line-color": ["case", ["==", ["get", "inside"], 1], lamp, accent],
+                   "line-width": ["case", ["==", ["get", "inside"], 1], 2, 1],
+                   "line-opacity": 0.9 } },
+
         /* Your position, drawn with its uncertainty rather than as a confident dot —
            under canopy a fix can be 30m out, and the map should say so. */
         { id: "here-accuracy", type: "fill", source: "here",
@@ -1552,6 +1590,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      row. Creating a point or a route selects it without throwing the sheet over the map;
      on a phone that hid the very thing you were aiming at. */
   function setSelected(id, reveal) {
+    if (pacer && (!id || pacer.f.properties.id !== id)) { pacerStop(); }
     selected = id;
     if (id) { showPane("info"); if (reveal && isMobile()) { openSheet(true); } }
     if (!id && isMobile()) { openSheet(false); }
@@ -2496,6 +2535,178 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   });
 
+  /* ---------- Walker ----------
+     A route is an instrument you move along. The walker is the position on it: dragged with
+     a mouse at a desk, projected from GPS in the field, the same object either way — so what
+     you test is what you walk. */
+  var pacer = null;
+
+  function routeMetrics(f) {
+    var c = f.geometry.coordinates, cum = [0], total = 0;
+    for (var i = 1; i < c.length; i++) {
+      total += segment(c[i - 1], c[i]);
+      cum.push(total);
+    }
+    return { coords: c, cum: cum, total: total };
+  }
+
+  /* Nearest point on the polyline, and how far along it that is. */
+  function projectToRoute(m, p) {
+    var best = { dist: Infinity, along: 0, point: m.coords[0] };
+    for (var i = 1; i < m.coords.length; i++) {
+      var a = m.coords[i - 1], b = m.coords[i];
+      var kx = Math.cos(a[1] * Math.PI / 180);
+      var bx = (b[0] - a[0]) * kx, by = b[1] - a[1];
+      var px = (p[0] - a[0]) * kx, py = p[1] - a[1];
+      var L = bx * bx + by * by;
+      var u = L ? Math.max(0, Math.min(1, (px * bx + py * by) / L)) : 0;
+      var q = [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u];
+      var d = segment(q, p);
+      if (d < best.dist) { best = { dist: d, point: q, along: m.cum[i - 1] + segment(a, q) }; }
+    }
+    best.t = m.total ? best.along / m.total : 0;
+    return best;
+  }
+
+  function pointAlong(m, t) {
+    var d = Math.max(0, Math.min(1, t)) * m.total;
+    for (var i = 1; i < m.coords.length; i++) {
+      if (m.cum[i] >= d) {
+        var seg = m.cum[i] - m.cum[i - 1];
+        var u = seg ? (d - m.cum[i - 1]) / seg : 0;
+        var a = m.coords[i - 1], b = m.coords[i];
+        return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u];
+      }
+    }
+    return m.coords[m.coords.length - 1];
+  }
+
+  var ZONE_R = 25;        /* metres — a zone you can stand in */
+  var ZONE_NEAR = 60;     /* how far off the route a point still counts */
+  var ZONE_MARGIN = 1.3;  /* A-14: leave at 130% of the radius. 325 flickers to 0. */
+  var ZONE_COOLDOWN = 8000;
+
+  function buildZones(m) {
+    var list = [];
+    visible().forEach(function (g) {
+      if (g.geometry.type !== "Point") { return; }
+      var pr = projectToRoute(m, g.geometry.coordinates);
+      if (pr.dist > ZONE_NEAR) { return; }
+      list.push({
+        id: g.properties.id, lonlat: g.geometry.coordinates, r: ZONE_R,
+        name: label(g), icon: g.properties.icon || null,
+        has_audio: !!g.properties.has_audio,
+        inside: false, firedAt: 0
+      });
+    });
+    return list;
+  }
+
+  function drawZones() {
+    if (!map.getSource("zones")) { return; }
+    var feats = [];
+    if (pacer) {
+      pacer.zones.forEach(function (z) {
+        var poly = circlePoly(z.lonlat[0], z.lonlat[1], z.r, 36);
+        poly.properties = { id: z.id, inside: z.inside ? 1 : 0 };
+        feats.push(poly);
+      });
+    }
+    map.getSource("zones").setData({ type: "FeatureCollection", features: feats });
+  }
+
+  function pacerReadout() {
+    if (!pacer) { return; }
+    var near = null;
+    pacer.zones.forEach(function (z) {
+      var d = segment(pacer.pos, z.lonlat);
+      if (!near || d < near.d) { near = { d: d, z: z }; }
+    });
+    $("#pacerbar").innerHTML =
+      "<b>along</b> " + fmtLen(pacer.t * pacer.m.total) + " / " + fmtLen(pacer.m.total) +
+      " · " + Math.round(pacer.t * 100) + "%" +
+      (near ? " &nbsp; <b>nearest</b> " + near.z.name + " " + fmtLen(near.d) +
+              (near.z.inside ? " · <em>inside</em>" : "") : "") +
+      " &nbsp; <b>zones</b> " + pacer.zones.filter(function (z) { return z.inside; }).length +
+      "/" + pacer.zones.length;
+  }
+
+  /* Entry and exit are deliberately asymmetric. Standing on a boundary otherwise retriggers
+     on every jitter of the fix — the failure A-14 exists to prevent. */
+  function pacerCheckZones() {
+    var now = Date.now(), changed = false;
+    pacer.zones.forEach(function (z) {
+      var d = segment(pacer.pos, z.lonlat);
+      if (!z.inside && d <= z.r && now - z.firedAt > ZONE_COOLDOWN) {
+        z.inside = true;
+        z.firedAt = now;
+        changed = true;
+        pacer.log.push({ at: now, zone: z.name, event: "enter" });
+        toast("▲ " + z.name);
+      } else if (z.inside && d > z.r * ZONE_MARGIN) {
+        z.inside = false;
+        changed = true;
+        pacer.log.push({ at: now, zone: z.name, event: "exit" });
+      }
+    });
+    if (changed) { drawZones(); }
+  }
+
+  function pacerSet(t) {
+    pacer.t = Math.max(0, Math.min(1, t));
+    pacer.pos = pointAlong(pacer.m, pacer.t);
+    pacer.marker.setLngLat(pacer.pos);
+    pacerCheckZones();
+    pacerReadout();
+  }
+
+  function pacerStop() {
+    if (!pacer) { return; }
+    pacer.marker.remove();
+    pacer = null;
+    window.__fa.pacer = null;
+    $("#pacerbar").hidden = true;
+    drawZones();
+  }
+
+  function pacerStart(f) {
+    pacerStop();
+    var m = routeMetrics(f);
+    if (!m.total) { return; }
+
+    var el = document.createElement("div");
+    el.className = "pacer";
+    el.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" ' +
+      'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M12 3.4a1.6 1.6 0 1 1 0 3.2 1.6 1.6 0 0 1 0-3.2"/>' +
+      '<path d="M12 7.4v6"/><path d="M8.6 9.6 12 8.6l3.4 1"/>' +
+      '<path d="M12 13.4 9.6 20.6"/><path d="M12 13.4l2.4 7.2"/></svg>';
+    el.title = "Drag along the route";
+
+    var marker = new maplibregl.Marker({ element: el, draggable: true })
+      .setLngLat(m.coords[0]).addTo(map);
+
+    pacer = { f: f, m: m, t: 0, pos: m.coords[0], marker: marker, zones: buildZones(m), log: [] };
+
+    /* Dragging is free-hand; the walker is not. Every drag snaps back onto the line, which
+       is what makes desk testing and a real walk the same code path. */
+    marker.on("drag", function () {
+      var ll = marker.getLngLat();
+      var pr = projectToRoute(m, [ll.lng, ll.lat]);
+      pacerSet(pr.t);
+    });
+
+    /* Exposed on the debug hook so the geometry and the hysteresis can be measured
+       directly rather than inferred from screenshots. */
+    window.__fa.pacer = pacer;
+    window.__fa.pacerSet = pacerSet;
+    window.__fa.projectToRoute = projectToRoute;
+
+    $("#pacerbar").hidden = false;
+    drawZones();
+    pacerSet(0);
+  }
+
   /* ---------- Walks ----------
      Derived, never stored. Features in the active place split into walks wherever more than
      two hours pass. No new state and nothing to remember in the field; if explicit walks are
@@ -3315,6 +3526,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#f-sensitive").setAttribute("aria-pressed", String(!!f.properties.sensitive));
     $("#f-published").setAttribute("aria-pressed", String(!!f.properties.published));
 
+    $("#f-walk").hidden = f.properties.kind !== "route";
+    $("#f-walk").setAttribute("aria-pressed", String(!!pacer && pacer.f === f));
+
     $("#card-icons").hidden = f.properties.kind !== "point";
     if (f.properties.kind === "point") {
       renderIconPicker($("#card-icons"), f.properties.icon || null, function (k) {
@@ -3377,6 +3591,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   flagToggle("#f-published", "published");
 
   $("#f-delete").addEventListener("click", removeSelected);
+  $("#f-walk").addEventListener("click", function () {
+    var f = feature(selected);
+    if (!f || f.properties.kind !== "route") { return; }
+    if (pacer && pacer.f === f) { pacerStop(); } else { pacerStart(f); }
+    this.setAttribute("aria-pressed", String(!!pacer));
+  });
+
   $("#f-zoom").addEventListener("click", function () {
     var f = feature(selected); if (!f) { return; }
     if (f.geometry.type === "Point") { map.easeTo({ center: f.geometry.coordinates, zoom: 15 }); }
