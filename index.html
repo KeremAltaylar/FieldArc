@@ -653,13 +653,30 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 #v-close { flex: none; }
 #v-canvas { flex: 1; width: 100%; min-height: 0; cursor: crosshair; display: block; }
-#v-hint {
-  margin: 0; padding: var(--s-2) var(--s-4) var(--s-3);
+/* The readout tracks the playhead, so every figure is the value at the moment you are
+   hearing, not an average over the whole recording. */
+#v-mir {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2) var(--s-5);
+  padding: var(--s-3) var(--s-4);
+  background: var(--ground);
+  border-top: 1px solid var(--bdr);
   font-family: var(--font-mono); font-size: var(--t-xs);
-  letter-spacing: var(--track-meta); text-transform: uppercase;
+}
+#v-mir span { display: flex; align-items: baseline; gap: var(--s-2); }
+#v-mir b {
+  font-weight: 400; letter-spacing: var(--track-meta); text-transform: uppercase;
   color: var(--faint);
 }
+#v-mir i {
+  font-style: normal; font-variant-numeric: tabular-nums;
+  color: var(--ink); min-width: 4.5rem;
+}
+#v-hint {
+  margin-left: auto;
+  letter-spacing: var(--track-meta); text-transform: uppercase; color: var(--faint);
+}
 #v-hint kbd { border: 1px solid var(--bdr); border-radius: 2px; padding: 0 var(--s-1); }
+#v-mir i.quiet { color: var(--faint); }
 
 @media (max-width: 900px), (max-height: 620px) {
   .viewerbar { flex-wrap: wrap; gap: var(--s-2); padding: var(--s-2) var(--s-3); }
@@ -904,8 +921,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       </div>
       <div class="vmodes" role="group" aria-label="Dynamic range">
         <button type="button" data-vrange="20" aria-pressed="false">20 dB</button>
-        <button type="button" data-vrange="30" aria-pressed="true">30 dB</button>
-        <button type="button" data-vrange="45" aria-pressed="false">45 dB</button>
+        <button type="button" data-vrange="30" aria-pressed="false">30 dB</button>
+        <button type="button" data-vrange="45" aria-pressed="true">45 dB</button>
         <button type="button" data-vrange="70" aria-pressed="false">70 dB</button>
       </div>
       <button type="button" id="v-flatten" aria-pressed="true"
@@ -914,7 +931,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <button type="button" id="v-close" aria-label="Close">Close</button>
     </div>
     <canvas id="v-canvas"></canvas>
-    <p id="v-hint">Click to seek · <kbd>Esc</kbd> to close</p>
+    <div id="v-mir" aria-live="off">
+      <span data-mir="level"><b>level</b><i>—</i></span>
+      <span data-mir="centroid"><b>centroid</b><i>—</i></span>
+      <span data-mir="rolloff"><b>rolloff 85%</b><i>—</i></span>
+      <span data-mir="flatness"><b>flatness</b><i>—</i></span>
+      <span data-mir="flux"><b>flux</b><i>—</i></span>
+      <span data-mir="pitch"><b>dominant</b><i>—</i></span>
+      <span id="v-hint">click to seek · <kbd>Esc</kbd> to close</span>
+    </div>
   </div>
 
   <div id="map">
@@ -2068,7 +2093,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      a spectrogram computed at nearly three times the resolution, with a playhead you can
      scrub, and the same transport as the card so playback state is shared. */
   var viewer = { open: false, mode: "spec", base: null, peaks: null, spec: null,
-                 range: 30, flatten: true };
+                 range: 45, flatten: true, pos: 0 };
+
+  /* Duration comes from the decoded audio when the media element has not reported its own
+     yet, so scrubbing and the readout work the moment the picture does. */
+  function viewerDuration() {
+    return audioEl.duration || (viewer.spec && viewer.spec.duration) || 0;
+  }
+  function viewerPos() {
+    var d = viewerDuration();
+    return (audioEl.duration && d) ? audioEl.currentTime / d : viewer.pos;
+  }
 
   function viewerSize() {
     var c = $("#v-canvas");
@@ -2094,17 +2129,57 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       ctx.fillText("analysing…", 12, 22);
     }
     viewer.base = ctx.getImageData(0, 0, c.width, c.height);
-    viewerPlayhead();
+    viewerPlayhead(true);
   }
 
-  function viewerPlayhead() {
+  function fmtHz(f) {
+    if (!f || !isFinite(f)) { return "—"; }
+    return f >= 1000 ? (f / 1000).toFixed(2) + " kHz" : Math.round(f) + " Hz";
+  }
+
+  /* Reads the descriptor tracks at the playhead. A twenty-minute recording has no single
+     brightness; it has one at every moment, and this is the moment you are hearing. */
+  function updateMIR() {
+    if (!viewer.open || viewer.mode !== "spec") { return; }
+    var sp = viewer.spec;
+    if (!sp || !sp.tracks) { return; }
+    var n = sp.cols.length;
+    var i = Math.max(0, Math.min(n - 1, Math.floor(viewerPos() * n)));
+    var t = sp.tracks;
+
+    var lvl = t.level[i] > 0 ? 20 * Math.log10(t.level[i]) : -120;
+    var vals = {
+      level: lvl <= -119 ? "—" : lvl.toFixed(1) + " dB",
+      centroid: fmtHz(t.centroid[i]),
+      rolloff: fmtHz(t.rolloff[i]),
+      flatness: t.flatness[i] ? t.flatness[i].toFixed(3) : "—",
+      flux: t.flux[i] ? t.flux[i].toFixed(3) : "—",
+      pitch: fmtHz(t.pitch[i])
+    };
+    /* Below about -60 dB the spectrum is mostly noise floor, and quoting a centroid for it
+       would be a number with no meaning behind it. */
+    var quiet = lvl < -60;
+    document.querySelectorAll("#v-mir [data-mir]").forEach(function (el) {
+      var k = el.dataset.mir, out = el.querySelector("i");
+      out.textContent = vals[k];
+      out.classList.toggle("quiet", quiet && k !== "level");
+    });
+  }
+
+  var lastHeadDraw = 0;
+  function viewerPlayhead(force) {
+    updateMIR();
     if (!viewer.open || !viewer.base) { return; }
+    /* The readout updates every frame; repainting a full-resolution canvas that often would
+       not. Seventy milliseconds is smooth to the eye and cheap. */
+    var now = performance.now();
+    if (!force && now - lastHeadDraw < 70) { return; }
+    lastHeadDraw = now;
     var s = viewerSize(), c = $("#v-canvas"), ctx = c.getContext("2d");
     ctx.putImageData(viewer.base, 0, 0);
-    var d = audioEl.duration || 0;
-    if (!d) { return; }
+    if (!viewerDuration()) { return; }
     ctx.setTransform(s.r, 0, 0, s.r, 0, 0);
-    var x = audioEl.currentTime / d * s.w;
+    var x = viewerPos() * s.w;
     ctx.strokeStyle = lamp;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -2115,6 +2190,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function setViewerMode(m) {
     viewer.mode = m;
+    $("#v-mir").hidden = (m !== "spec");
     document.querySelectorAll("[data-vmode]").forEach(function (b) {
       b.setAttribute("aria-pressed", String(b.dataset.vmode === m));
     });
@@ -2137,8 +2213,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         viewer.spec = sp;
         viewerRender();
       });
-    }).catch(function () {
+    }).catch(function (err) {
       setViewerMode("wave");
+      $("#saved").textContent = "Spectrogram failed: " + (err && err.message ? err.message : err);
     });
   }
 
@@ -2158,6 +2235,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   });
 
+  function mirLoop() {
+    if (!viewer.open) { return; }
+    viewerPlayhead();
+    if (!audioEl.paused) { requestAnimationFrame(mirLoop); }
+  }
+  audioEl.addEventListener("play", function () { if (viewer.open) { mirLoop(); } });
+
   $("#v-flatten").addEventListener("click", function () {
     viewer.flatten = !viewer.flatten;
     this.setAttribute("aria-pressed", String(viewer.flatten));
@@ -2172,10 +2256,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (audioEl.paused) { audioEl.play().catch(function () {}); } else { audioEl.pause(); }
   });
   $("#v-canvas").addEventListener("click", function (e) {
-    if (!audioEl.duration) { return; }
+    var d = viewerDuration();
+    if (!d) { return; }
     var r = this.getBoundingClientRect();
-    audioEl.currentTime = (e.clientX - r.left) / r.width * audioEl.duration;
-    viewerPlayhead();
+    viewer.pos = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    if (audioEl.duration) { audioEl.currentTime = viewer.pos * audioEl.duration; }
+    viewerPlayhead(true);
   });
   document.addEventListener("keydown", function (e) {
     if (!viewer.open) { return; }
@@ -2226,7 +2312,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   audioEl.addEventListener("timeupdate", function () {
     viewerPlayhead();
     if (viewer.open) {
-      $("#v-time").textContent = fmtTime(audioEl.currentTime) + " / " + fmtTime(audioEl.duration || 0);
+      $("#v-time").textContent = fmtTime(viewerPos() * viewerDuration()) + " / " + fmtTime(viewerDuration());
     }
     var d = audioEl.duration || 0;
     $("#rec-fill").style.width = (d ? (audioEl.currentTime / d * 100) : 0) + "%";
@@ -2588,6 +2674,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var out = [];
         for (c = 0; c < COLS; c++) { out.push(new Float32Array(ROWS)); }
 
+        /* Descriptors per column, not per file. A twenty-minute recording has no single
+           brightness — it has a brightness at every moment, which is what you want to read
+           while listening. */
+        var TR = {
+          level: new Float32Array(COLS), centroid: new Float32Array(COLS),
+          rolloff: new Float32Array(COLS), flatness: new Float32Array(COLS),
+          flux: new Float32Array(COLS), pitch: new Float32Array(COLS)
+        };
+        var TRn = new Float32Array(COLS);
+        /* Named magArr, not mag: the band loop below already declares a numeric `mag`, and
+           var is function-scoped, so sharing the name turned this array into a number after
+           the first frame. */
+        var magArr = new Float64Array(N / 2), prevMag = new Float64Array(N / 2);
+        var HALF = N / 2;
+
         var re = new Float64Array(N), im = new Float64Array(N);
         var win = new Float64Array(N);
         for (i = 0; i < N; i++) { win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)); }
@@ -2597,7 +2698,47 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           if (off + N > n) { break; }
           for (i = 0; i < N; i++) { re[i] = ch[off + i] * win[i]; im[i] = 0; }
           fft(re, im);
-          var col = out[Math.min(COLS - 1, Math.floor(off / n * COLS))];
+          var ci = Math.min(COLS - 1, Math.floor(off / n * COLS));
+          var col = out[ci];
+
+          var sum = 0, sumf = 0, sumlog = 0, mx = 0, mxi = 1, flux = 0;
+          for (i = 1; i < HALF; i++) {
+            var mg = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+            magArr[i] = mg;
+            sum += mg;
+            sumf += mg * (i * sr / N);
+            sumlog += Math.log(mg + 1e-12);
+            if (mg > mx) { mx = mg; mxi = i; }
+            var df = mg - prevMag[i];
+            if (df > 0) { flux += df; }
+          }
+          if (sum > 0) {
+            /* Rolloff: where 85% of the energy is below. */
+            var acc = 0, roll = 0;
+            for (i = 1; i < HALF; i++) {
+              acc += magArr[i];
+              if (acc >= 0.85 * sum) { roll = i * sr / N; break; }
+            }
+            /* Flatness: geometric over arithmetic mean. Near 1 is noise, near 0 is a tone —
+               wind against a bird, in one number. */
+            var geo = Math.exp(sumlog / (HALF - 1)), ari = sum / (HALF - 1);
+            /* Parabolic interpolation so the dominant partial is not quantised to a bin. */
+            var a0 = magArr[Math.max(1, mxi - 1)], a1 = magArr[mxi], a2 = magArr[Math.min(HALF - 1, mxi + 1)];
+            var den = a0 - 2 * a1 + a2;
+            var delta = den !== 0 ? 0.5 * (a0 - a2) / den : 0;
+            var rms = 0;
+            for (i = 0; i < N; i++) { var sv = ch[off + i]; rms += sv * sv; }
+            rms = Math.sqrt(rms / N);
+
+            TR.level[ci] += rms;
+            TR.centroid[ci] += sumf / sum;
+            TR.rolloff[ci] += roll;
+            TR.flatness[ci] += ari > 0 ? geo / ari : 0;
+            TR.flux[ci] += flux / sum;
+            TR.pitch[ci] += (mxi + delta) * sr / N;
+            TRn[ci]++;
+          }
+          for (i = 1; i < HALF; i++) { prevMag[i] = magArr[i]; }
           for (r = 0; r < ROWS; r++) {
             var m;
             if (hi[r] - lo[r] >= 2) {
@@ -2628,18 +2769,50 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         /* Each band gets its own reference level — the 20th percentile across time. Without
            it the 1/f tilt of any natural recording turns the bottom of the picture into a
            solid block and hides everything quiet above it. */
+        var peak0 = 0;
+        out.forEach(function (cl) {
+          for (var k2 = 0; k2 < cl.length; k2++) { if (cl[k2] > peak0) { peak0 = cl[k2]; } }
+        });
         var floor = new Float32Array(ROWS);
         var scratch = new Float32Array(COLS);
         for (r = 0; r < ROWS; r++) {
           for (c = 0; c < COLS; c++) { scratch[c] = out[c][r]; }
           var sorted = Array.prototype.slice.call(scratch).sort(function (a, b) { return a - b; });
-          floor[r] = sorted[Math.floor(sorted.length * 0.2)] || 1e-7;
+          /* A band that is silent most of the time has a percentile of essentially zero, and
+             dividing by it made every faint thing in that band read as maximum. Never treat a
+             floor as lower than 90 dB below the loudest thing in the file. */
+          floor[r] = Math.max(sorted[Math.floor(sorted.length * 0.2)] || 0, peak0 * 3e-5);
+        }
+
+        Object.keys(TR).forEach(function (k) {
+          for (var q = 0; q < COLS; q++) { if (TRn[q]) { TR[k][q] /= TRn[q]; } }
+        });
+
+        /* A short recording spread over many columns leaves some narrower than the hop, so
+           they receive no frame at all. Carry the previous column forward rather than
+           reporting a hole as silence. */
+        var lastGood = -1, gaps = 0;
+        for (c = 0; c < COLS; c++) {
+          if (TRn[c]) { lastGood = c; continue; }
+          gaps++;
+          if (lastGood < 0) { continue; }
+          out[c].set(out[lastGood]);
+          Object.keys(TR).forEach(function (k) { TR[k][c] = TR[k][lastGood]; });
+        }
+        /* Leading columns before the first frame borrow from it. */
+        if (lastGood >= 0) {
+          var first = 0;
+          while (first < COLS && !TRn[first]) { first++; }
+          for (c = 0; c < first && first < COLS; c++) {
+            out[c].set(out[first]);
+            Object.keys(TR).forEach(function (k) { TR[k][c] = TR[k][first]; });
+          }
         }
 
         specCache[key] = {
-          cols: out, peak: peak || 1, rows: ROWS, floor: floor,
+          cols: out, peak: peak || 1, rows: ROWS, floor: floor, tracks: TR,
           fMin: fMin, fMax: fMax, duration: ab.duration,
-          frames: frames, hopMs: +(hop / sr * 1000).toFixed(1)
+          frames: frames, hopMs: +(hop / sr * 1000).toFixed(1), gapCols: gaps
         };
         return specCache[key];
       });
