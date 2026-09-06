@@ -8,7 +8,7 @@ one reader of it.** Recordings can be remade; a walk you did not record is gone.
 
 ## Using it
 
-Pick a place from the header — 69 forests, nature reserves and korular across İstanbul. The
+Pick a place from the header — 88 forests, woods, nature reserves and korular across İstanbul. The
 map, the boundary and the archive all follow your choice; features belong to a place.
 
 | | |
