@@ -714,7 +714,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 #v-canvas { flex: 1; width: 100%; min-height: 0; cursor: crosshair; display: block; }
 
 /* ---- Patch panel ---- */
-#patchpanel {
+#patchpanel, #rhythmpanel {
   position: fixed; inset: 0; z-index: 62;
   display: flex; flex-direction: column;
   background: var(--sunk);
@@ -745,9 +745,44 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
    456px of it reachable only by scrolling, which on an instrument means controls you do
    not know are there. Three columns rather than two, and a slider given the width a 0-to-1
    value actually needs instead of four hundred pixels of it. */
-#pp-body {
+#pp-body, #rp-body {
   flex: 1; min-height: 0; overflow-y: auto;
   padding: var(--s-2) var(--s-4);
+}
+/* Which of the two things a point can hold. Two buttons, because there are two answers
+   and a select would hide one of them. */
+.recmode { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-1); }
+#hitgrid { display: grid; gap: var(--s-1); }
+.hitrow {
+  display: grid; grid-template-columns: 3.2rem 1fr auto; align-items: center;
+  gap: var(--s-2);
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint);
+}
+.hitrow em {
+  font-style: normal; text-transform: none; letter-spacing: 0; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hitrow em.set { color: var(--accent); }
+/* The pattern, drawn. Sixteen little cells say more about a Euclidean rhythm than the two
+   numbers that made it, and you can see the four lines line up or refuse to. */
+/* Capped, because a sixteen-step bar stretched across a widescreen reads as sixteen
+   rectangles rather than as a rhythm. */
+.rpat {
+  display: flex; gap: 2px; grid-column: 1 / -1;
+  max-width: 34rem; margin: 2px 0 var(--s-2);
+}
+.rpat i {
+  flex: 1 1 0; min-width: 0; height: 14px; border-radius: 1px;
+  background: color-mix(in oklch, var(--ink) 12%, transparent);
+}
+.rpat i.on { background: var(--accent); }
+.rpat i.now { outline: 1px solid var(--lamp); }
+.rvoice {
+  display: grid; grid-template-columns: 3rem 1fr 1fr 1fr; align-items: center;
+  gap: var(--s-2); margin-bottom: var(--s-1);
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint);
 }
 /* Explicit columns, not a multi-column flow. Multicol balances by height, so the last
    control in a column sits on a boundary and any reflow — a scrollbar appearing, a
@@ -1061,6 +1096,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <input type="text" id="f-tags" placeholder="tags, comma separated" aria-label="Tags">
       <div class="rec">
         <span class="reclabel">Recording</span>
+        <div class="recmode" role="group" aria-label="What this point holds">
+          <button type="button" data-amode="soundscape" aria-pressed="true"
+                  title="One recording of any length, played as it is">Soundscape</button>
+          <button type="button" data-amode="hits" aria-pressed="false"
+                  title="Four hits, sequenced into a rhythm in tempo with the route">4 hits</button>
+        </div>
+        <div id="hitgrid" hidden></div>
+        <input type="file" id="hit-file" accept="audio/*,.wav,.aif,.aiff,.caf" hidden>
         <button type="button" id="rec-add">Attach audio…</button>
         <input type="file" id="rec-file" accept="audio/*,.wav,.bwf,.aif,.aiff,.caf,.w64,.wv" hidden>
         <div id="player" hidden>
@@ -1089,6 +1132,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <div class="actions">
         <button type="button" class="ghost" id="f-walk" hidden>Walk</button>
         <button type="button" class="ghost" id="f-patch" hidden>Patch</button>
+        <button type="button" class="ghost" id="f-rhythm" hidden>Rhythm</button>
         <button type="button" class="ghost" id="f-zoom">Zoom to</button>
         <button type="button" class="danger" id="f-delete">Delete</button>
       </div>
@@ -1107,6 +1151,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
              accept=".geojson,.json,.gpx,audio/*,.wav,.bwf,.aif,.aiff,.caf,.w64,.wv,application/geo+json" hidden>
       <p class="hint" id="saved">Saved to this browser.</p>
     </div>
+  </div>
+
+  <div id="rhythmpanel" hidden>
+    <div class="viewerbar">
+      <span id="rp-title">Rhythm</span>
+      <button type="button" id="rp-reset" class="ghost">Reset to default</button>
+      <button type="button" id="rp-close">Close</button>
+    </div>
+    <div id="rp-body"></div>
   </div>
 
   <div id="patchpanel" hidden>
@@ -1786,7 +1839,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      row. Creating a point or a route selects it without throwing the sheet over the map;
      on a phone that hid the very thing you were aiming at. */
   function setSelected(id, reveal) {
-    if (pacer && (!id || pacer.f.properties.id !== id)) { pacerStop(); }
+    /* Only another route ends a walk. Selecting a point along the one you are walking is
+       inspecting, not leaving — and since a point's rhythm is edited from its own card,
+       stopping here meant you could never hear an edit you were making. Deselecting does
+       not end it either: walking is a mode, and the Walk button is how you leave it. */
+    if (pacer && id && id !== pacer.f.properties.id) {
+      var other = feature(id);
+      if (other && other.properties.kind === "route") { pacerStop(); }
+    }
     selected = id;
     if (id) { showPane("info"); if (reveal && isMobile()) { openSheet(true); } }
     if (!id && isMobile()) { openSheet(false); }
@@ -2677,6 +2737,251 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (e.key === "ArrowRight") { audioEl.currentTime = Math.min(audioEl.duration, audioEl.currentTime + 5); }
     else if (e.key === "ArrowLeft") { audioEl.currentTime = Math.max(0, audioEl.currentTime - 5); }
   });
+  /* A point holds one thing or the other. Switching does not delete what is already
+     attached — the soundscape and the four hits sit in different storage keys, so you can
+     switch back and find them still there. */
+  function renderAudioMode(f) {
+    var isPoint = f && f.properties.kind === "point";
+    var mode = (f && f.properties.audio_mode === "hits") ? "hits" : "soundscape";
+    var wrap = $(".recmode");
+    if (wrap) { wrap.hidden = !isPoint; }
+    $("#f-rhythm").hidden = !(isPoint && mode === "hits");
+    if (wrap) {
+      wrap.querySelectorAll("button").forEach(function (b) {
+        b.setAttribute("aria-pressed", String(b.dataset.amode === mode));
+      });
+    }
+    var grid = $("#hitgrid");
+    grid.hidden = !(isPoint && mode === "hits");
+    $("#rec-add").hidden = !isPoint ? $("#rec-add").hidden : (mode === "hits");
+    if (grid.hidden) { grid.textContent = ""; return; }
+
+    grid.textContent = "";
+    var hits = f.properties.hits || (f.properties.hits = {});
+    HIT_SLOTS.forEach(function (slot) {
+      var row = document.createElement("div");
+      row.className = "hitrow";
+      var name = document.createElement("span");
+      name.textContent = slot === "rand" ? "free" : slot;
+      var state = document.createElement("em");
+      state.textContent = hits[slot] ? (hits[slot].name || "attached") : "empty";
+      if (hits[slot]) { state.className = "set"; }
+      var btn = document.createElement("button");
+      btn.type = "button"; btn.className = "ghost ppmini";
+      btn.textContent = hits[slot] ? "×" : "add";
+      btn.title = hits[slot] ? "Remove this hit" : "Attach a hit";
+      btn.addEventListener("click", function () {
+        if (hits[slot]) {
+          delAudio(f.properties.id + "#" + slot);
+          delete hits[slot];
+          commit(); renderAudioMode(f);
+          return;
+        }
+        pendingHit = { id: f.properties.id, slot: slot };
+        $("#hit-file").click();
+      });
+      row.appendChild(name); row.appendChild(state); row.appendChild(btn);
+      grid.appendChild(row);
+    });
+  }
+
+  var pendingHit = null;
+  $("#hit-file").addEventListener("change", function () {
+    var file = this.files && this.files[0];
+    this.value = "";
+    if (!file || !pendingHit) { return; }
+    var target = pendingHit; pendingHit = null;
+    var f = feature(target.id);
+    if (!f) { return; }
+    putAudio(target.id + "#" + target.slot, file).then(function () {
+      f.properties.hits = f.properties.hits || {};
+      f.properties.hits[target.slot] = { name: file.name, size: file.size };
+      f.properties.audio_mode = "hits";
+      commit();
+      renderAudioMode(f);
+      /* Loaded players are stale the moment a slot changes. */
+      if (bed && bed.rhythms && bed.rhythms[target.id]) { disposeRhythm(target.id); }
+      toast(target.slot + " hit attached");
+    }).catch(function (e) {
+      toast("Could not store that hit");
+      window.__fa.errors.push({ sourceId: null, message: "hit store: " + e.message });
+    });
+  });
+
+  document.querySelectorAll(".recmode button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var f = feature(selected);
+      if (!f || f.properties.kind !== "point") { return; }
+      f.properties.audio_mode = b.dataset.amode;
+      commit();
+      renderAudioMode(f);
+      renderDetail();
+    });
+  });
+
+  /* ---------- The rhythm panel ---------- */
+  var RHYTHM_FIELDS = [
+    { k: "on", label: "rhythm", toggle: true },
+    { k: "steps", label: "steps", min: 4, max: 32, step: 1 },
+    { k: "div", label: "step length", options: function () { return DIVISIONS; },
+      fmt: function (v) {
+        return (DIV_LABEL[v] || v) + " \u00b7 " +
+          divSeconds(v, pacer ? pacer.patch.tempo : 72).toFixed(2) + " s";
+      } },
+    { k: "gain", label: "level", min: 0, max: 1, step: 0.05 }
+  ];
+
+  function renderRhythmPanel() {
+    var f = feature(selected);
+    if (!f || f.properties.kind !== "point") { return; }
+    var r = rhythmOf(f), body = $("#rp-body");
+    $("#rp-title").textContent = "Rhythm \u00b7 " + label(f);
+    body.textContent = "";
+
+    /* Nothing is rebuilt on an edit: the sequencer reads the pattern every step, so a change
+       is heard on the next one rather than needing the point reloaded. */
+    var commitR = function () { save(); markPattern(); };
+
+    var cols = document.createElement("div");
+    cols.className = "ppcols";
+    var col = document.createElement("div");
+    col.className = "ppcol";
+    RHYTHM_FIELDS.forEach(function (fl) { col.appendChild(buildRhythmRow(fl, r, commitR)); });
+    cols.appendChild(col);
+
+    var col2 = document.createElement("div");
+    col2.className = "ppcol";
+    var note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "Pulses are spread as evenly as the step count allows. Rotation turns " +
+      "a pattern without changing it. Everything runs on the route's tempo.";
+    col2.appendChild(note);
+    cols.appendChild(col2);
+    body.appendChild(cols);
+
+    var h = document.createElement("h2");
+    h.textContent = "The four hits";
+    body.appendChild(h);
+
+    HIT_SLOTS.forEach(function (slot) {
+      var cfg = r.voices[slot];
+      var row = document.createElement("div");
+      row.className = "rvoice";
+      var nm = document.createElement("span");
+      nm.textContent = slot === "rand" ? "free" : slot;
+      row.appendChild(nm);
+      [["pulses", 0, 32, 1], ["rotate", 0, 31, 1], ["gain", 0, 1, 0.05]].forEach(function (spec) {
+        var wrap = document.createElement("label");
+        wrap.className = "pprow";
+        var lab = document.createElement("span");
+        lab.textContent = spec[0];
+        var inp = document.createElement("input");
+        inp.type = "range"; inp.min = spec[1]; inp.max = spec[2]; inp.step = spec[3];
+        inp.value = cfg[spec[0]];
+        var out = document.createElement("i");
+        var show = function () {
+          out.textContent = spec[3] < 1 ? (+inp.value).toFixed(2) : inp.value;
+        };
+        show();
+        inp.addEventListener("input", function () {
+          cfg[spec[0]] = +inp.value; show(); commitR(); drawPattern(slot, r);
+        });
+        wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(out);
+        row.appendChild(wrap);
+      });
+      var pat = document.createElement("div");
+      pat.className = "rpat";
+      pat.dataset.slot = slot;
+      row.appendChild(pat);
+      body.appendChild(row);
+      drawPattern(slot, r);
+    });
+    markPattern();
+  }
+
+  function buildRhythmRow(fl, r, commitR) {
+    var row = document.createElement("label");
+    row.className = "pprow";
+    var name = document.createElement("span");
+    name.textContent = fl.label;
+    row.appendChild(name);
+    var val = document.createElement("i"), input;
+    if (fl.toggle) {
+      input = document.createElement("button");
+      input.type = "button"; input.className = "ghost";
+      var setT = function () {
+        input.setAttribute("aria-pressed", String(!!r[fl.k]));
+        input.textContent = r[fl.k] ? "on" : "off";
+      };
+      setT();
+      input.addEventListener("click", function () { r[fl.k] = !r[fl.k]; setT(); commitR(); });
+    } else if (fl.options) {
+      input = document.createElement("select");
+      fl.options().forEach(function (o) {
+        var op = document.createElement("option");
+        op.value = o; op.textContent = fl.fmt ? fl.fmt(o) : o;
+        input.appendChild(op);
+      });
+      input.value = r[fl.k];
+      input.addEventListener("change", function () { r[fl.k] = input.value; commitR(); });
+    } else {
+      input = document.createElement("input");
+      input.type = "range"; input.min = fl.min; input.max = fl.max; input.step = fl.step;
+      input.value = r[fl.k];
+      var show = function () {
+        val.textContent = fl.step < 1 ? (+input.value).toFixed(2) : input.value;
+      };
+      show();
+      input.addEventListener("input", function () {
+        r[fl.k] = +input.value; show(); commitR();
+        if (fl.k === "steps") { renderRhythmPanel(); }
+      });
+    }
+    row.appendChild(input); row.appendChild(val);
+    return row;
+  }
+
+  /* Sixteen cells say more about a Euclidean pattern than the two numbers that made it, and
+     four of them stacked show you whether the lines land together or refuse to. */
+  function drawPattern(slot, r) {
+    var el = document.querySelector("#rp-body .rpat[data-slot='" + slot + "']");
+    if (!el) { return; }
+    var cfg = r.voices[slot];
+    var steps = Math.max(1, Math.min(32, r.steps | 0));
+    var pat = rotated(euclid(Math.min(cfg.pulses, steps), steps), cfg.rotate || 0);
+    el.textContent = "";
+    pat.forEach(function (on) {
+      var c = document.createElement("i");
+      if (on) { c.className = "on"; }
+      el.appendChild(c);
+    });
+  }
+
+  /* Where the sequencer actually is, so the panel and the sound agree. */
+  function markPattern() {
+    if ($("#rhythmpanel").hidden) { return; }
+    var f = feature(selected);
+    if (!f) { return; }
+    var R = (bed && bed.rhythms) ? bed.rhythms[f.properties.id] : null;
+    var steps = Math.max(1, rhythmOf(f).steps | 0);
+    var at = R ? (((R.step - 1) % steps) + steps) % steps : -1;
+    document.querySelectorAll("#rp-body .rpat").forEach(function (el) {
+      [].forEach.call(el.children, function (c, i) { c.classList.toggle("now", i === at); });
+    });
+  }
+
+  $("#f-rhythm").addEventListener("click", function () {
+    $("#rhythmpanel").hidden = false;
+    renderRhythmPanel();
+  });
+  $("#rp-close").addEventListener("click", function () { $("#rhythmpanel").hidden = true; });
+  $("#rp-reset").addEventListener("click", function () {
+    var f = feature(selected);
+    if (!f) { return; }
+    f.properties.rhythm = defaultRhythm();
+    save(); renderRhythmPanel(); toast("Rhythm reset");
+  });
+
   $("#rec-add").addEventListener("click", function () { $("#rec-file").click(); });
   $("#rec-file").addEventListener("change", function () {
     var file = this.files && this.files[0], f = feature(selected);
@@ -2792,6 +3097,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         id: g.properties.id, lonlat: g.geometry.coordinates, r: ZONE_R,
         name: label(g), icon: g.properties.icon || null,
         has_audio: !!g.properties.has_audio,
+        mode: g.properties.audio_mode === "hits" ? "hits" : "soundscape",
+        has_hits: !!(g.properties.hits && HIT_SLOTS.some(function (k) {
+          return g.properties.hits[k];
+        })),
         inside: false, firedAt: 0
       });
     });
@@ -3066,6 +3375,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        any instant instead of waiting out an eleven-minute period in real time. */
     window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
                           clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
+    window.__fa.rhythm = { euclid: euclid, rotated: rotated, of: rhythmOf, slots: HIT_SLOTS };
     window.__fa.projectToRoute = projectToRoute;
 
     $("#pacerbar").hidden = false;
@@ -3110,6 +3420,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       }, 300);
     });
     bed.voices = {};
+    Object.keys(bed.rhythms || {}).forEach(function (id) { disposeRhythm(id); });
     bed.on = false;
     if (bed.Tone) { try { bed.Tone.Transport.stop(); } catch (e) {} }
     if (bed.voice) {
@@ -3134,7 +3445,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var limiter = new Tone.Limiter(-1).toDestination();
           var meter = new Tone.Meter();
           limiter.connect(meter);
-          bed = { on: false, voices: {}, master: limiter, meter: meter, Tone: Tone };
+          bed = { on: false, voices: {}, rhythms: {}, master: limiter, meter: meter,
+                  Tone: Tone };
         }
         bed.on = true;
         window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
@@ -3154,6 +3466,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
              voice out with it. Nothing is torn down here, so a rhythm change cannot. */
           bed.sectLoop = Tone.Transport.scheduleRepeat(sectorStep, SECT_GRID);
           bed.sectDiv = patch.sect.rhythm;
+          /* One grid for every point's sequencer; each counts its own ticks against it. */
+          bed.rhythmLoop = Tone.Transport.scheduleRepeat(rhythmStep, SECT_GRID);
         }
         Tone.Transport.start();
         $("#patch-play").textContent = "Stop";
@@ -3584,12 +3898,142 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }).catch(function () { delete bed.voices[z.id]; });
   }
 
+  /* ---------- The point rhythm engine ----------
+     A point holds either a soundscape — one recording of any length, played as it is — or
+     four hits: low, mid, high and one wildcard. The hits are not played back, they are
+     sequenced. Each gets a Euclidean pattern, which is the pattern that spaces k pulses as
+     evenly as possible across n steps; almost every rhythm people actually play is one of
+     these, which is why changing two integers gets you somewhere musical rather than
+     somewhere random.
+
+     Everything runs on the Transport, so a point's rhythm is in tempo with the route's
+     harmony and with a delay whose time is a division of the same bar. */
+
+  var HIT_SLOTS = ["low", "mid", "high", "rand"];
+
+  /* Pulses spread by the running-sum method: every step adds k and fires when it passes n.
+     Same even distribution as Bjorklund's algorithm, and rotation is exposed anyway. */
+  function euclid(k, n) {
+    var out = [], i, acc = 0;
+    if (n <= 0) { return out; }
+    if (k <= 0) { for (i = 0; i < n; i++) { out.push(false); } return out; }
+    if (k >= n) { for (i = 0; i < n; i++) { out.push(true); } return out; }
+    for (i = 0; i < n; i++) {
+      acc += k;
+      if (acc >= n) { acc -= n; out.push(true); } else { out.push(false); }
+    }
+    return out;
+  }
+
+  function rotated(pat, by) {
+    var n = pat.length, out = [], i;
+    if (!n) { return out; }
+    for (i = 0; i < n; i++) { out.push(pat[(((i + by) % n) + n) % n]); }
+    return out;
+  }
+
+  function defaultRhythm() {
+    return {
+      on: true, steps: 16, div: "16n", gain: 0.85, swing: 0,
+      /* Pulse counts that are coprime with sixteen where it matters, so the four lines do
+         not all land together every bar. */
+      voices: {
+        low:  { pulses: 4, rotate: 0, gain: 1.00, pitch: 0 },
+        mid:  { pulses: 6, rotate: 2, gain: 0.80, pitch: 0 },
+        high: { pulses: 7, rotate: 1, gain: 0.65, pitch: 0 },
+        rand: { pulses: 3, rotate: 5, gain: 0.55, pitch: 0 }
+      }
+    };
+  }
+
+  function rhythmOf(f) {
+    if (!f.properties.rhythm) { f.properties.rhythm = defaultRhythm(); }
+    var r = f.properties.rhythm;
+    if (!r.voices) { r.voices = defaultRhythm().voices; }
+    HIT_SLOTS.forEach(function (k) {
+      if (!r.voices[k]) { r.voices[k] = defaultRhythm().voices[k]; }
+    });
+    return r;
+  }
+
+  /* One player per slot, loaded once, kept until the point goes out of range. A pool would
+     let a hit overlap itself; for percussive material a retrigger is what you want anyway,
+     and it costs four nodes per point instead of a pool per slot. */
+  function ensureRhythm(z) {
+    var R = bed.rhythms[z.id];
+    if (R) { return R; }
+    var Tone = bed.Tone;
+    R = bed.rhythms[z.id] = { ready: 0, players: {}, urls: {}, tick: 0, step: 0,
+                              gain: new Tone.Gain(0).connect(bed.voice ? bed.voice.fx.delay
+                                                                      : bed.master) };
+    HIT_SLOTS.forEach(function (slot) {
+      getAudio(z.id + "#" + slot).then(function (blob) {
+        if (!blob || !bed || !bed.rhythms[z.id]) { return; }
+        var url = URL.createObjectURL(blob);
+        R.urls[slot] = url;
+        R.players[slot] = new Tone.Player({
+          url: url, fadeOut: 0.02,
+          onload: function () { R.ready++; }
+        }).connect(R.gain);
+      }).catch(function () { /* a slot that will not load simply never fires */ });
+    });
+    return R;
+  }
+
+  function disposeRhythm(id) {
+    var R = bed.rhythms[id];
+    if (!R) { return; }
+    delete bed.rhythms[id];
+    try { R.gain.gain.rampTo(0, 0.25); } catch (e) { /* ignore */ }
+    setTimeout(function () {
+      HIT_SLOTS.forEach(function (slot) {
+        try { if (R.players[slot]) { R.players[slot].dispose(); } } catch (e) {}
+        if (R.urls[slot]) { URL.revokeObjectURL(R.urls[slot]); }
+      });
+      try { R.gain.dispose(); } catch (e) {}
+    }, 400);
+  }
+
+  /* Every sixteenth, for every point in earshot. Each point counts its own ticks, so two
+     points on different step lengths stay independent while sharing one clock — the same
+     reason the second voice runs on a fixed grid rather than rescheduling itself. */
+  function rhythmStep(time) {
+    if (!bed || !bed.on || !pacer) { return; }
+    if (!$("#rhythmpanel").hidden) { setTimeout(markPattern, 0); }
+    var ids = Object.keys(bed.rhythms), i;
+    for (i = 0; i < ids.length; i++) {
+      var R = bed.rhythms[ids[i]];
+      var f = feature(ids[i]);
+      if (!f) { continue; }
+      var r = rhythmOf(f);
+      if (!r.on) { continue; }
+      var stride = SECT_STRIDE[r.div] || 1;
+      R.tick = (R.tick || 0) + 1;
+      if ((R.tick - 1) % stride !== 0) { continue; }
+      var steps = Math.max(1, Math.min(32, r.steps | 0));
+      var at = R.step % steps;
+      R.step = (R.step + 1) % steps;
+      for (var v = 0; v < HIT_SLOTS.length; v++) {
+        var slot = HIT_SLOTS[v], cfg = r.voices[slot];
+        var pl = R.players[slot];
+        if (!pl || !pl.loaded || !cfg || cfg.pulses <= 0) { continue; }
+        var pat = rotated(euclid(Math.min(cfg.pulses, steps), steps), cfg.rotate || 0);
+        if (!pat[at]) { continue; }
+        /* A-11: never twice identically. A few cents and a few percent, no more. */
+        pl.playbackRate = Math.pow(2, (cfg.pitch || 0) / 12) * (1 + (Math.random() - 0.5) * 0.012);
+        pl.volume.value = 20 * Math.log10(Math.max(0.02, (cfg.gain === undefined ? 1 : cfg.gain)))
+                        + (Math.random() - 0.5) * 1.5;
+        try { pl.start(time); } catch (e) { /* a retrigger inside its own fade */ }
+      }
+    }
+  }
+
   function updateBed() {
     if (!bed || !bed.on || !pacer) { return; }
     /* The panel's bed toggle used to be decorative — patch.bed.on was written and never
        read. Off means no recordings sound, so the nearest set is empty. */
     var near = !pacer.patch.bed.on ? [] : pacer.zones
-      .filter(function (z) { return z.has_audio; })
+      .filter(function (z) { return z.has_audio && z.mode !== "hits"; })
       .map(function (z) { return { z: z, d: segment(pacer.pos, z.lonlat) }; })
       .sort(function (a, b) { return a.d - b.d; })
       .slice(0, BED.maxVoices)
@@ -3605,6 +4049,33 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       v.gain.gain.rampTo(0, BED.fade);
     });
     bed.playing = near.length;
+    updateRhythms();
+  }
+
+  /* The rhythm points, by the same rule as the bed: those in range, nearest first, capped.
+     Proximity sets the level, so a pattern arrives as you walk toward it rather than
+     switching on. */
+  function updateRhythms() {
+    if (!bed || !bed.on || !pacer) { return; }
+    var want = {};
+    pacer.zones
+      .filter(function (z) { return z.mode === "hits" && z.has_hits; })
+      .map(function (z) { return { z: z, d: segment(pacer.pos, z.lonlat) }; })
+      .filter(function (x) { return x.d <= BED.radius; })
+      .sort(function (a, b) { return a.d - b.d; })
+      .slice(0, BED.maxVoices)
+      .forEach(function (x) {
+        want[x.z.id] = true;
+        var R = ensureRhythm(x.z);
+        var f = feature(x.z.id);
+        var r = f ? rhythmOf(f) : null;
+        var prox = Math.max(0, 1 - x.d / BED.radius);
+        var g = Math.pow(prox, 1.5) * BED.gain * (r && r.on ? (r.gain === undefined ? 0.85 : r.gain) : 0);
+        R.gain.gain.rampTo(g, BED.fade);
+      });
+    Object.keys(bed.rhythms).forEach(function (id) {
+      if (!want[id]) { disposeRhythm(id); }
+    });
   }
 
   function meterLoop() {
@@ -5510,6 +5981,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     $("#f-walk").hidden = f.properties.kind !== "route";
     $("#f-patch").hidden = f.properties.kind !== "route";
+    renderAudioMode(f);
     $("#f-walk").setAttribute("aria-pressed", String(!!pacer && pacer.f === f));
 
     $("#card-icons").hidden = f.properties.kind !== "point";
