@@ -768,18 +768,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
    numbers that made it, and you can see the four lines line up or refuse to. */
 /* Capped, because a sixteen-step bar stretched across a widescreen reads as sixteen
    rectangles rather than as a rhythm. */
+/* Wide enough that sixty-four cells are still separate things. Every fourth cell carries
+   a brighter ground, so you can count beats along the strip instead of guessing. */
 .rpat {
-  display: flex; gap: 2px; grid-column: 1 / -1;
-  max-width: 34rem; margin: 2px 0 var(--s-2);
+  display: flex; gap: 1px; grid-column: 1 / -1;
+  max-width: 52rem; margin: 2px 0 var(--s-2);
 }
 .rpat i {
   flex: 1 1 0; min-width: 0; height: 14px; border-radius: 1px;
-  background: color-mix(in oklch, var(--ink) 12%, transparent);
+  background: color-mix(in oklch, var(--ink) 10%, transparent);
 }
+.rpat i.beat { background: color-mix(in oklch, var(--ink) 20%, transparent); }
+.rpat i.on, .rpat i.on.beat { background: var(--accent); }
 .rpat i.on { background: var(--accent); }
 .rpat i.now { outline: 1px solid var(--lamp); }
+.rname { display: flex; flex-direction: column; line-height: 1.25; }
+.rname em {
+  font-style: normal; text-transform: none; letter-spacing: 0;
+  color: var(--dim); font-size: 10px;
+}
 .rvoice {
-  display: grid; grid-template-columns: 3rem 1fr 1fr 1fr; align-items: center;
+  display: grid; grid-template-columns: 5.4rem 1fr 1fr 1fr; align-items: center;
   gap: var(--s-2); margin-bottom: var(--s-1);
   font-family: var(--font-mono); font-size: var(--t-xs);
   letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint);
@@ -2822,7 +2831,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* ---------- The rhythm panel ---------- */
   var RHYTHM_FIELDS = [
     { k: "on", label: "rhythm", toggle: true },
-    { k: "steps", label: "steps", min: 4, max: 32, step: 1 },
+    { k: "steps", label: "steps", min: 4, max: 64, step: 1 },
     { k: "div", label: "step length", options: function () { return DIVISIONS; },
       fmt: function (v) {
         return (DIV_LABEL[v] || v) + " \u00b7 " +
@@ -2859,18 +2868,47 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     cols.appendChild(col2);
     body.appendChild(cols);
 
+    var mhead = document.createElement("div");
+    mhead.className = "pphead";
     var h = document.createElement("h2");
     h.textContent = "The four hits";
-    body.appendChild(h);
+    mhead.appendChild(h);
+    var rnd = document.createElement("button");
+    rnd.type = "button"; rnd.className = "ghost ppgen";
+    rnd.textContent = "Generate a pattern";
+    rnd.title = "Four Euclidean patterns that will not lock to each other";
+    rnd.addEventListener("click", function () {
+      randomRhythm(r);
+      save();
+      renderRhythmPanel();
+      toast("New pattern");
+    });
+    mhead.appendChild(rnd);
+    body.appendChild(mhead);
 
     HIT_SLOTS.forEach(function (slot) {
       var cfg = r.voices[slot];
       var row = document.createElement("div");
       row.className = "rvoice";
       var nm = document.createElement("span");
-      nm.textContent = slot === "rand" ? "free" : slot;
+      nm.className = "rname";
+      var nmTop = document.createElement("b");
+      nmTop.style.fontWeight = "400";
+      nmTop.textContent = slot === "rand" ? "free" : slot;
+      var nmNum = document.createElement("em");
+      nm.appendChild(nmTop); nm.appendChild(nmNum);
       row.appendChild(nm);
-      [["pulses", 0, 32, 1], ["rotate", 0, 31, 1], ["gain", 0, 1, 0.05]].forEach(function (spec) {
+      /* The numbers that made the pattern, said plainly. A strip of cells shows you the
+         shape; E(13,64) tells you why it is that shape and what to change. */
+      var showNums = function () {
+        var st = Math.max(1, Math.min(64, r.steps | 0));
+        nmNum.textContent = "E(" + Math.min(cfg.pulses, st) + "," + st + ")" +
+          (cfg.rotate ? " ↺" + cfg.rotate : "");
+      };
+      showNums();
+      var stepsNow = Math.max(1, Math.min(64, r.steps | 0));
+      [["pulses", 0, stepsNow, 1], ["rotate", 0, stepsNow - 1, 1],
+       ["gain", 0, 1, 0.05]].forEach(function (spec) {
         var wrap = document.createElement("label");
         wrap.className = "pprow";
         var lab = document.createElement("span");
@@ -2884,7 +2922,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         };
         show();
         inp.addEventListener("input", function () {
-          cfg[spec[0]] = +inp.value; show(); commitR(); drawPattern(slot, r);
+          cfg[spec[0]] = +inp.value; show(); showNums(); commitR(); drawPattern(slot, r);
         });
         wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(out);
         row.appendChild(wrap);
@@ -2897,6 +2935,39 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       drawPattern(slot, r);
     });
     markPattern();
+  }
+
+  /* Not four uniform draws. Each voice keeps to a density that suits its register — a low
+     that fires as often as a hi-hat is a mess — and pulse counts are nudged toward numbers
+     that share no factor with the step count, because a count that divides it locks to the
+     bar and the four lines then repeat together for ever. Rotation is left on the downbeat
+     about half the time so something still anchors. */
+  function gcd(a, b) { while (b) { var t = a % b; a = b; b = t; } return a; }
+
+  function randomRhythm(r) {
+    var steps = Math.max(4, Math.min(64, r.steps | 0));
+    var band = { low: [0.05, 0.16], mid: [0.16, 0.34], high: [0.28, 0.55],
+                 rand: [0.04, 0.28] };
+    HIT_SLOTS.forEach(function (slot) {
+      var b = band[slot], cfg = r.voices[slot];
+      var k = Math.round(steps * (b[0] + Math.random() * (b[1] - b[0])));
+      if (k < 1) { k = 1; }
+      /* Nudge to something coprime with the step count, but never past the band. */
+      for (var tries = 0; tries < 4 && gcd(k, steps) > 1; tries++) {
+        var up = k + 1;
+        k = (up <= steps && up <= Math.ceil(steps * b[1]) + 1) ? up : k - 1;
+        if (k < 1) { k = 1; break; }
+      }
+      cfg.pulses = Math.min(k, steps);
+      cfg.rotate = Math.random() < 0.45 ? 0 : Math.floor(Math.random() * steps);
+    });
+    /* Two voices with the same count and the same rotation are one voice played twice. */
+    var seen = {};
+    HIT_SLOTS.forEach(function (slot) {
+      var cfg = r.voices[slot], key = cfg.pulses + ":" + cfg.rotate;
+      if (seen[key]) { cfg.rotate = (cfg.rotate + 1 + Math.floor(Math.random() * 3)) % steps; }
+      seen[cfg.pulses + ":" + cfg.rotate] = 1;
+    });
   }
 
   function buildRhythmRow(fl, r, commitR) {
@@ -2947,12 +3018,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var el = document.querySelector("#rp-body .rpat[data-slot='" + slot + "']");
     if (!el) { return; }
     var cfg = r.voices[slot];
-    var steps = Math.max(1, Math.min(32, r.steps | 0));
+    var steps = Math.max(1, Math.min(64, r.steps | 0));
     var pat = rotated(euclid(Math.min(cfg.pulses, steps), steps), cfg.rotate || 0);
     el.textContent = "";
-    pat.forEach(function (on) {
+    pat.forEach(function (on, i) {
       var c = document.createElement("i");
-      if (on) { c.className = "on"; }
+      c.className = (on ? "on" : "") + (i % 4 === 0 ? " beat" : "");
       el.appendChild(c);
     });
   }
@@ -3934,14 +4005,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultRhythm() {
     return {
-      on: true, steps: 16, div: "16n", gain: 0.85, swing: 0,
-      /* Pulse counts that are coprime with sixteen where it matters, so the four lines do
-         not all land together every bar. */
+      on: true, steps: 64, div: "16n", gain: 0.85, swing: 0,
+      /* Sixty-four sixteenths is four bars, which is long enough for four lines to drift
+         against each other instead of repeating every bar. The pulse counts are all
+         different and three of the four are coprime with 64, so the pattern they make
+         together only comes back around after a very long time: 8 divides 64 and gives the
+         low its steady half-bar, while 13, 21 and 5 never line up with it twice the same
+         way. */
       voices: {
-        low:  { pulses: 4, rotate: 0, gain: 1.00, pitch: 0 },
-        mid:  { pulses: 6, rotate: 2, gain: 0.80, pitch: 0 },
-        high: { pulses: 7, rotate: 1, gain: 0.65, pitch: 0 },
-        rand: { pulses: 3, rotate: 5, gain: 0.55, pitch: 0 }
+        low:  { pulses:  8, rotate: 0,  gain: 1.00, pitch: 0 },
+        mid:  { pulses: 13, rotate: 2,  gain: 0.80, pitch: 0 },
+        high: { pulses: 21, rotate: 1,  gain: 0.65, pitch: 0 },
+        rand: { pulses:  5, rotate: 11, gain: 0.55, pitch: 0 }
       }
     };
   }
@@ -4010,7 +4085,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var stride = SECT_STRIDE[r.div] || 1;
       R.tick = (R.tick || 0) + 1;
       if ((R.tick - 1) % stride !== 0) { continue; }
-      var steps = Math.max(1, Math.min(32, r.steps | 0));
+      var steps = Math.max(1, Math.min(64, r.steps | 0));
       var at = R.step % steps;
       R.step = (R.step + 1) % steps;
       for (var v = 0; v < HIT_SLOTS.length; v++) {
