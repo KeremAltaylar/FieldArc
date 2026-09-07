@@ -748,8 +748,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 #pp-body {
   flex: 1; min-height: 0; overflow-y: auto;
   padding: var(--s-2) var(--s-4);
-  columns: 3; column-gap: var(--s-5);
 }
+/* Explicit columns, not a multi-column flow. Multicol balances by height, so the last
+   control in a column sits on a boundary and any reflow — a scrollbar appearing, a
+   readout changing — flips it into the next column and back while you are dragging a
+   fader. It also split the Effects section across two columns. Sections are whole and
+   stay where they are put now, which is also what C-9 asks for: the same control in the
+   same place, every time. */
+.ppcols {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 0 var(--s-5); align-items: start;
+}
+.ppcol { min-width: 0; }
+.ppcol h2:first-child { margin-top: 0; }
+@media (max-width: 1250px) { .ppcols { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 900px)  { .ppcols { grid-template-columns: 1fr; } }
 #pp-body h2 { margin: var(--s-2) 0 var(--s-1); break-after: avoid; }
 #pp-body h2:first-child { margin-top: 0; }
 .pprow {
@@ -797,17 +810,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   font-style: normal; font-family: var(--font-mono); font-size: 10px;
   letter-spacing: 0.04em; text-transform: none; color: var(--dim);
 }
-.ppgen { margin-bottom: var(--s-2); padding: 2px var(--s-2); font-size: var(--t-xs); }
+.ppgen { padding: 2px var(--s-2); font-size: var(--t-xs); }
+/* The action belongs beside its heading, not on a line of its own underneath it — two
+   buttons each taking a full row cost more height than the whole Zones section. */
+.pphead {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s-3); margin: var(--s-2) 0 var(--s-1);
+}
+.pphead h2 { margin: 0; }
+.pphead .ppgen { flex: 0 0 auto; }
 /* The chord you are standing in, so the editor and the walk agree. */
 .ppchord.now { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 14%, var(--panel)); }
 .ppchord.now b { color: var(--accent); }
 
 @media (max-width: 1250px) {
-  #pp-body { columns: 2; }
   .ppgrid { grid-template-columns: repeat(4, 1fr); }
 }
 @media (max-width: 900px) {
-  #pp-body { columns: 1; }
   .pprow { grid-template-columns: 7rem 1fr 4rem; }
   .ppgrid { grid-template-columns: repeat(2, 1fr); }
 }
@@ -4439,13 +4458,47 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#pp-title").textContent = "Patch · " + label(f);
     body.textContent = "";
 
+    /* Sections are gathered first, then dealt into columns in reading order — filling a
+       column until it passes its share and then moving on. Deterministic, so a control is
+       in the same place every time the panel opens, and nothing can move while you are
+       touching it. */
+    var sections = [], cur = null, totalRows = 0;
     PATCH_FIELDS.forEach(function (fl) {
-      if (fl.sec) {
+      if (fl.sec) { cur = { title: fl.sec, rows: [] }; sections.push(cur); return; }
+      if (!cur) { cur = { title: "", rows: [] }; sections.push(cur); }
+      cur.rows.push(fl);
+    });
+    sections.forEach(function (sc) { totalRows += sc.rows.length + 1.6; });
+
+    var COLS = 3;
+    var cols = document.createElement("div");
+    cols.className = "ppcols";
+    var colEls = [], ci = 0, load = 0, share = totalRows / COLS;
+    for (var c = 0; c < COLS; c++) {
+      var d = document.createElement("div");
+      d.className = "ppcol";
+      colEls.push(d); cols.appendChild(d);
+    }
+    body.appendChild(cols);
+
+    sections.forEach(function (sc) {
+      var weight = sc.rows.length + 1.6;
+      if (ci < COLS - 1 && load > 0 && load + weight / 2 > share) { ci++; load = 0; }
+      load += weight;
+      var host = colEls[ci];
+      if (sc.title) {
         var h = document.createElement("h2");
-        h.textContent = fl.sec;
-        body.appendChild(h);
-        return;
+        h.textContent = sc.title;
+        host.appendChild(h);
       }
+      sc.rows.forEach(function (fl) { host.appendChild(buildRow(fl, patch, f)); });
+    });
+
+    renderProgression(f, patch, body);
+    renderMorphs(f, patch, body);
+  }
+
+  function buildRow(fl, patch, f) {
       var row = document.createElement("label");
       row.className = "pprow";
       var name = document.createElement("span");
@@ -4502,25 +4555,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       }
       row.appendChild(input);
       row.appendChild(val);
-      body.appendChild(row);
-    });
-
-    renderProgression(f, patch, body);
-    renderMorphs(f, patch, body);
+      return row;
   }
 
   /* One row per morph: what it is, how long it takes, how far it swings, and where it
      goes. Period is shown in minutes and seconds because that is the unit it is set in
      — a morph shown in bars would be pretending to be a rhythm. */
   function renderMorphs(f, patch, body) {
+    var mhead = document.createElement("div");
+    mhead.className = "pphead ppwide";
     var h = document.createElement("h2");
-    h.className = "ppwide";
     h.textContent = "Morphs — slow shapes, each on its own clock";
-    body.appendChild(h);
+    mhead.appendChild(h);
+    body.appendChild(mhead);
 
     var add = document.createElement("button");
     add.type = "button";
-    add.className = "ghost ppwide ppgen";
+    add.className = "ghost ppgen";
     add.textContent = "Add a morph";
     add.title = "A new drift on a free destination";
     add.addEventListener("click", function () {
@@ -4536,7 +4587,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       commitPatch(f, patch); renderPatchPanel();
       toast("Morph on " + free.label);
     });
-    body.appendChild(add);
+    mhead.appendChild(add);
 
     var grid = document.createElement("div");
     grid.className = "ppgrid ppwide";
@@ -4628,14 +4679,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* Sixteen chords across the route. Walking from one end to the other plays the whole
      progression; the position decides which one you are standing in. */
   function renderProgression(f, patch, body) {
+    var head = document.createElement("div");
+    head.className = "pphead ppwide";
     var h = document.createElement("h2");
-    h.className = "ppwide";
     h.textContent = "Progression — 16 chords across the route";
-    body.appendChild(h);
+    head.appendChild(h);
+    body.appendChild(head);
 
     var gen = document.createElement("button");
     gen.type = "button";
-    gen.className = "ghost ppwide ppgen";
+    gen.className = "ghost ppgen";
     gen.textContent = "Generate a progression";
     gen.title = "Functional harmony: fourth motion, degree-appropriate qualities, a modulation and a real cadence";
     gen.addEventListener("click", function () {
@@ -4644,7 +4697,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       renderPatchPanel();
       toast("New progression");
     });
-    body.appendChild(gen);
+    head.appendChild(gen);
 
     var grid = document.createElement("div");
     grid.className = "ppgrid ppwide";
