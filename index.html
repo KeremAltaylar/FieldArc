@@ -3040,7 +3040,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     BED.maxVoices = pacer.patch.bed.voices;
     BED.gain = pacer.patch.bed.gain;
     harmony.idx = null; harmony.chord = null; harmony.tones = null;
-    harmony.last = { bass: null, inner: null, top: null };
+    harmony.last = { bass: null, top: null };
     cellsSet(!!(pacer.patch.morph && pacer.patch.morph.cells));
 
     /* Dragging is free-hand; the walker is not. Every drag snaps back onto the line, which
@@ -3112,11 +3112,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (bed.voice) {
       try {
         bed.voice.sect.synth.triggerRelease();
-        ["bass", "inner", "top"].forEach(function (k) { bed.voice.synth[k].synth.triggerRelease(); });
+        ["bass", "top"].forEach(function (k) { bed.voice.synth[k].synth.triggerRelease(); });
       } catch (e) { /* ignore */ }
     }
     harmony.idx = null; harmony.chord = null; harmony.held = false;
-    harmony.last = { bass: null, inner: null, top: null };
+    harmony.last = { bass: null, top: null };
     counter.last = null; counter.restRun = 0; counter.tick = 0;
     $("#patch-play").textContent = "Sound";
     $("#patch-play").setAttribute("aria-pressed", "false");
@@ -3280,8 +3280,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var filter = new Tone.Filter(1200, "lowpass").connect(padMod);
 
     /* Three voices, each its own synth so voice leading can be reasoned about one line at
-       a time: a bass that moves rarely, an inner voice that sustains, and a top voice that
-       is where the generative activity lives. */
+       a time: a bass that moves rarely, and a top voice where the generative activity
+       lives. */
     function mk(type, env, gain) {
       var g = new Tone.Gain(gain).connect(filter);
       var sy = new Tone.Synth().connect(g);
@@ -3290,11 +3290,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     var bass  = mk("triangle", { attack: 0.06, decay: 0.5, sustain: 0.55, release: 2.4,
                                  attackCurve: "linear", releaseCurve: "exponential" }, 0.9);
-    var inner = mk("sine",     { attack: 0.35, decay: 0.6, sustain: 0.5, release: 3.2,
-                                 attackCurve: "linear", releaseCurve: "exponential" }, 0.7);
     var top   = mk("triangle", { attack: 0.03, decay: 0.4, sustain: 0.22, release: 1.6,
                                  attackCurve: "linear", releaseCurve: "exponential" }, 0.8);
-    var synth = { bass: bass, inner: inner, top: top };
+    /* The inner voice is gone. It was a sine held indefinitely — since the pad stopped
+       releasing at the bar line it never stopped — sustaining into a delay at 0.84
+       feedback, which accumulates rather than decays. What read as feedback was a standing
+       tone building in the delay line. Bass and top carry the harmony now. */
+    var synth = { bass: bass, top: top };
 
     /* A different instrument, so the two lines are told apart by timbre and not only by
        register: FM against the triangle and sine of the harmony voices. */
@@ -3332,8 +3334,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
              sect: { synth: sectSynth, gain: sectGain, filter: sectFilter, bus: sectBus } };
   }
 
-  /* Once a bar: commit whatever chord the position now asks for, and move bass and inner
-     voice to it by the shortest path. */
+  /* Once a bar: commit whatever chord the position now asks for, and move the bass to it
+     by the shortest path. */
   function harmonyBar(time) {
     if (!bed || !bed.on || !bed.voice || !pacer) { return; }
     if (!$("#patchpanel").hidden) { setTimeout(markProgression, 0); }
@@ -3346,18 +3348,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     var root = tones[0];
     var b = leadTo(harmony.last.bass, [root], patch.key - 24, patch.key - 5);
-    var inner = leadTo(harmony.last.inner, tones.slice(1), patch.key - 2, patch.key + 12);
 
     /* Held, not one bar long. A note that ends at the bar line leaves the harmony silent
        through every bar the chord does not change — which is exactly what happens the moment
-       you stand still to reach the patch panel. Measured on a parked walker: bass and inner
-       triggered once, then nothing for twelve seconds, output at -100 dB. They sustain now
-       and are re-voiced only when the chord actually moves. */
+       you stand still to reach the patch panel. Measured on a parked walker the pad
+       triggered once, then nothing for twelve seconds, output at -100 dB. It sustains now
+       and is re-voiced only when the chord actually moves. */
     if (changed || !harmony.held) {
       V.synth.bass.synth.triggerAttack(midiToFreq(b), time, 0.5);
-      V.synth.inner.synth.triggerAttack(midiToFreq(inner), time, 0.32);
       harmony.last.bass = b;
-      harmony.last.inner = inner;
       harmony.held = true;
     }
     harmony.tones = tones;
@@ -3431,7 +3430,41 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      The second voice belongs to the sector, not the route. It moves on its own grid, prefers
      to answer the lead by going the other way, and is pulled toward the prevailing chord only
      as much as the patch asks — enough to relate, not enough to obey. */
-  var counter = { last: null, restRun: 0, tick: 0 };
+  var counter = { last: null, prev2: null, restRun: 0, tick: 0, prevInt: 0, phrase: 0 };
+
+  /* What "in the key" means here. Not a major scale assumed from the tonic — this music
+     is modal and the default progression is D dorian, where a D major scale would put an
+     F# against every F natural in the harmony. The collection is read off the progression
+     itself: every chord tone in all sixteen chords, counted, roots weighted double, and
+     the seven commonest pitch classes kept. That is the actual tonal material of the
+     piece rather than a guess about it. Cached — it only changes when the progression or
+     a key does. */
+  function keyCollection(patch) {
+    var sig = patch.key + "|" + patch.key2 + "|" + patch.prog.map(function (c) {
+      return c.r + c.q + (c.k || 1) + (c.sd ? "d" : "");
+    }).join(",");
+    if (harmony.keySig === sig && harmony.keyPcs) { return harmony.keyPcs; }
+    var count = {};
+    for (var i = 0; i < patch.prog.length; i++) {
+      var tones = chordTones(patch, i);
+      for (var j = 0; j < tones.length; j++) {
+        var pc = ((tones[j] % 12) + 12) % 12;
+        count[pc] = (count[pc] || 0) + (j === 0 ? 2 : 1);
+      }
+    }
+    var pcs = Object.keys(count).map(Number).sort(function (a, b) { return count[b] - count[a]; });
+    harmony.keySig = sig;
+    harmony.keyPcs = pcs.slice(0, 7);
+    /* Tonic, and whatever third and fifth the collection actually contains — where a
+       phrase can come to rest without sounding like it stopped in the middle. */
+    var tonic = ((patch.key % 12) + 12) % 12, stable = [tonic];
+    [3, 4, 7].forEach(function (iv) {
+      var q = (tonic + iv) % 12;
+      if (harmony.keyPcs.indexOf(q) !== -1) { stable.push(q); }
+    });
+    harmony.stablePcs = stable;
+    return harmony.keyPcs;
+  }
 
   /* Every division the panel offers is a whole number of sixteenths, so one sixteenth-note
      grid can express all of them by counting. */
@@ -3476,37 +3509,83 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (counter.restRun > 0) { counter.restRun--; return; }
     if (Math.random() < 0.18) { counter.restRun = 1 + Math.floor(Math.random() * 2); return; }
 
+    var keyPcs = keyCollection(patch);
+    var chordSet = {}, chordPc = {};
+    (harmony.tones || []).forEach(function (t) {
+      chordPc[((t % 12) + 12) % 12] = 1;
+      for (var o = -3; o <= 3; o++) { chordSet[t + o * 12] = 1; }
+    });
+
+    /* The sector still chooses the mode, but it is rooted on the key rather than on the
+       sector's own transposition. Sectors were placed deliberately away from the key, and
+       with no pull toward the chord that left the line playing a scale with no relation to
+       anything — wandering rather than melodic. The sector now colours the mode; the key
+       holds the centre. Anything outside the key's collection is dropped unless the chord
+       currently contains it, so a secondary dominant's own notes still get through. */
     var lo = patch.key + 2, hi = patch.key + 26, pool = [];
     for (var oct = -2; oct <= 3; oct++) {
       for (var k = 0; k < mode.length; k++) {
-        var mm = root + mode[k] + oct * 12;
-        if (mm >= lo && mm <= hi) { pool.push(mm); }
+        var mm = patch.key + mode[k] + oct * 12;
+        if (mm < lo || mm > hi) { continue; }
+        var pc = ((mm % 12) + 12) % 12;
+        if (keyPcs.indexOf(pc) !== -1 || chordPc[pc]) { pool.push(mm); }
+      }
+    }
+    /* A mode can share very little with the collection — altered against a major ninth,
+       say. Rather than fall silent or force a note nothing wants, fall back to the key. */
+    if (pool.length < 4) {
+      pool = [];
+      for (var oc = -2; oc <= 3; oc++) {
+        for (var q = 0; q < keyPcs.length; q++) {
+          var nn = patch.key - (((patch.key % 12) + 12) % 12) + keyPcs[q] + oc * 12;
+          if (nn >= lo && nn <= hi) { pool.push(nn); }
+        }
       }
     }
     if (!pool.length) { return; }
 
-    var chordSet = {};
-    (harmony.tones || []).forEach(function (t) {
-      for (var o = -3; o <= 3; o++) { chordSet[t + o * 12] = 1; }
-    });
-
-    var prev = counter.last === null ? root + 12 : counter.last;
+    var prev = counter.last === null ? patch.key + 12 : counter.last;
     var leadDir = harmony.topDir || 0;
     var pull = patch.sect.chordPull;
+    var centre = (lo + hi) / 2;
+    var stable = harmony.stablePcs || [];
     var best = null;
 
+    /* Phrases. A leap opens something the next note has to close, and a phrase that has
+       run long enough should come to rest somewhere the key recognises. Without these two
+       the line is a sequence of individually reasonable intervals that never adds up to a
+       melody. */
+    counter.phrase = (counter.phrase || 0) + 1;
+    var atRest = counter.phrase >= 5 + Math.floor(Math.random() * 4);
+    var lastInt = counter.prevInt || 0;
+    var owing = Math.abs(lastInt) > 4;
+
     pool.forEach(function (m) {
-      var stepSize = Math.abs(m - prev);
+      var d = m - prev, stepSize = Math.abs(d);
       if (stepSize === 0) { return; }
-      var score = -Math.min(stepSize, 14) * 0.55;                 /* stepwise preferred */
-      if (leadDir !== 0 && Math.sign(m - prev) === -leadDir) { score += 2.2; }  /* contrary */
+      var score = -Math.min(stepSize, 14) * 0.6;                  /* stepwise preferred */
+      if (owing) {
+        /* Answer a leap by stepping back the other way. */
+        if (Math.sign(d) === -Math.sign(lastInt) && stepSize <= 2) { score += 4; }
+        else if (Math.sign(d) === Math.sign(lastInt)) { score -= 2.2; }
+      }
+      if (leadDir !== 0 && Math.sign(d) === -leadDir) { score += 1.8; }        /* contrary */
       if (chordSet[m]) { score += pull * 6; }                     /* consonance, on demand */
-      if (stepSize > 9) { score -= 2; }                           /* leaps are rare */
-      score += (Math.random() - 0.5) * 2.6;                       /* let it wander */
+      if (stepSize > 9) { score -= 2.5; }                         /* leaps are rare */
+      /* Not back to the note before last. Preferring steps and banning the repeat leaves
+         only the two neighbours, and the line settles into rocking between a pair —
+         measured, D-E-D-E-D-E for six notes together. */
+      if (m === counter.prev2) { score -= 1.9; }
+      if (atRest && stable.indexOf(((m % 12) + 12) % 12) !== -1) { score += 3.2; }
+      score -= Math.abs(m - centre) * 0.07;                       /* stay in tessitura */
+      score += (Math.random() - 0.5) * 1.5;                       /* let it wander, less */
       if (!best || score > best.score) { best = { m: m, score: score }; }
     });
     if (!best) { return; }
 
+    counter.prev2 = prev;
+    counter.prevInt = best.m - prev;
+    if (atRest) { counter.phrase = 0; counter.restRun = 1 + Math.floor(Math.random() * 2); }
     counter.last = best.m;
     var drift = 1 + (Math.random() - 0.5) * 0.005;
     var dur = 0.28 + Math.random() * 0.6;
@@ -4204,7 +4283,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
-               bass: 0.9, inner: 0.7, top: 0.8 },
+               bass: 0.9, top: 0.8 },
       /* The engine's own default for every effect is dry (A-8). These are a deliberate
          starting patch, written down where they can be seen and changed. */
       fx:    { delayDiv: "8n.", delayWet: 0.75, delayFb: 0.85, revWet: 0.18, revDecay: 3.4 },
@@ -4290,7 +4369,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      oscillate between two chords at a boundary, and the change itself is deferred to the
      next bar — harmony that switches mid-bar sounds like a mistake, not a movement. */
   var harmony = { idx: null, pending: null, chord: null, held: false,
-                  last: { bass: null, inner: null, top: null } };
+                  last: { bass: null, top: null } };
 
   function chordIndexFor(patch, t) {
     var n = patch.prog.length;
@@ -4413,7 +4492,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "voice.gain", label: "gain", min: 0, max: 1, step: 0.05 },
     { k: "voice.density", label: "density", min: 0.05, max: 1, step: 0.05 },
     { k: "voice.bass", label: "bass", min: 0, max: 1, step: 0.05 },
-    { k: "voice.inner", label: "inner", min: 0, max: 1, step: 0.05 },
     { k: "voice.top", label: "top", min: 0, max: 1, step: 0.05 },
 
     { sec: "Second voice — follows the sectors, not the route" },
@@ -4850,7 +4928,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (bed.voice) {
           bed.voice.bus.gain.rampTo(patch.voice.on ? patch.voice.gain : 0, 0.2);
           bed.voice.synth.bass.gain.gain.rampTo(patch.voice.bass, 0.2);
-          bed.voice.synth.inner.gain.gain.rampTo(patch.voice.inner, 0.2);
           bed.voice.synth.top.gain.gain.rampTo(patch.voice.top, 0.2);
           bed.voice.sect.gain.gain.rampTo(patch.sect.on ? patch.sect.gain : 0, 0.2);
           bed.voice.fx.delay.delayTime.rampTo(delaySeconds(patch), 0.2);
