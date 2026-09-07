@@ -3289,11 +3289,33 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     fx.reverb = new Tone.Reverb({ decay: patch.fx.revDecay, wet: 0 }).connect(bed.master);
     /* Seconds, not notation: a division string is resolved against whatever the Transport
        tempo happens to be at construction, which is not necessarily the patch tempo. */
-    fx.delay = new Tone.FeedbackDelay({
-      maxDelay: MAX_DELAY_S,
-      delayTime: delaySeconds(patch),
-      feedback: patch.fx.delayFb, wet: 0
-    }).connect(fx.reverb);
+    /* Built from parts rather than Tone.FeedbackDelay, for one reason: the feedback path
+       needs filtering and that node does not expose it. A delay at 0.84 feedback is a comb
+       resonator, and the pad is held indefinitely — so a sustained low root landing on a
+       comb peak rings up instead of decaying. G6/9 puts the bass at G1, about 49Hz, which
+       is exactly where it happens. Kerem heard it as resonance rather than echo, which is
+       precisely what it is.
+
+       A highpass in the loop stops the low end accumulating, and a lowpass makes each
+       repeat darker than the last, which is what a delay in a real space does anyway. */
+    var dIn = new Tone.Gain(1);
+    var dLine = new Tone.Delay(delaySeconds(patch), MAX_DELAY_S);
+    var dHi = new Tone.Filter({ type: "highpass", frequency: 170, Q: 0.7 });
+    var dLo = new Tone.Filter({ type: "lowpass", frequency: 6500, Q: 0.7 });
+    var dFb = new Tone.Gain(patch.fx.delayFb);
+    var dMix = new Tone.CrossFade(0);        /* dry until asked, like every other effect */
+    dIn.connect(dLine);
+    dLine.connect(dHi); dHi.connect(dLo); dLo.connect(dFb);
+    dFb.connect(dLine);                      /* the loop, damped at both ends */
+    dIn.connect(dMix.a);
+    dLine.connect(dMix.b);
+    dMix.connect(fx.reverb);
+    /* Named so everything that already talks to fx.delay keeps working unchanged. */
+    dIn.delayTime = dLine.delayTime;
+    dIn.feedback = dFb.gain;
+    dIn.wet = dMix.fade;
+    dIn.damp = dLo.frequency;
+    fx.delay = dIn;
     fx.reverb.wet.rampTo(patch.fx.revWet, 0.3);
     fx.delay.wet.rampTo(patch.fx.delayWet, 0.3);
 
