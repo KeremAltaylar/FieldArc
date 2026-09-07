@@ -1176,6 +1176,207 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   </div>
 </div>
 
+<!-- The spectral engine. Not a mix of two signals: every output sample is resynthesised
+     from a spectrum that is itself built from both. Kept as text rather than a string
+     literal so it stays readable and so an editor still treats it as code; it is handed to
+     the AudioWorklet as a Blob at run time. The browser ignores an unknown script type. -->
+<script type="text/worklet" id="spectral-worklet">
+/* Radix-2, iterative, in place. The same shape as the analyser's FFT, kept separate
+   because a worklet cannot see anything outside itself. */
+function FFT(n) {
+  this.n = n;
+  this.rev = new Uint32Array(n);
+  this.cos = new Float32Array(n / 2);
+  this.sin = new Float32Array(n / 2);
+  var bits = Math.round(Math.log(n) / Math.LN2), i, j, r, x;
+  for (i = 0; i < n; i++) {
+    r = 0; x = i;
+    for (j = 0; j < bits; j++) { r = (r << 1) | (x & 1); x >>= 1; }
+    this.rev[i] = r;
+  }
+  for (i = 0; i < n / 2; i++) {
+    this.cos[i] = Math.cos(-2 * Math.PI * i / n);
+    this.sin[i] = Math.sin(-2 * Math.PI * i / n);
+  }
+}
+FFT.prototype.run = function (re, im, inverse) {
+  var n = this.n, i, j, k, m, half, step, tr, ti, cr, ci, a, b;
+  for (i = 0; i < n; i++) {
+    j = this.rev[i];
+    if (j > i) {
+      tr = re[i]; re[i] = re[j]; re[j] = tr;
+      ti = im[i]; im[i] = im[j]; im[j] = ti;
+    }
+  }
+  for (m = 2; m <= n; m <<= 1) {
+    half = m >> 1; step = n / m;
+    for (i = 0; i < n; i += m) {
+      for (j = i, k = 0; j < i + half; j++, k += step) {
+        cr = this.cos[k]; ci = inverse ? -this.sin[k] : this.sin[k];
+        a = j + half;
+        tr = re[a] * cr - im[a] * ci;
+        ti = re[a] * ci + im[a] * cr;
+        re[a] = re[j] - tr; im[a] = im[j] - ti;
+        re[j] += tr;        im[j] += ti;
+      }
+    }
+  }
+  if (inverse) { for (i = 0; i < n; i++) { re[i] /= n; im[i] /= n; } }
+};
+
+class SpectralProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [{ name: "amount", defaultValue: 0, minValue: 0, maxValue: 1,
+              automationRate: "k-rate" }];
+  }
+
+  constructor(options) {
+    super();
+    var o = (options && options.processorOptions) || {};
+    this.setSize(o.size || 1024);
+    this.mode = o.mode || 0;          /* 0 cross-synthesis, 1 spectral morph */
+    this.port.onmessage = (e) => {
+      if (e.data.mode !== undefined) { this.mode = e.data.mode; }
+      if (e.data.size) { this.setSize(e.data.size); }
+    };
+  }
+
+  setSize(n) {
+    this.N = n;
+    this.hop = n >> 1;
+    this.fft = new FFT(n);
+    /* Root-Hann on both analysis and synthesis. The squared window then sums to a constant
+       at this hop, so with no modification the overlap-add returns the input rather than a
+       tremolo at the frame rate. */
+    this.win = new Float32Array(n);
+    for (var i = 0; i < n; i++) {
+      this.win[i] = Math.sqrt(0.5 - 0.5 * Math.cos(2 * Math.PI * i / n));
+    }
+    this.winCar = new Float32Array(n);
+    this.winMod = new Float32Array(n);
+    this.stgCar = new Float32Array(this.hop + 256);
+    this.stgMod = new Float32Array(this.hop + 256);
+    this.stg = 0;
+    this.acc = new Float32Array(n);
+    this.ring = new Float32Array(n * 4);
+    this.rd = 0; this.wr = 0;
+    this.reC = new Float32Array(n); this.imC = new Float32Array(n);
+    this.reM = new Float32Array(n); this.imM = new Float32Array(n);
+    /* Every buffer allocated here and never again. Allocating inside frame() means the
+       garbage collector runs on the audio thread, which is how a worklet starts dropping
+       blocks under load. */
+    this.magC = new Float32Array(n / 2 + 1);
+    this.magM = new Float32Array(n / 2 + 1);
+    this.envC = new Float32Array(n / 2 + 1);
+    this.envM = new Float32Array(n / 2 + 1);
+    /* Prime the ring so the first blocks read silence rather than reading ahead of writes. */
+    this.wr = this.hop;
+  }
+
+  /* The spectral envelope: magnitudes smoothed over a bandwidth that grows with frequency,
+     which is the cheap stand-in for a cepstral lifter and costs two passes instead of two
+     more transforms. What it leaves behind is the formant shape without the harmonics. */
+  envelope(mag, out, bins) {
+    var acc = 0, i, lo, hi, w;
+    for (i = 0; i <= bins; i++) {
+      w = 1 + (i * 0.12 | 0);
+      lo = i - w; if (lo < 0) { lo = 0; }
+      hi = i + w; if (hi > bins) { hi = bins; }
+      acc = 0;
+      for (var k = lo; k <= hi; k++) { acc += mag[k]; }
+      out[i] = acc / (hi - lo + 1) + 1e-7;
+    }
+  }
+
+  frame(amount) {
+    var N = this.N, bins = N >> 1, i, re, im;
+    var reC = this.reC, imC = this.imC, reM = this.reM, imM = this.imM;
+    for (i = 0; i < N; i++) {
+      reC[i] = this.winCar[i] * this.win[i]; imC[i] = 0;
+      reM[i] = this.winMod[i] * this.win[i]; imM[i] = 0;
+    }
+    this.fft.run(reC, imC, false);
+    this.fft.run(reM, imM, false);
+
+    var magC = this.magC, magM = this.magM, eC = this.envC, eM = this.envM;
+    for (i = 0; i <= bins; i++) {
+      magC[i] = Math.sqrt(reC[i] * reC[i] + imC[i] * imC[i]);
+      magM[i] = Math.sqrt(reM[i] * reM[i] + imM[i] * imM[i]);
+    }
+    this.envelope(magC, eC, bins);
+    this.envelope(magM, eM, bins);
+
+    for (i = 0; i <= bins; i++) {
+      var mc = magC[i], g;
+      if (mc < 1e-9) { g = 0; }
+      else if (this.mode === 0) {
+        /* Cross-synthesis: wear the modulator's envelope, keep your own harmonics — so the
+           chord still decides the pitch and the recording decides the colour. Raised to the
+           amount rather than blended, which makes amount 0 an identity rather than a mix. */
+        g = Math.pow(eM[i] / eC[i], amount);
+      } else {
+        /* Morph: the magnitudes themselves interpolate, geometrically, so half way is a
+           spectrum half way between the two rather than both of them at once. */
+        g = Math.pow(magM[i] / mc, amount);
+      }
+      if (g > 8) { g = 8; }              /* a quiet carrier bin must not explode */
+      re = reC[i] * g; im = imC[i] * g;
+      reC[i] = re; imC[i] = im;
+      if (i > 0 && i < bins) {           /* keep the spectrum conjugate-symmetric */
+        reC[N - i] = re; imC[N - i] = -im;
+      }
+    }
+    imC[0] = 0; if (bins < N) { imC[bins] = 0; }
+
+    this.fft.run(reC, imC, true);
+
+    var acc = this.acc, hop = this.hop;
+    for (i = 0; i < N; i++) { acc[i] += reC[i] * this.win[i]; }
+    for (i = 0; i < hop; i++) {
+      this.ring[this.wr] = acc[i];
+      this.wr = (this.wr + 1) % this.ring.length;
+    }
+    acc.copyWithin(0, hop);
+    acc.fill(0, N - hop);
+  }
+
+  process(inputs, outputs, params) {
+    var out = outputs[0][0];
+    if (!out) { return true; }
+    var car = (inputs[0] && inputs[0][0]) || null;
+    var mod = (inputs[1] && inputs[1][0]) || null;
+    var n = out.length, i;
+
+    for (i = 0; i < n; i++) {
+      this.stgCar[this.stg + i] = car ? car[i] : 0;
+      this.stgMod[this.stg + i] = mod ? mod[i] : 0;
+    }
+    this.stg += n;
+
+    if (this.stg >= this.hop) {
+      var N = this.N, hop = this.hop;
+      this.winCar.copyWithin(0, hop);
+      this.winMod.copyWithin(0, hop);
+      for (i = 0; i < hop; i++) {
+        this.winCar[N - hop + i] = this.stgCar[i];
+        this.winMod[N - hop + i] = this.stgMod[i];
+      }
+      this.stgCar.copyWithin(0, hop); this.stgMod.copyWithin(0, hop);
+      this.stg -= hop;
+      this.frame(params.amount[0]);
+    }
+
+    for (i = 0; i < n; i++) {
+      out[i] = this.ring[this.rd];
+      this.ring[this.rd] = 0;
+      this.rd = (this.rd + 1) % this.ring.length;
+    }
+    return true;
+  }
+}
+registerProcessor("fieldarc-spectral", SpectralProcessor);
+</script>
+
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
 <script>
 (function () {
@@ -3096,6 +3297,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   var BED = { radius: 140, maxVoices: 4, gain: 0.9, fade: 0.35 };
 
   function bedStop() {
+    wantSound = false;
     if (!bed) { return; }
     Object.keys(bed.voices).forEach(function (id) {
       var v = bed.voices[id];
@@ -3143,6 +3345,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var patch = pacer ? pacer.patch : defaultPatch();
         /* A-1: the Transport is a lookahead scheduler. Never a UI callback or a draw loop. */
         Tone.Transport.bpm.value = patch.tempo;
+        return loadSpectral(Tone).then(function (specOK) {
+        /* Stopped while we were loading. Do not build a graph nobody asked for. */
+        if (!wantSound) { bed.on = false; return; }
+        bed.spectralOK = specOK;
         if (!bed.voice) { bed.voice = buildVoice(Tone, patch); }
         if (!bed.loop) {
           bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
@@ -3159,6 +3365,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         $("#patch-play").setAttribute("aria-pressed", "true");
         updateBed();
         meterLoop();
+        });
       });
     });
   }
@@ -3186,6 +3393,60 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var small = (window.matchMedia && window.matchMedia("(max-width: 860px)").matches) ||
                 (navigator.hardwareConcurrency || 4) <= 4;
     return small ? 16 : 32;
+  }
+
+  /* Loaded once, from the script block above rather than a separate file, so the app stays
+     one document. Failure is not fatal: the filterbank is still there and takes over. */
+  var spectralReady = null;
+  function loadSpectral(Tone) {
+    if (spectralReady) { return spectralReady; }
+    spectralReady = new Promise(function (res) {
+      var el = $("#spectral-worklet");
+      var ctx = Tone.getContext().rawContext;
+      if (!el || !ctx || !ctx.audioWorklet) { res(false); return; }
+      var url = URL.createObjectURL(new Blob([el.textContent],
+                                             { type: "application/javascript" }));
+      ctx.audioWorklet.addModule(url).then(function () {
+        URL.revokeObjectURL(url); res(true);
+      }).catch(function (e) {
+        URL.revokeObjectURL(url);
+        window.__fa.errors.push({ sourceId: null, message: "spectral worklet: " + e.message });
+        res(false);
+      });
+    });
+    return spectralReady;
+  }
+
+  /* Size by what the device is likely to survive. The governor can drop it further while
+     it runs — the node is told, it does not get rebuilt (A-16). */
+  function spectralSize() {
+    var small = (window.matchMedia && window.matchMedia("(max-width: 860px)").matches) ||
+                (navigator.hardwareConcurrency || 4) <= 4;
+    return small ? 512 : 1024;
+  }
+
+  function buildSpectral(Tone, carrier, tap, out) {
+    /* Through Tone's context, not the native constructor. Tone wraps the context in
+       standardized-audio-context, so rawContext is not a BaseAudioContext and the native
+       AudioWorkletNode constructor refuses it — the module loads and then the node cannot
+       be built, which fails quietly into the fallback. */
+    var node;
+    try {
+      node = Tone.getContext().createAudioWorkletNode("fieldarc-spectral", {
+        numberOfInputs: 2, numberOfOutputs: 1, outputChannelCount: [1],
+        processorOptions: { size: spectralSize(), mode: 0 }
+      });
+    } catch (e) {
+      window.__fa.errors.push({ sourceId: null, message: "spectral node: " + e.message });
+      return null;
+    }
+    /* Tone nodes reach a native one through its input; the worklet's two inputs are the
+       carrier and the recording, and its single output replaces the pad on the bus. */
+    carrier.connect(node, 0, 0);
+    tap.connect(node, 0, 1);
+    node.connect(out.input ? out.input : out);
+    return { node: node, amount: node.parameters.get("amount"), size: spectralSize(),
+             mode: 0 };
   }
 
   function buildVocoder(Tone, tap, out) {
@@ -3289,32 +3550,33 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     fx.reverb = new Tone.Reverb({ decay: patch.fx.revDecay, wet: 0 }).connect(bed.master);
     /* Seconds, not notation: a division string is resolved against whatever the Transport
        tempo happens to be at construction, which is not necessarily the patch tempo. */
-    /* Built from parts rather than Tone.FeedbackDelay, for one reason: the feedback path
-       needs filtering and that node does not expose it. A delay at 0.84 feedback is a comb
-       resonator, and the pad is held indefinitely — so a sustained low root landing on a
-       comb peak rings up instead of decaying. G6/9 puts the bass at G1, about 49Hz, which
-       is exactly where it happens. Kerem heard it as resonance rather than echo, which is
-       precisely what it is.
+    /* A send, not an insert. The problem was real — a delay at 0.85 feedback is a comb
+       resonator and the pad is held indefinitely, so a sustained low root rings up; G6/9
+       puts the bass at about 49Hz and that is where it happened. My first fix hand-built the
+       feedback loop to get a filter inside it, and that was a mistake: measured, the wet path
+       put out +6.9dB from a -24.8dB input with the feedback set to zero, and the reverb after
+       it reached +47dB. Tone.FeedbackDelay is tested and this is not the place to be writing
+       a delay.
 
-       A highpass in the loop stops the low end accumulating, and a lowpass makes each
-       repeat darker than the last, which is what a delay in a real space does anyway. */
+       So the delay becomes a send. The dry path goes to the reverb at full range and is never
+       touched; a high-passed copy feeds the delay, whose output returns through a send gain.
+       Low frequencies never enter the repeats, which is all the original fix needed to do,
+       and the dry signal keeps its bottom end. */
     var dIn = new Tone.Gain(1);
-    var dLine = new Tone.Delay(delaySeconds(patch), MAX_DELAY_S);
-    var dHi = new Tone.Filter({ type: "highpass", frequency: 170, Q: 0.7 });
-    var dLo = new Tone.Filter({ type: "lowpass", frequency: 6500, Q: 0.7 });
-    var dFb = new Tone.Gain(patch.fx.delayFb);
-    var dMix = new Tone.CrossFade(0);        /* dry until asked, like every other effect */
-    dIn.connect(dLine);
-    dLine.connect(dHi); dHi.connect(dLo); dLo.connect(dFb);
-    dFb.connect(dLine);                      /* the loop, damped at both ends */
-    dIn.connect(dMix.a);
-    dLine.connect(dMix.b);
-    dMix.connect(fx.reverb);
-    /* Named so everything that already talks to fx.delay keeps working unchanged. */
-    dIn.delayTime = dLine.delayTime;
-    dIn.feedback = dFb.gain;
-    dIn.wet = dMix.fade;
-    dIn.damp = dLo.frequency;
+    var dHP = new Tone.Filter({ type: "highpass", frequency: 170, Q: 0.7 });
+    var dDelay = new Tone.FeedbackDelay({
+      maxDelay: MAX_DELAY_S,
+      delayTime: delaySeconds(patch),
+      feedback: patch.fx.delayFb, wet: 1
+    });
+    var dSend = new Tone.Gain(0);            /* dry until asked (A-8) */
+    dIn.connect(fx.reverb);
+    dIn.connect(dHP); dHP.connect(dDelay); dDelay.connect(dSend);
+    dSend.connect(fx.reverb);
+    /* Named so everything already talking to fx.delay keeps working unchanged. */
+    dIn.delayTime = dDelay.delayTime;
+    dIn.feedback = dDelay.feedback;
+    dIn.wet = dSend.gain;
     fx.delay = dIn;
     fx.reverb.wet.rampTo(patch.fx.revWet, 0.3);
     fx.delay.wet.rampTo(patch.fx.delayWet, 0.3);
@@ -3323,8 +3585,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* Modulation gets its own node. The patch panel owns bus.gain and the morphs own this
        one; sharing a node would mean two writers ramping the same parameter and the last
        one to fire winning. Neutral at 1, so with nothing routed it is not in the path. */
-    var voc = buildVocoder(Tone, bed.fieldTap, bus);
-    var padMod = new Tone.Gain(1).connect(voc.input);
+    /* One engine or the other, decided once at build. The spectral one resynthesises
+       rather than mixing, which is the point; the filterbank stays as the fallback for a
+       device with no AudioWorklet. */
+    var padMod = new Tone.Gain(1);
+    var spec = bed.spectralOK ? buildSpectral(Tone, padMod, bed.fieldTap, bus) : null;
+    var voc = null;
+    if (!spec) { voc = buildVocoder(Tone, bed.fieldTap, bus); padMod.connect(voc.input); }
     var filter = new Tone.Filter(1200, "lowpass").connect(padMod);
 
     /* Three voices, each its own synth so voice leading can be reasoned about one line at
@@ -3378,7 +3645,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       modulationEnvelope: { attack: 0.04, decay: 0.5, sustain: 0.1, release: 0.8 }
     });
 
-    return { fx: fx, bus: bus, filter: filter, padMod: padMod, voc: voc, synth: synth,
+    return { fx: fx, bus: bus, filter: filter, padMod: padMod, voc: voc, spec: spec,
+             synth: synth,
              sect: { synth: sectSynth, gain: sectGain, filter: sectFilter, bus: sectBus } };
   }
 
@@ -3429,8 +3697,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var mg = morphFor("voice.gain", bed.Tone.Transport.seconds);
     if (V.padMod) { V.padMod.gain.rampTo(mg === null ? 1 : 0.25 + 0.75 * mg, 0.25); }
 
-    /* The bank. Wet at zero is the untouched signal, so nothing routed here costs nothing. */
-    if (V.voc) {
+    /* Whichever engine was built. Amount 0 is an identity in both — the spectral one raises
+       its gain ratio to the power of amount, so at zero every bin is multiplied by one. */
+    if (V.spec || V.voc) {
       var tv = bed.Tone.Transport.seconds;
       var mAmt = morphFor("b2.amount", tv);
       /* With dissolve on, distance is the gate and the morphs shape what it lets through —
@@ -3442,7 +3711,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          range rather than being able to shut it. */
       var amt = dissolve.on ? dissolve.v * (mAmt === null ? 1 : 0.55 + 0.45 * mAmt)
                             : (mAmt === null ? 0 : mAmt);
-      if (Math.abs(V.voc.amount - amt) > 0.005) {
+      if (V.spec) {
+        V.spec.amount.setTargetAtTime(amt, bed.Tone.now(), 0.08);
+        var wantMode = (patch.morph && patch.morph.mode === "morph") ? 1 : 0;
+        if (V.spec.mode !== wantMode) {
+          V.spec.mode = wantMode;
+          V.spec.node.port.postMessage({ mode: wantMode });
+        }
+      }
+      if (V.voc && Math.abs(V.voc.amount - amt) > 0.005) {
         V.voc.amount = amt;
         V.voc.xf.fade.rampTo(amt, 0.25);
         /* The crossfade is not bit-exact at its ends — measured, the wet side still leaked
@@ -3458,14 +3735,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          synth's high band tracked the recording's at r = -0.37 — no relationship at all.
          A group with no morph on it now follows dissolve directly, so walking in fuses all
          three bands; a morph, where there is one, shapes what dissolve lets through. */
-      var dis = dissolve.on ? dissolve.v : 1;
-      var depthOf = function (mv) {
-        if (!dissolve.on) { return mv === null ? 0 : mv; }
-        return dis * (mv === null ? 0.9 : mv);
-      };
-      vocoderDepth(V.voc, 0, depthOf(morphFor("b2.low", tv)));
-      vocoderDepth(V.voc, 1, depthOf(morphFor("b2.mid", tv)));
-      vocoderDepth(V.voc, 2, depthOf(morphFor("b2.high", tv)));
+      if (V.voc) {
+        var dis = dissolve.on ? dissolve.v : 1;
+        var depthOf = function (mv) {
+          if (!dissolve.on) { return mv === null ? 0 : mv; }
+          return dis * (mv === null ? 0.9 : mv);
+        };
+        vocoderDepth(V.voc, 0, depthOf(morphFor("b2.low", tv)));
+        vocoderDepth(V.voc, 1, depthOf(morphFor("b2.mid", tv)));
+        vocoderDepth(V.voc, 2, depthOf(morphFor("b2.high", tv)));
+      }
     }
 
     var cut = Math.max(300, Math.min(12000, ch.centroid * 1.6));
@@ -4311,6 +4590,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       /* Starts at 0.35: the outer third of a radius is the recording arriving as itself,
          and only past that does it begin to become material. */
       dissolve: { on: true, start: 0.35 },
+      mode: "cross",
+
       list: [
         { id: "m1", on: true, shape: "tide",   period: 660, depth: 0.85, bias: 0.08,
           phase: 0,    dest: "voice.cutoff" },
@@ -4575,6 +4856,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     { sec: "Morphs" },
     { k: "morph.on", label: "morphs", toggle: true },
+    { k: "morph.mode", label: "fusion", options: function () { return ["cross", "morph"]; },
+      fmt: function (v) { return v === "morph" ? "morph · both spectra"
+                                              : "cross · its colour"; } },
     { k: "morph.dissolve.on", label: "dissolve", toggle: true },
     { k: "morph.dissolve.start", label: "dissolve at", min: 0.05, max: 0.8, step: 0.05,
       fmt: function (v) { return Math.round(v * 100) + "% in"; } },
@@ -5902,11 +6186,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   $("#f-delete").addEventListener("click", removeSelected);
   $("#cells-btn").addEventListener("click", function () { cellsSet(!cells.on); });
 
+  /* What the player asked for, decided the moment they click. Starting is asynchronous —
+     Tone has to resume and the worklet module has to load — and a second click inside that
+     window used to run bedStop against a half-built graph, leaving the Transport running,
+     the button reading Stop and bed.on false, so every callback returned early and nothing
+     sounded until the page was reloaded. The intent is recorded synchronously and the
+     start checks it before committing. */
+  var wantSound = false;
   $("#patch-play").addEventListener("click", function () {
-    if (bed && bed.on) { bedStop(); return; }
+    /* Sounding, or on its way to sounding — either way the click means stop. */
+    if ((bed && bed.on) || wantSound) { bedStop(); return; }
+    wantSound = true;
     var btn = this;
     btn.textContent = "…";
     bedStart().catch(function (err) {
+      wantSound = false;
       btn.textContent = "Sound";
       $("#saved").textContent = "Sound unavailable: " + (err && err.message ? err.message : err);
     });
