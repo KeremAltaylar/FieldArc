@@ -1180,203 +1180,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      from a spectrum that is itself built from both. Kept as text rather than a string
      literal so it stays readable and so an editor still treats it as code; it is handed to
      the AudioWorklet as a Blob at run time. The browser ignores an unknown script type. -->
-<script type="text/worklet" id="spectral-worklet">
-/* Radix-2, iterative, in place. The same shape as the analyser's FFT, kept separate
-   because a worklet cannot see anything outside itself. */
-function FFT(n) {
-  this.n = n;
-  this.rev = new Uint32Array(n);
-  this.cos = new Float32Array(n / 2);
-  this.sin = new Float32Array(n / 2);
-  var bits = Math.round(Math.log(n) / Math.LN2), i, j, r, x;
-  for (i = 0; i < n; i++) {
-    r = 0; x = i;
-    for (j = 0; j < bits; j++) { r = (r << 1) | (x & 1); x >>= 1; }
-    this.rev[i] = r;
-  }
-  for (i = 0; i < n / 2; i++) {
-    this.cos[i] = Math.cos(-2 * Math.PI * i / n);
-    this.sin[i] = Math.sin(-2 * Math.PI * i / n);
-  }
-}
-FFT.prototype.run = function (re, im, inverse) {
-  var n = this.n, i, j, k, m, half, step, tr, ti, cr, ci, a, b;
-  for (i = 0; i < n; i++) {
-    j = this.rev[i];
-    if (j > i) {
-      tr = re[i]; re[i] = re[j]; re[j] = tr;
-      ti = im[i]; im[i] = im[j]; im[j] = ti;
-    }
-  }
-  for (m = 2; m <= n; m <<= 1) {
-    half = m >> 1; step = n / m;
-    for (i = 0; i < n; i += m) {
-      for (j = i, k = 0; j < i + half; j++, k += step) {
-        cr = this.cos[k]; ci = inverse ? -this.sin[k] : this.sin[k];
-        a = j + half;
-        tr = re[a] * cr - im[a] * ci;
-        ti = re[a] * ci + im[a] * cr;
-        re[a] = re[j] - tr; im[a] = im[j] - ti;
-        re[j] += tr;        im[j] += ti;
-      }
-    }
-  }
-  if (inverse) { for (i = 0; i < n; i++) { re[i] /= n; im[i] /= n; } }
-};
-
-class SpectralProcessor extends AudioWorkletProcessor {
-  static get parameterDescriptors() {
-    return [{ name: "amount", defaultValue: 0, minValue: 0, maxValue: 1,
-              automationRate: "k-rate" }];
-  }
-
-  constructor(options) {
-    super();
-    var o = (options && options.processorOptions) || {};
-    this.setSize(o.size || 1024);
-    this.mode = o.mode || 0;          /* 0 cross-synthesis, 1 spectral morph */
-    this.port.onmessage = (e) => {
-      if (e.data.mode !== undefined) { this.mode = e.data.mode; }
-      if (e.data.size) { this.setSize(e.data.size); }
-    };
-  }
-
-  setSize(n) {
-    this.N = n;
-    this.hop = n >> 1;
-    this.fft = new FFT(n);
-    /* Root-Hann on both analysis and synthesis. The squared window then sums to a constant
-       at this hop, so with no modification the overlap-add returns the input rather than a
-       tremolo at the frame rate. */
-    this.win = new Float32Array(n);
-    for (var i = 0; i < n; i++) {
-      this.win[i] = Math.sqrt(0.5 - 0.5 * Math.cos(2 * Math.PI * i / n));
-    }
-    this.winCar = new Float32Array(n);
-    this.winMod = new Float32Array(n);
-    this.stgCar = new Float32Array(this.hop + 256);
-    this.stgMod = new Float32Array(this.hop + 256);
-    this.stg = 0;
-    this.acc = new Float32Array(n);
-    this.ring = new Float32Array(n * 4);
-    this.rd = 0; this.wr = 0;
-    this.reC = new Float32Array(n); this.imC = new Float32Array(n);
-    this.reM = new Float32Array(n); this.imM = new Float32Array(n);
-    /* Every buffer allocated here and never again. Allocating inside frame() means the
-       garbage collector runs on the audio thread, which is how a worklet starts dropping
-       blocks under load. */
-    this.magC = new Float32Array(n / 2 + 1);
-    this.magM = new Float32Array(n / 2 + 1);
-    this.envC = new Float32Array(n / 2 + 1);
-    this.envM = new Float32Array(n / 2 + 1);
-    /* Prime the ring so the first blocks read silence rather than reading ahead of writes. */
-    this.wr = this.hop;
-  }
-
-  /* The spectral envelope: magnitudes smoothed over a bandwidth that grows with frequency,
-     which is the cheap stand-in for a cepstral lifter and costs two passes instead of two
-     more transforms. What it leaves behind is the formant shape without the harmonics. */
-  envelope(mag, out, bins) {
-    var acc = 0, i, lo, hi, w;
-    for (i = 0; i <= bins; i++) {
-      w = 1 + (i * 0.12 | 0);
-      lo = i - w; if (lo < 0) { lo = 0; }
-      hi = i + w; if (hi > bins) { hi = bins; }
-      acc = 0;
-      for (var k = lo; k <= hi; k++) { acc += mag[k]; }
-      out[i] = acc / (hi - lo + 1) + 1e-7;
-    }
-  }
-
-  frame(amount) {
-    var N = this.N, bins = N >> 1, i, re, im;
-    var reC = this.reC, imC = this.imC, reM = this.reM, imM = this.imM;
-    for (i = 0; i < N; i++) {
-      reC[i] = this.winCar[i] * this.win[i]; imC[i] = 0;
-      reM[i] = this.winMod[i] * this.win[i]; imM[i] = 0;
-    }
-    this.fft.run(reC, imC, false);
-    this.fft.run(reM, imM, false);
-
-    var magC = this.magC, magM = this.magM, eC = this.envC, eM = this.envM;
-    for (i = 0; i <= bins; i++) {
-      magC[i] = Math.sqrt(reC[i] * reC[i] + imC[i] * imC[i]);
-      magM[i] = Math.sqrt(reM[i] * reM[i] + imM[i] * imM[i]);
-    }
-    this.envelope(magC, eC, bins);
-    this.envelope(magM, eM, bins);
-
-    for (i = 0; i <= bins; i++) {
-      var mc = magC[i], g;
-      if (mc < 1e-9) { g = 0; }
-      else if (this.mode === 0) {
-        /* Cross-synthesis: wear the modulator's envelope, keep your own harmonics — so the
-           chord still decides the pitch and the recording decides the colour. Raised to the
-           amount rather than blended, which makes amount 0 an identity rather than a mix. */
-        g = Math.pow(eM[i] / eC[i], amount);
-      } else {
-        /* Morph: the magnitudes themselves interpolate, geometrically, so half way is a
-           spectrum half way between the two rather than both of them at once. */
-        g = Math.pow(magM[i] / mc, amount);
-      }
-      if (g > 8) { g = 8; }              /* a quiet carrier bin must not explode */
-      re = reC[i] * g; im = imC[i] * g;
-      reC[i] = re; imC[i] = im;
-      if (i > 0 && i < bins) {           /* keep the spectrum conjugate-symmetric */
-        reC[N - i] = re; imC[N - i] = -im;
-      }
-    }
-    imC[0] = 0; if (bins < N) { imC[bins] = 0; }
-
-    this.fft.run(reC, imC, true);
-
-    var acc = this.acc, hop = this.hop;
-    for (i = 0; i < N; i++) { acc[i] += reC[i] * this.win[i]; }
-    for (i = 0; i < hop; i++) {
-      this.ring[this.wr] = acc[i];
-      this.wr = (this.wr + 1) % this.ring.length;
-    }
-    acc.copyWithin(0, hop);
-    acc.fill(0, N - hop);
-  }
-
-  process(inputs, outputs, params) {
-    var out = outputs[0][0];
-    if (!out) { return true; }
-    var car = (inputs[0] && inputs[0][0]) || null;
-    var mod = (inputs[1] && inputs[1][0]) || null;
-    var n = out.length, i;
-
-    for (i = 0; i < n; i++) {
-      this.stgCar[this.stg + i] = car ? car[i] : 0;
-      this.stgMod[this.stg + i] = mod ? mod[i] : 0;
-    }
-    this.stg += n;
-
-    if (this.stg >= this.hop) {
-      var N = this.N, hop = this.hop;
-      this.winCar.copyWithin(0, hop);
-      this.winMod.copyWithin(0, hop);
-      for (i = 0; i < hop; i++) {
-        this.winCar[N - hop + i] = this.stgCar[i];
-        this.winMod[N - hop + i] = this.stgMod[i];
-      }
-      this.stgCar.copyWithin(0, hop); this.stgMod.copyWithin(0, hop);
-      this.stg -= hop;
-      this.frame(params.amount[0]);
-    }
-
-    for (i = 0; i < n; i++) {
-      out[i] = this.ring[this.rd];
-      this.ring[this.rd] = 0;
-      this.rd = (this.rd + 1) % this.ring.length;
-    }
-    return true;
-  }
-}
-registerProcessor("fieldarc-spectral", SpectralProcessor);
-</script>
-
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
 <script>
 (function () {
@@ -3262,8 +3065,7 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
     /* Measurable: a morph is a pure function of time, so a test can ask for its value at
        any instant instead of waiting out an eleven-minute period in real time. */
     window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
-                          clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells,
-                          field: field, dissolve: dissolve, dissolveUpdate: dissolveUpdate };
+                          clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
     window.__fa.projectToRoute = projectToRoute;
 
     $("#pacerbar").hidden = false;
@@ -3303,8 +3105,7 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
       var v = bed.voices[id];
       try { v.gain.gain.rampTo(0, 0.2); } catch (e) { /* ignore */ }
       setTimeout(function () {
-        try { v.player.stop(); v.player.dispose(); v.filter.dispose(); v.gain.dispose();
-              if (v.direct) { v.direct.dispose(); } } catch (e) {}
+        try { v.player.stop(); v.player.dispose(); v.filter.dispose(); v.gain.dispose(); } catch (e) {}
         if (v.url) { URL.revokeObjectURL(v.url); }
       }, 300);
     });
@@ -3333,11 +3134,7 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
           var limiter = new Tone.Limiter(-1).toDestination();
           var meter = new Tone.Meter();
           limiter.connect(meter);
-          /* Where the recordings go to be used as material rather than heard. They still
-             reach the master directly as well — stage 4 is what crossfades that away. */
-          var fieldTap = new Tone.Gain(1);
-          bed = { on: false, voices: {}, master: limiter, meter: meter,
-                  fieldTap: fieldTap, Tone: Tone };
+          bed = { on: false, voices: {}, master: limiter, meter: meter, Tone: Tone };
         }
         bed.on = true;
         window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
@@ -3345,10 +3142,8 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
         var patch = pacer ? pacer.patch : defaultPatch();
         /* A-1: the Transport is a lookahead scheduler. Never a UI callback or a draw loop. */
         Tone.Transport.bpm.value = patch.tempo;
-        return loadSpectral(Tone).then(function (specOK) {
-        /* Stopped while we were loading. Do not build a graph nobody asked for. */
+        /* Stopped while the context was resuming. Do not build a graph nobody asked for. */
         if (!wantSound) { bed.on = false; return; }
-        bed.spectralOK = specOK;
         if (!bed.voice) { bed.voice = buildVoice(Tone, patch); }
         if (!bed.loop) {
           bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
@@ -3365,180 +3160,8 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
         $("#patch-play").setAttribute("aria-pressed", "true");
         updateBed();
         meterLoop();
-        });
       });
     });
-  }
-
-  /* ---------- B2 · Vocoder bank ----------
-     The first stage where the recording and the synth meet in the signal path rather than
-     in a mixer. Each band takes its level from the recording and applies it to the same
-     band of the synth, so the synth wears the recording's spectrum instead of playing
-     beside it.
-
-     Bands are mel-spaced because that is how hearing is spaced: a bank spread evenly in Hz
-     spends most of its bands where almost nothing lives and gives the whole bottom two
-     octaves a single band.
-
-     Dry is the untouched signal, not the sum of the dry bands. A bandpass bank does not
-     reconstruct flat, so summing its bands to make the dry path would colour the sound
-     even at zero — and a bridge at zero has to be inaudible (A-8). One crossfade, the
-     original signal on the dry side, and the null test is then structural. */
-  function melOf(f) { return 2595 * Math.log(1 + f / 700) / Math.LN10; }
-  function melInv(m) { return 700 * (Math.pow(10, m / 2595) - 1); }
-
-  function vocoderBands() {
-    /* A phone gets half the bank. Chosen once at build time — the graph is never rebuilt
-       while it is running (A-16). */
-    var small = (window.matchMedia && window.matchMedia("(max-width: 860px)").matches) ||
-                (navigator.hardwareConcurrency || 4) <= 4;
-    return small ? 16 : 32;
-  }
-
-  /* Loaded once, from the script block above rather than a separate file, so the app stays
-     one document. Failure is not fatal: the filterbank is still there and takes over. */
-  var spectralReady = null;
-  function loadSpectral(Tone) {
-    if (spectralReady) { return spectralReady; }
-    spectralReady = new Promise(function (res) {
-      var el = $("#spectral-worklet");
-      var ctx = Tone.getContext().rawContext;
-      if (!el || !ctx || !ctx.audioWorklet) { res(false); return; }
-      var url = URL.createObjectURL(new Blob([el.textContent],
-                                             { type: "application/javascript" }));
-      ctx.audioWorklet.addModule(url).then(function () {
-        URL.revokeObjectURL(url); res(true);
-      }).catch(function (e) {
-        URL.revokeObjectURL(url);
-        window.__fa.errors.push({ sourceId: null, message: "spectral worklet: " + e.message });
-        res(false);
-      });
-    });
-    return spectralReady;
-  }
-
-  /* Size by what the device is likely to survive. The governor can drop it further while
-     it runs — the node is told, it does not get rebuilt (A-16). */
-  function spectralSize() {
-    var small = (window.matchMedia && window.matchMedia("(max-width: 860px)").matches) ||
-                (navigator.hardwareConcurrency || 4) <= 4;
-    return small ? 512 : 1024;
-  }
-
-  function buildSpectral(Tone, carrier, tap, out) {
-    /* Through Tone's context, not the native constructor. Tone wraps the context in
-       standardized-audio-context, so rawContext is not a BaseAudioContext and the native
-       AudioWorkletNode constructor refuses it — the module loads and then the node cannot
-       be built, which fails quietly into the fallback. */
-    var node;
-    try {
-      node = Tone.getContext().createAudioWorkletNode("fieldarc-spectral", {
-        numberOfInputs: 2, numberOfOutputs: 1, outputChannelCount: [1],
-        processorOptions: { size: spectralSize(), mode: 0 }
-      });
-    } catch (e) {
-      window.__fa.errors.push({ sourceId: null, message: "spectral node: " + e.message });
-      return null;
-    }
-    /* Tone nodes reach a native one through its input; the worklet's two inputs are the
-       carrier and the recording, and its single output replaces the pad on the bus. */
-    carrier.connect(node, 0, 0);
-    tap.connect(node, 0, 1);
-    node.connect(out.input ? out.input : out);
-    return { node: node, amount: node.parameters.get("amount"), size: spectralSize(),
-             mode: 0 };
-  }
-
-  function buildVocoder(Tone, tap, out) {
-    /* 110 to 5000, not to 8000. Measured on the saturated pad, the band at 6kHz sat 33dB
-       below the band at 148Hz — the fundamental is low enough that 6kHz is its thirtieth
-       harmonic. Bands with no carrier energy in them cannot vocode anything; they only
-       divide the bank more finely where it does nothing. */
-    var N = vocoderBands(), LO = 110, HI = 5000;
-    var mLo = melOf(LO), mHi = melOf(HI), step = (mHi - mLo) / N;
-    var input = new Tone.Gain(1);
-    var wet = new Tone.Gain(0);              /* closed until something asks for it (A-8) */
-    var xf = new Tone.CrossFade(0);          /* 0 = dry, and dry is bit-for-bit the input */
-    input.connect(xf.a);
-    wet.connect(xf.b);
-    xf.connect(out);
-
-    /* The carrier. A vocoder can only put energy where its carrier already has some, and
-       the pad is a triangle and a sine through a lowpass — nearly nothing above 3kHz. With
-       a real recording playing, the synth's high band tracked the recording's at r = -0.18
-       even with every band at full depth: the envelope was being applied to silence.
-
-       Saturation fixes it without changing the instrument. Driving the pad hard into a tanh
-       curve regenerates harmonics above its own cutoff at the same pitch and with the same
-       envelope, so the carrier is rich while the pad you hear dry is untouched — this sits
-       on the wet path only. */
-    var drive = new Tone.Gain(7);
-    var shaper = new Tone.WaveShaper(function (x) { return Math.tanh(x * 2.2); }, 2048);
-    /* A shelf rather than noise. The carrier needs energy up top for the bank to shape,
-       and adding hiss to get it is what the pink noise layer used to do — this lifts the
-       harmonics saturation already made instead of inventing new material. */
-    var tilt = new Tone.Filter({ type: "highshelf", frequency: 1400, gain: 14 });
-    var carrier = new Tone.Gain(0.18);
-    input.connect(drive); drive.connect(shaper); shaper.connect(tilt); tilt.connect(carrier);
-
-    var bands = [];
-    for (var i = 0; i < N; i++) {
-      var fLo = melInv(mLo + step * i), fHi = melInv(mLo + step * (i + 1));
-      var fc = Math.sqrt(fLo * fHi);
-      var q = Math.max(0.7, fc / Math.max(1, fHi - fLo));
-
-      /* Synth side: this band of the voice, its level about to be dictated from outside.
-         The gain starts at 0 and is fed entirely by signals — connecting anything to a Tone
-         Param zeroes the value you constructed it with, so a band that "rests at 1" by
-         virtue of its constructor argument is silent the moment a follower is attached.
-         Measured: every band read 0 with the bank fully wet. Both terms are signals now
-         and Web Audio sums them into the parameter. */
-      var bg = new Tone.Gain(0).connect(wet);
-      var base = new Tone.Signal(1);
-      base.connect(bg.gain);
-      var sf = new Tone.Filter({ frequency: fc, type: "bandpass", Q: q }).connect(bg);
-      carrier.connect(sf);
-
-      /* Field side: the same band of the recording, rectified and smoothed into a level. */
-      var af = new Tone.Filter({ frequency: fc, type: "bandpass", Q: q });
-      tap.connect(af);
-      /* 60ms. Faster followed the waveform rather than its envelope and measured worse. */
-      var fol = new Tone.Follower(0.06);
-      af.connect(fol);
-      /* Depth lives here: the follower is multiplied by it before it reaches the band, and
-         the band rests at 1 - depth. At depth 0 the band passes the synth untouched; at 1
-         it is entirely the recording's envelope. */
-      var mul = new Tone.Multiply(0);
-      fol.connect(mul);
-      mul.connect(bg.gain);
-
-      var group = i < N / 3 ? 0 : (i < (2 * N) / 3 ? 1 : 2);
-      bands.push({ fc: Math.round(fc), q: +q.toFixed(2), gain: bg, mul: mul,
-                   base: base, follow: fol, group: group });
-    }
-    return { input: input, xf: xf, wet: wet, carrier: carrier, shaper: shaper,
-             bands: bands, n: N, depth: [0, 0, 0], amount: 0 };
-  }
-
-  /* Ramped, and only when it has actually moved: this runs on every eighth and there are
-     up to thirty-two bands to touch. */
-  /* A follower tracking a field recording sits well below full scale, so at full depth the
-     band would be roughly 10dB under where the dry signal was. The follower is scaled on
-     its way to the band rather than the wet bus being made up, which would also lift the
-     bands that are not being modulated at all. */
-  /* 3, not 5. Measured: at 5 the band spends most of its time against its ceiling and
-     stops discriminating between loud and quiet in the recording — the tracking effect
-     fell from 4.9dB to 1.4dB. More gain is not more modulation. */
-  var FOLLOW_GAIN = 3;
-
-  function vocoderDepth(voc, g, d) {
-    if (Math.abs(voc.depth[g] - d) < 0.01) { return; }
-    voc.depth[g] = d;
-    for (var i = 0; i < voc.bands.length; i++) {
-      if (voc.bands[i].group !== g) { continue; }
-      voc.bands[i].mul.factor.rampTo(d * FOLLOW_GAIN, 0.2);
-      voc.bands[i].base.rampTo(1 - d, 0.2);
-    }
   }
 
   /* ---------- Voice and effects ----------
@@ -3585,13 +3208,7 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
     /* Modulation gets its own node. The patch panel owns bus.gain and the morphs own this
        one; sharing a node would mean two writers ramping the same parameter and the last
        one to fire winning. Neutral at 1, so with nothing routed it is not in the path. */
-    /* One engine or the other, decided once at build. The spectral one resynthesises
-       rather than mixing, which is the point; the filterbank stays as the fallback for a
-       device with no AudioWorklet. */
-    var padMod = new Tone.Gain(1);
-    var spec = bed.spectralOK ? buildSpectral(Tone, padMod, bed.fieldTap, bus) : null;
-    var voc = null;
-    if (!spec) { voc = buildVocoder(Tone, bed.fieldTap, bus); padMod.connect(voc.input); }
+    var padMod = new Tone.Gain(1).connect(bus);
     var filter = new Tone.Filter(1200, "lowpass").connect(padMod);
 
     /* Three voices, each its own synth so voice leading can be reasoned about one line at
@@ -3645,8 +3262,7 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
       modulationEnvelope: { attack: 0.04, decay: 0.5, sustain: 0.1, release: 0.8 }
     });
 
-    return { fx: fx, bus: bus, filter: filter, padMod: padMod, voc: voc, spec: spec,
-             synth: synth,
+    return { fx: fx, bus: bus, filter: filter, padMod: padMod, synth: synth,
              sect: { synth: sectSynth, gain: sectGain, filter: sectFilter, bus: sectBus } };
   }
 
@@ -3689,63 +3305,10 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
     /* The recordings still choose the centre; the morphs decide how far above or below it
        the voice sits. Multiplicative, so the archive keeps its say — a morph that replaced
        the centroid outright would sound like an LFO, not like a place changing. */
-    fieldSourceUpdate();
-    dissolveUpdate(patch);
-
     /* Never all the way down: a level morph that mutes is a gate, and the pad is the
        harmony — losing it entirely loses the chord you are standing in. */
     var mg = morphFor("voice.gain", bed.Tone.Transport.seconds);
     if (V.padMod) { V.padMod.gain.rampTo(mg === null ? 1 : 0.25 + 0.75 * mg, 0.25); }
-
-    /* Whichever engine was built. Amount 0 is an identity in both — the spectral one raises
-       its gain ratio to the power of amount, so at zero every bin is multiplied by one. */
-    if (V.spec || V.voc) {
-      var tv = bed.Tone.Transport.seconds;
-      var mAmt = morphFor("b2.amount", tv);
-      /* With dissolve on, distance is the gate and the morphs shape what it lets through —
-         a bank that opened while you were nowhere near a recording would be fusing the
-         synth with silence. With it off the morphs work alone, as they did before. */
-      /* Measured: with dissolve at 0.99 and the default amount morph passing through a low
-         part of its cycle, the crossfade sat at 0.19 — a fusion you had to be told about.
-         Distance decides how much fusion there is; a morph shapes the top half of that
-         range rather than being able to shut it. */
-      var amt = dissolve.on ? dissolve.v * (mAmt === null ? 1 : 0.55 + 0.45 * mAmt)
-                            : (mAmt === null ? 0 : mAmt);
-      if (V.spec) {
-        V.spec.amount.setTargetAtTime(amt, bed.Tone.now(), 0.08);
-        var wantMode = (patch.morph && patch.morph.mode === "morph") ? 1 : 0;
-        if (V.spec.mode !== wantMode) {
-          V.spec.mode = wantMode;
-          V.spec.node.port.postMessage({ mode: wantMode });
-        }
-      }
-      if (V.voc && Math.abs(V.voc.amount - amt) > 0.005) {
-        V.voc.amount = amt;
-        V.voc.xf.fade.rampTo(amt, 0.25);
-        /* The crossfade is not bit-exact at its ends — measured, the wet side still leaked
-           through at -66dB with the fade at zero, against a -100dB null when the wet bus
-           happened to be silent. A-8 asks for silence, not for quiet, so the bus is closed
-           rather than merely faded away from. */
-        V.voc.wet.gain.rampTo(amt < 0.01 ? 0 : 1, 0.25);
-      }
-      /* Dissolve drives the depth as well as the wet, and for the same reason. Opening the
-         bank while every band still rests mostly on the synth's own level is a crossfade
-         between a signal and very nearly the same signal. Measured with a real recording
-         playing: only the high group had any depth, the other two sat at zero, and the
-         synth's high band tracked the recording's at r = -0.37 — no relationship at all.
-         A group with no morph on it now follows dissolve directly, so walking in fuses all
-         three bands; a morph, where there is one, shapes what dissolve lets through. */
-      if (V.voc) {
-        var dis = dissolve.on ? dissolve.v : 1;
-        var depthOf = function (mv) {
-          if (!dissolve.on) { return mv === null ? 0 : mv; }
-          return dis * (mv === null ? 0.9 : mv);
-        };
-        vocoderDepth(V.voc, 0, depthOf(morphFor("b2.low", tv)));
-        vocoderDepth(V.voc, 1, depthOf(morphFor("b2.mid", tv)));
-        vocoderDepth(V.voc, 2, depthOf(morphFor("b2.high", tv)));
-      }
-    }
 
     var cut = Math.max(300, Math.min(12000, ch.centroid * 1.6));
     var mc = morphFor("voice.cutoff", bed.Tone.Transport.seconds);
@@ -3990,9 +3553,6 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
         /* A-2: every gain change ramps. A direct assignment on a live parameter zips. */
         v.gain.gain.rampTo(g, BED.fade);
         v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * prox, BED.fade);
-        if (v.direct) {
-          v.direct.gain.rampTo(dissolve.on ? 1 - dissolve.v : 1, BED.fade);
-        }
       }
       v.idle = false;
       return;
@@ -4003,13 +3563,7 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
       if (!blob || !bed || !bed.voices[z.id]) { return; }
       var f = feature(z.id), a = (f && f.properties.audio) || {};
       v.url = URL.createObjectURL(blob);
-      /* Two paths from here. The direct one is what you hear as a recording and dissolve
-         closes it; the tap is what the bank listens to and stays open, because analysis
-         that faded with the sound would make the fusion weaken exactly as it should be
-         taking over. */
-      v.direct = new Tone.Gain(1).connect(bed.master);
-      v.gain = new Tone.Gain(0).connect(v.direct);
-      if (bed.fieldTap) { v.gain.connect(bed.fieldTap); }
+      v.gain = new Tone.Gain(0).connect(bed.master);
       v.filter = new Tone.Filter(400, "lowpass").connect(v.gain);
       /* Its own brightness sets how far the filter can open; proximity decides how far it
          actually does. A dull recording stays dull however close you stand. */
@@ -4141,7 +3695,7 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
      eleven-minute morph is a formal shape, not a rhythm, and quantising it to bars would
      be a lie about what it is. Gestures, when they arrive, stay on divisions. */
 
-  var MORPH_SHAPES = ["drift", "breath", "pulse", "ramp", "tide", "field"];
+  var MORPH_SHAPES = ["drift", "breath", "pulse", "ramp", "tide"];
   /* Where a morph can point. Brightness for each voice, and for the FM voice its
      modulation index — which is a timbre control, not a volume or a filter: it changes
      what the voice is made of rather than how much of it gets through. */
@@ -4149,11 +3703,7 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
     { k: "voice.cutoff", label: "pad filter" },
     { k: "sect.cutoff",  label: "2nd filter" },
     { k: "sect.index",   label: "2nd timbre" },
-    { k: "voice.gain",   label: "pad level" },
-    { k: "b2.amount",    label: "vocode wet" },
-    { k: "b2.low",       label: "vocode low" },
-    { k: "b2.mid",       label: "vocode mid" },
-    { k: "b2.high",      label: "vocode high" }
+    { k: "voice.gain",   label: "pad level" }
   ];
   function destLabel(k) {
     for (var i = 0; i < MORPH_DESTS.length; i++) {
@@ -4166,8 +3716,7 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
     breath: "asymmetric: a short rise and a long fall",
     pulse:  "flat, with a rare narrow swell",
     ramp:   "one very slow climb, then back",
-    tide:   "two sines beating — repeats far later than either alone",
-    field:  "the envelope of the nearest recording, read as a curve"
+    tide:   "two sines beating — repeats far later than either alone"
   };
 
   /* Deterministic value noise. A morph seeded from its id gives the same walk every
@@ -4194,7 +3743,6 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
       var w = p < 0.35 ? (p / 0.35) * 0.5 : 0.5 + ((p - 0.35) / 0.65) * 0.5;
       return 0.5 - 0.5 * Math.cos(TAU * w);
     }
-    if (shape === "field") { return fieldAt(p); }
     if (shape === "tide") {
       /* Two incommensurable rates on the unwrapped phase. Because the ratio is irrational
          the sum never exactly recurs — the period is how long one crest takes, not how
@@ -4208,103 +3756,12 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
     return a + (b - a) * (f * f * (3 - 2 * f));
   }
 
-  /* ---------- B1 · Envelope transfer ----------
-     Every recording already carries about 200 peak magnitudes, computed once on attach.
-     That array is the shape of a real gesture in a real place, and it costs nothing to
-     read — no decode, no analysis, no audio node. Stretched over a minute or two it stops
-     being a waveform and becomes a slow contour, which is the first point at which the
-     archive is playing the synth rather than sitting beside it.
-
-     Unlike every other shape this one is not a pure function of time: it depends on which
-     recording you are near. When you are near none, it reports nothing at all rather than
-     a neutral value, so its destination falls back to neutral and its cell goes out. */
-  var field = { id: null, peaks: null, norm: 1, d: Infinity };
-
-  function fieldSourceUpdate() {
-    if (!pacer) { field.id = null; field.peaks = null; return; }
-    var bestId = null, bestD = Infinity;
-    pacer.zones.forEach(function (z) {
-      if (!z.has_audio) { return; }
-      var d = segment(pacer.pos, z.lonlat);
-      if (d > BED.radius) { return; }
-      if (d < bestD) { bestD = d; bestId = z.id; }
-    });
-    field.near = bestD;   /* distance to the nearest recording, peaks or not — dissolve
-                             follows proximity, not whether an envelope happens to exist */
-    if (bestId === null) { field.id = null; field.peaks = null;
-                           field.d = Infinity; field.near = Infinity; return; }
-    /* A-14: two recordings a similar distance away would otherwise swap the whole contour
-       back and forth every few metres. The newcomer has to be clearly nearer. */
-    if (field.id !== null && bestId !== field.id && bestD > field.d * 0.88) {
-      field.d = segment(pacer.pos, (function () {
-        var z = null;
-        pacer.zones.forEach(function (q) { if (q.id === field.id) { z = q; } });
-        return z ? z.lonlat : pacer.pos;
-      })());
-      return;
-    }
-    field.d = bestD;
-    if (bestId === field.id) { return; }
-    var f = feature(bestId), a = (f && f.properties.audio) || {};
-    if (!a.peaks || !a.peaks.length) { field.id = null; field.peaks = null; return; }
-    field.id = bestId;
-    field.peaks = a.peaks;
-    /* Normalised by its own loudest moment: a quiet recording is still a full gesture,
-       and without this a distant dawn chorus would barely move the destination at all. */
-    var mx = 0;
-    for (var i = 0; i < a.peaks.length; i++) { if (a.peaks[i] > mx) { mx = a.peaks[i]; } }
-    field.norm = mx > 0.0001 ? 1 / mx : 1;
-  }
-
-  /* ---------- Dissolve ----------
-     What distance means. Until now walking toward a recording raised its volume; now it
-     decides how much of it you hear as itself and how much as material. Through the outer
-     part of the radius the recording simply arrives, recognisable, a place. Past the start
-     point it begins to dissolve: the direct path fades out while the bank opens, so what
-     changes as you walk in is what you are hearing rather than how loud it is. At the
-     centre the bird is gone and only what the bird did to the synth is left.
-
-     A-14: smoothed, because this is a position-derived control and GPS jitter at fifteen
-     metres would otherwise be audible as the texture flickering between two states. No
-     hysteresis — there is nothing quantised here to sit on the edge of. */
-  var dissolve = { v: 0, target: 0, on: true };
-
-  function dissolveUpdate(patch) {
-    var cfg = (patch.morph && patch.morph.dissolve) || {};
-    dissolve.on = cfg.on !== false;
-    var start = cfg.start == null ? 0.35 : cfg.start;
-    var t = 0;
-    if (dissolve.on && pacer && isFinite(field.near) && BED.radius > 0) {
-      var raw = 1 - field.near / BED.radius;          /* 0 at the edge, 1 at the centre */
-      t = (raw - start) / Math.max(0.05, 1 - start);
-      t = t < 0 ? 0 : t > 1 ? 1 : t;
-    }
-    dissolve.target = t;
-    dissolve.v += (t - dissolve.v) * 0.22;
-    if (Math.abs(dissolve.v - t) < 0.002) { dissolve.v = t; }
-    return dissolve.v;
-  }
-
-  /* Read with its neighbours averaged in. A raw peak array is spiky at this scale and a
-     control that jumps is not a morph. */
-  function fieldAt(p) {
-    if (!field.peaks || !field.peaks.length) { return null; }
-    var n = field.peaks.length, x = p * n, i = Math.floor(x), f = x - i;
-    var at = function (k) { return field.peaks[((k % n) + n) % n] || 0; };
-    var a = (at(i - 1) + at(i) * 2 + at(i + 1)) / 4;
-    var b = (at(i) + at(i + 1) * 2 + at(i + 2)) / 4;
-    var v = (a + (b - a) * f) * field.norm;
-    return v < 0 ? 0 : v > 1 ? 1 : v;
-  }
-
   function morphValue(m, t) {
     if (!m.on) { return 0; }
     var per = Math.max(4, m.period || 60);
     var u = (t / per) + (m.phase || 0);   /* unwrapped — the shape decides whether to wrap */
     var seed = (m.id || "m").charCodeAt(m.id ? m.id.length - 1 : 0) || 7;
-    var sh = morphShape(m.shape, u, seed);
-    if (sh === null) { return null; }   /* no recording in range — reports nothing, not zero */
-    var v = (m.bias || 0) + (m.depth === undefined ? 1 : m.depth) * sh;
+    var v = (m.bias || 0) + (m.depth === undefined ? 1 : m.depth) * morphShape(m.shape, u, seed);
     return v < 0 ? 0 : v > 1 ? 1 : v;
   }
 
@@ -4377,8 +3834,6 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
     for (var i = 0; i < list.length; i++) {
       if (!list[i].on) { continue; }
       var v = morphValue(list[i], t);
-      /* A field morph out of range reports nothing, and a cell that is not being fed does
-         not exist. Walking into earshot of a recording brings one into being. */
       if (v === null) { continue; }
       /* Anything aimed at the second voice is drawn as an open arc at the rim instead of
          a body in the middle. Same data, a different kind of mark. */
@@ -4386,7 +3841,7 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
         orbits.push({ v: v, k: orbits.length });
         continue;
       }
-      var isField = list[i].shape === "field";
+      var isField = false;
       /* Each cell keeps to its own slow orbit, on a period unrelated to its morph, so
          position never becomes a second readout of value. */
       var orb = t / (73 + i * 41) + i * 0.618;
@@ -4587,10 +4042,6 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
   function defaultMorph() {
     return {
       on: true, cells: true,
-      /* Starts at 0.35: the outer third of a radius is the recording arriving as itself,
-         and only past that does it begin to become material. */
-      dissolve: { on: true, start: 0.35 },
-      mode: "cross",
 
       list: [
         { id: "m1", on: true, shape: "tide",   period: 660, depth: 0.85, bias: 0.08,
@@ -4606,24 +4057,15 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
           phase: 0.17, dest: "sect.index" },
         { id: "m5", on: true, shape: "breath", period: 97,  depth: 0.60, bias: 0.30,
           phase: 0.44, dest: "sect.cutoff" },
-        /* The archive itself, stretched over ninety seconds. Silent until you are within
-           earshot of a recording, which is the point: this morph exists only where the
-           archive does. */
-        { id: "m6", on: true, shape: "field",  period: 90,  depth: 0.90, bias: 0.05,
-          phase: 0,    dest: "voice.gain" },
-        /* The bank opens and closes slowly; the top of it flickers. Lows and mids are left
-           unrouted so there is somewhere obvious to point a morph of your own. */
-        { id: "m7", on: true, shape: "breath", period: 140, depth: 0.75, bias: 0.05,
-          phase: 0.5,  dest: "b2.amount" },
-        { id: "m8", on: true, shape: "drift",  period: 33,  depth: 0.85, bias: 0.10,
-          phase: 0.2,  dest: "b2.high" }
+        { id: "m6", on: true, shape: "breath", period: 90,  depth: 0.55, bias: 0.30,
+          phase: 0,    dest: "voice.gain" }
       ]
     };
   }
 
   function defaultPatch() {
     return {
-      version: 10, tempo: 72, key: 50, key2: 55,
+      version: 11, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -4640,69 +4082,23 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
 
   function patchOf(f) {
     var p = f.properties.patch;
-    /* Version 1 was scale-based. There is nothing worth salvaging in half a migration.
-       4 to 5 is a different case: everything in a v4 patch is still correct and a tuned
-       progression is worth more than a clean slate, so it is migrated, not replaced. */
-    if (p && p.version === 4 && p.prog) { p.morph = defaultMorph(); p.version = 5; }
-    /* 5 to 6 only adds the second voice's morphs. Anything the patch already had —
-       including three morphs you may have tuned — is left exactly as it is. */
-    if (p && p.version === 5 && p.morph && p.morph.list) {
-      var hasSect = false;
-      for (var mi = 0; mi < p.morph.list.length; mi++) {
-        if ((p.morph.list[mi].dest || "").indexOf("sect.") === 0) { hasSect = true; }
-      }
-      if (!hasSect) {
-        var add = defaultMorph().list.filter(function (m) {
-          return m.dest.indexOf("sect.") === 0;
-        });
-        p.morph.list = p.morph.list.concat(add);
-      }
-      p.version = 6;
-    }
-    /* 6 to 7 appends the field morph and nothing else. */
-    if (p && p.version === 6 && p.morph && p.morph.list) {
-      var hasField = false;
-      for (var fi = 0; fi < p.morph.list.length; fi++) {
-        if (p.morph.list[fi].shape === "field") { hasField = true; }
-      }
-      if (!hasField) {
-        p.morph.list = p.morph.list.concat(defaultMorph().list.filter(function (m) {
-          return m.shape === "field";
-        }));
-      }
-      p.version = 7;
-    }
-    /* 7 to 8 appends the two vocoder morphs and nothing else. */
-    if (p && p.version === 7 && p.morph && p.morph.list) {
-      var hasVoc = false;
-      for (var vi = 0; vi < p.morph.list.length; vi++) {
-        if ((p.morph.list[vi].dest || "").indexOf("b2.") === 0) { hasVoc = true; }
-      }
-      if (!hasVoc) {
-        p.morph.list = p.morph.list.concat(defaultMorph().list.filter(function (m) {
-          return m.dest.indexOf("b2.") === 0;
-        }));
-      }
-      p.version = 8;
-    }
-    /* 8 to 9 adds dissolve and nothing else. */
-    if (p && p.version === 8 && p.morph) {
-      if (!p.morph.dissolve) { p.morph.dissolve = { on: true, start: 0.35 }; }
-      p.version = 9;
-    }
-    /* 9 to 10 lifts the second voice out of the dark. A stored patch keeps the pulse shape
-       and the 0.12 bias that kept its filter at 600Hz, so the migration raises them — the
-       point of the fix is being able to hear it. */
-    if (p && p.version === 9 && p.morph && p.morph.list) {
-      p.morph.list.forEach(function (m) {
-        if (m.dest !== "sect.cutoff") { return; }
-        if (m.shape === "pulse") { m.shape = "breath"; m.depth = 0.6; }
-        if ((m.bias || 0) < 0.3) { m.bias = 0.3; }
+    /* Versions 1 to 10 grew the fusion engines between a point and a route; 11 removes
+       them. A stored patch keeps everything that still exists — tempo, key, the sixteen
+       chords, the sectors, every morph pointed at a destination that is still there — and
+       loses only what no longer has anything to drive. Rebuilding from scratch would throw
+       away a progression to save writing this. */
+    var LIVE_DESTS = { "voice.cutoff": 1, "voice.gain": 1, "sect.cutoff": 1, "sect.index": 1 };
+    if (p && p.version >= 4 && p.version < 11 && p.prog) {
+      if (!p.morph) { p.morph = defaultMorph(); }
+      delete p.morph.dissolve;
+      delete p.morph.mode;
+      p.morph.list = (p.morph.list || []).filter(function (m) {
+        return m.shape !== "field" && LIVE_DESTS[m.dest];
       });
-      p.version = 10;
+      if (!p.morph.list.length) { p.morph.list = defaultMorph().list; }
+      p.version = 11;
     }
-    if (!p || p.version !== 10 || !p.prog) { p = f.properties.patch = defaultPatch(); }
-    if (p.morph && !p.morph.dissolve) { p.morph.dissolve = { on: true, start: 0.35 }; }
+    if (!p || p.version !== 11 || !p.prog) { p = f.properties.patch = defaultPatch(); }
     if (!p.morph) { p.morph = defaultMorph(); }
     return p;
   }
@@ -4856,12 +4252,6 @@ registerProcessor("fieldarc-spectral", SpectralProcessor);
 
     { sec: "Morphs" },
     { k: "morph.on", label: "morphs", toggle: true },
-    { k: "morph.mode", label: "fusion", options: function () { return ["cross", "morph"]; },
-      fmt: function (v) { return v === "morph" ? "morph · both spectra"
-                                              : "cross · its colour"; } },
-    { k: "morph.dissolve.on", label: "dissolve", toggle: true },
-    { k: "morph.dissolve.start", label: "dissolve at", min: 0.05, max: 0.8, step: 0.05,
-      fmt: function (v) { return Math.round(v * 100) + "% in"; } },
 
     { sec: "Zones" },
     { k: "zones.on", label: "zone events", toggle: true },
