@@ -3042,7 +3042,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* Measurable: a morph is a pure function of time, so a test can ask for its value at
        any instant instead of waiting out an eleven-minute period in real time. */
     window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
-                          clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
+                          clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells,
+                          field: field, dissolve: dissolve, dissolveUpdate: dissolveUpdate };
     window.__fa.projectToRoute = projectToRoute;
 
     $("#pacerbar").hidden = false;
@@ -3081,7 +3082,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var v = bed.voices[id];
       try { v.gain.gain.rampTo(0, 0.2); } catch (e) { /* ignore */ }
       setTimeout(function () {
-        try { v.player.stop(); v.player.dispose(); v.filter.dispose(); v.gain.dispose(); } catch (e) {}
+        try { v.player.stop(); v.player.dispose(); v.filter.dispose(); v.gain.dispose();
+              if (v.direct) { v.direct.dispose(); } } catch (e) {}
         if (v.url) { URL.revokeObjectURL(v.url); }
       }, 300);
     });
@@ -3277,7 +3279,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     /* A different instrument, so the two lines are told apart by timbre and not only by
        register: FM against the triangle and sine of the harmony voices. */
-    var sectGain = new Tone.Gain(patch.sect.gain).connect(bus);
+    /* Its own way to the effects. It used to join the pad's bus, which meant the "voice"
+       toggle — labelled for the pad, and sitting in the pad's section — silenced both, and
+       the pad's level control scaled both. Turning the pad off left nothing playing, which
+       is exactly how Kerem found it.
+
+       SECT_TRIM started as the attenuation it used to inherit from that bus, so the
+       re-routing would not move the balance. Measured at that value it still sat 9.8dB
+       under the pad, which is under the floor at which a counter-line can be followed —
+       you hear that something is there without hearing what it is doing. Raised until it
+       measured about 5dB down: present as its own part, still clearly not the lead. */
+    var SECT_TRIM = 0.78;
+    var sectBus = new Tone.Gain(SECT_TRIM).connect(fx.delay);
+    var sectGain = new Tone.Gain(patch.sect.gain).connect(sectBus);
     /* Its own filter, because it joins the bus after the pad's one and was therefore the
        only voice the morphs could not reach. Open at 9k so it starts as no filter at all. */
     var sectFilter = new Tone.Filter(9000, "lowpass").connect(sectGain);
@@ -3296,7 +3310,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
 
     return { fx: fx, bus: bus, filter: filter, padMod: padMod, voc: voc, synth: synth,
-             sect: { synth: sectSynth, gain: sectGain, filter: sectFilter } };
+             sect: { synth: sectSynth, gain: sectGain, filter: sectFilter, bus: sectBus } };
   }
 
   /* Once a bar: commit whatever chord the position now asks for, and move bass and inner
@@ -3342,6 +3356,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        the voice sits. Multiplicative, so the archive keeps its say — a morph that replaced
        the centroid outright would sound like an LFO, not like a place changing. */
     fieldSourceUpdate();
+    dissolveUpdate(patch);
 
     /* Never all the way down: a level morph that mutes is a gate, and the pad is the
        harmony — losing it entirely loses the chord you are standing in. */
@@ -3351,8 +3366,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* The bank. Wet at zero is the untouched signal, so nothing routed here costs nothing. */
     if (V.voc) {
       var tv = bed.Tone.Transport.seconds;
-      var amt = morphFor("b2.amount", tv);
-      amt = amt === null ? 0 : amt;
+      var mAmt = morphFor("b2.amount", tv);
+      /* With dissolve on, distance is the gate and the morphs shape what it lets through —
+         a bank that opened while you were nowhere near a recording would be fusing the
+         synth with silence. With it off the morphs work alone, as they did before. */
+      var amt = dissolve.on ? dissolve.v * (mAmt === null ? 1 : mAmt)
+                            : (mAmt === null ? 0 : mAmt);
       if (Math.abs(V.voc.amount - amt) > 0.005) {
         V.voc.amount = amt;
         V.voc.xf.fade.rampTo(amt, 0.25);
@@ -3414,7 +3433,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        580Hz, so the voice would just be dark for ever with no control that explains it. */
     var mCut = morphFor("sect.cutoff", tNow);
     if (V2.filter) {
-      V2.filter.frequency.rampTo(mCut === null ? 9000 : 400 * Math.pow(22.5, mCut), 0.2);
+      /* Was 400 to 9000Hz. Measured across the default morph's period, the filter sat below
+         1500Hz for 74% of the time with a median of 606Hz — which on an FM voice removes
+         every sideband that gives it its character and leaves a weak sine. The floor is
+         900Hz now, so even fully closed it is a voice rather than a rumour. */
+      V2.filter.frequency.rampTo(mCut === null ? 9000 : 900 * Math.pow(10, mCut), 0.2);
     }
     var mIdx = morphFor("sect.index", tNow);
     if (V2.synth.modulationIndex) {
@@ -3527,6 +3550,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         /* A-2: every gain change ramps. A direct assignment on a live parameter zips. */
         v.gain.gain.rampTo(g, BED.fade);
         v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * prox, BED.fade);
+        if (v.direct) {
+          v.direct.gain.rampTo(dissolve.on ? 1 - dissolve.v : 1, BED.fade);
+        }
       }
       v.idle = false;
       return;
@@ -3537,7 +3563,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!blob || !bed || !bed.voices[z.id]) { return; }
       var f = feature(z.id), a = (f && f.properties.audio) || {};
       v.url = URL.createObjectURL(blob);
-      v.gain = new Tone.Gain(0).connect(bed.master);
+      /* Two paths from here. The direct one is what you hear as a recording and dissolve
+         closes it; the tap is what the bank listens to and stays open, because analysis
+         that faded with the sound would make the fusion weaken exactly as it should be
+         taking over. */
+      v.direct = new Tone.Gain(1).connect(bed.master);
+      v.gain = new Tone.Gain(0).connect(v.direct);
       if (bed.fieldTap) { v.gain.connect(bed.fieldTap); }
       v.filter = new Tone.Filter(400, "lowpass").connect(v.gain);
       /* Its own brightness sets how far the filter can open; proximity decides how far it
@@ -3758,7 +3789,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (d > BED.radius) { return; }
       if (d < bestD) { bestD = d; bestId = z.id; }
     });
-    if (bestId === null) { field.id = null; field.peaks = null; field.d = Infinity; return; }
+    field.near = bestD;   /* distance to the nearest recording, peaks or not — dissolve
+                             follows proximity, not whether an envelope happens to exist */
+    if (bestId === null) { field.id = null; field.peaks = null;
+                           field.d = Infinity; field.near = Infinity; return; }
     /* A-14: two recordings a similar distance away would otherwise swap the whole contour
        back and forth every few metres. The newcomer has to be clearly nearer. */
     if (field.id !== null && bestId !== field.id && bestD > field.d * 0.88) {
@@ -3780,6 +3814,35 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var mx = 0;
     for (var i = 0; i < a.peaks.length; i++) { if (a.peaks[i] > mx) { mx = a.peaks[i]; } }
     field.norm = mx > 0.0001 ? 1 / mx : 1;
+  }
+
+  /* ---------- Dissolve ----------
+     What distance means. Until now walking toward a recording raised its volume; now it
+     decides how much of it you hear as itself and how much as material. Through the outer
+     part of the radius the recording simply arrives, recognisable, a place. Past the start
+     point it begins to dissolve: the direct path fades out while the bank opens, so what
+     changes as you walk in is what you are hearing rather than how loud it is. At the
+     centre the bird is gone and only what the bird did to the synth is left.
+
+     A-14: smoothed, because this is a position-derived control and GPS jitter at fifteen
+     metres would otherwise be audible as the texture flickering between two states. No
+     hysteresis — there is nothing quantised here to sit on the edge of. */
+  var dissolve = { v: 0, target: 0, on: true };
+
+  function dissolveUpdate(patch) {
+    var cfg = (patch.morph && patch.morph.dissolve) || {};
+    dissolve.on = cfg.on !== false;
+    var start = cfg.start == null ? 0.35 : cfg.start;
+    var t = 0;
+    if (dissolve.on && pacer && isFinite(field.near) && BED.radius > 0) {
+      var raw = 1 - field.near / BED.radius;          /* 0 at the edge, 1 at the centre */
+      t = (raw - start) / Math.max(0.05, 1 - start);
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+    }
+    dissolve.target = t;
+    dissolve.v += (t - dissolve.v) * 0.22;
+    if (Math.abs(dissolve.v - t) < 0.002) { dissolve.v = t; }
+    return dissolve.v;
   }
 
   /* Read with its neighbours averaged in. A raw peak array is spiky at this scale and a
@@ -4084,6 +4147,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function defaultMorph() {
     return {
       on: true, cells: true,
+      /* Starts at 0.35: the outer third of a radius is the recording arriving as itself,
+         and only past that does it begin to become material. */
+      dissolve: { on: true, start: 0.35 },
       list: [
         { id: "m1", on: true, shape: "tide",   period: 660, depth: 0.85, bias: 0.08,
           phase: 0,    dest: "voice.cutoff" },
@@ -4096,7 +4162,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
            by how they move, not only by timbre. */
         { id: "m4", on: true, shape: "drift",  period: 310, depth: 0.80, bias: 0.10,
           phase: 0.17, dest: "sect.index" },
-        { id: "m5", on: true, shape: "pulse",  period: 97,  depth: 0.85, bias: 0.12,
+        { id: "m5", on: true, shape: "breath", period: 97,  depth: 0.60, bias: 0.30,
           phase: 0.44, dest: "sect.cutoff" },
         /* The archive itself, stretched over ninety seconds. Silent until you are within
            earshot of a recording, which is the point: this morph exists only where the
@@ -4115,7 +4181,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultPatch() {
     return {
-      version: 8, tempo: 72, key: 50, key2: 55,
+      version: 10, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -4177,7 +4243,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       }
       p.version = 8;
     }
-    if (!p || p.version !== 8 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    /* 8 to 9 adds dissolve and nothing else. */
+    if (p && p.version === 8 && p.morph) {
+      if (!p.morph.dissolve) { p.morph.dissolve = { on: true, start: 0.35 }; }
+      p.version = 9;
+    }
+    /* 9 to 10 lifts the second voice out of the dark. A stored patch keeps the pulse shape
+       and the 0.12 bias that kept its filter at 600Hz, so the migration raises them — the
+       point of the fix is being able to hear it. */
+    if (p && p.version === 9 && p.morph && p.morph.list) {
+      p.morph.list.forEach(function (m) {
+        if (m.dest !== "sect.cutoff") { return; }
+        if (m.shape === "pulse") { m.shape = "breath"; m.depth = 0.6; }
+        if ((m.bias || 0) < 0.3) { m.bias = 0.3; }
+      });
+      p.version = 10;
+    }
+    if (!p || p.version !== 10 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (p.morph && !p.morph.dissolve) { p.morph.dissolve = { on: true, start: 0.35 }; }
     if (!p.morph) { p.morph = defaultMorph(); }
     return p;
   }
@@ -4332,6 +4415,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     { sec: "Morphs" },
     { k: "morph.on", label: "morphs", toggle: true },
+    { k: "morph.dissolve.on", label: "dissolve", toggle: true },
+    { k: "morph.dissolve.start", label: "dissolve at", min: 0.05, max: 0.8, step: 0.05,
+      fmt: function (v) { return Math.round(v * 100) + "% in"; } },
 
     { sec: "Zones" },
     { k: "zones.on", label: "zone events", toggle: true },
