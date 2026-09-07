@@ -3189,7 +3189,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function buildVocoder(Tone, tap, out) {
-    var N = vocoderBands(), LO = 120, HI = 8000;
+    /* 110 to 5000, not to 8000. Measured on the saturated pad, the band at 6kHz sat 33dB
+       below the band at 148Hz — the fundamental is low enough that 6kHz is its thirtieth
+       harmonic. Bands with no carrier energy in them cannot vocode anything; they only
+       divide the bank more finely where it does nothing. */
+    var N = vocoderBands(), LO = 110, HI = 5000;
     var mLo = melOf(LO), mHi = melOf(HI), step = (mHi - mLo) / N;
     var input = new Tone.Gain(1);
     var wet = new Tone.Gain(0);              /* closed until something asks for it (A-8) */
@@ -3197,6 +3201,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     input.connect(xf.a);
     wet.connect(xf.b);
     xf.connect(out);
+
+    /* The carrier. A vocoder can only put energy where its carrier already has some, and
+       the pad is a triangle and a sine through a lowpass — nearly nothing above 3kHz. With
+       a real recording playing, the synth's high band tracked the recording's at r = -0.18
+       even with every band at full depth: the envelope was being applied to silence.
+
+       Saturation fixes it without changing the instrument. Driving the pad hard into a tanh
+       curve regenerates harmonics above its own cutoff at the same pitch and with the same
+       envelope, so the carrier is rich while the pad you hear dry is untouched — this sits
+       on the wet path only. */
+    var drive = new Tone.Gain(7);
+    var shaper = new Tone.WaveShaper(function (x) { return Math.tanh(x * 2.2); }, 2048);
+    /* A shelf rather than noise. The carrier needs energy up top for the bank to shape,
+       and adding hiss to get it is what the pink noise layer used to do — this lifts the
+       harmonics saturation already made instead of inventing new material. */
+    var tilt = new Tone.Filter({ type: "highshelf", frequency: 1400, gain: 14 });
+    var carrier = new Tone.Gain(0.18);
+    input.connect(drive); drive.connect(shaper); shaper.connect(tilt); tilt.connect(carrier);
 
     var bands = [];
     for (var i = 0; i < N; i++) {
@@ -3214,11 +3236,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var base = new Tone.Signal(1);
       base.connect(bg.gain);
       var sf = new Tone.Filter({ frequency: fc, type: "bandpass", Q: q }).connect(bg);
-      input.connect(sf);
+      carrier.connect(sf);
 
       /* Field side: the same band of the recording, rectified and smoothed into a level. */
       var af = new Tone.Filter({ frequency: fc, type: "bandpass", Q: q });
       tap.connect(af);
+      /* 60ms. Faster followed the waveform rather than its envelope and measured worse. */
       var fol = new Tone.Follower(0.06);
       af.connect(fol);
       /* Depth lives here: the follower is multiplied by it before it reaches the band, and
@@ -3232,8 +3255,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       bands.push({ fc: Math.round(fc), q: +q.toFixed(2), gain: bg, mul: mul,
                    base: base, follow: fol, group: group });
     }
-    return { input: input, xf: xf, wet: wet, bands: bands, n: N,
-             depth: [0, 0, 0], amount: 0 };
+    return { input: input, xf: xf, wet: wet, carrier: carrier, shaper: shaper,
+             bands: bands, n: N, depth: [0, 0, 0], amount: 0 };
   }
 
   /* Ramped, and only when it has actually moved: this runs on every eighth and there are
@@ -3242,6 +3265,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      band would be roughly 10dB under where the dry signal was. The follower is scaled on
      its way to the band rather than the wet bus being made up, which would also lift the
      bands that are not being modulated at all. */
+  /* 3, not 5. Measured: at 5 the band spends most of its time against its ceiling and
+     stops discriminating between loud and quiet in the recording — the tracking effect
+     fell from 4.9dB to 1.4dB. More gain is not more modulation. */
   var FOLLOW_GAIN = 3;
 
   function vocoderDepth(voc, g, d) {
@@ -3388,7 +3414,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       /* With dissolve on, distance is the gate and the morphs shape what it lets through —
          a bank that opened while you were nowhere near a recording would be fusing the
          synth with silence. With it off the morphs work alone, as they did before. */
-      var amt = dissolve.on ? dissolve.v * (mAmt === null ? 1 : mAmt)
+      /* Measured: with dissolve at 0.99 and the default amount morph passing through a low
+         part of its cycle, the crossfade sat at 0.19 — a fusion you had to be told about.
+         Distance decides how much fusion there is; a morph shapes the top half of that
+         range rather than being able to shut it. */
+      var amt = dissolve.on ? dissolve.v * (mAmt === null ? 1 : 0.55 + 0.45 * mAmt)
                             : (mAmt === null ? 0 : mAmt);
       if (Math.abs(V.voc.amount - amt) > 0.005) {
         V.voc.amount = amt;
@@ -3399,10 +3429,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
            rather than merely faded away from. */
         V.voc.wet.gain.rampTo(amt < 0.01 ? 0 : 1, 0.25);
       }
-      var gl = morphFor("b2.low", tv), gm = morphFor("b2.mid", tv), gh = morphFor("b2.high", tv);
-      vocoderDepth(V.voc, 0, gl === null ? 0 : gl);
-      vocoderDepth(V.voc, 1, gm === null ? 0 : gm);
-      vocoderDepth(V.voc, 2, gh === null ? 0 : gh);
+      /* Dissolve drives the depth as well as the wet, and for the same reason. Opening the
+         bank while every band still rests mostly on the synth's own level is a crossfade
+         between a signal and very nearly the same signal. Measured with a real recording
+         playing: only the high group had any depth, the other two sat at zero, and the
+         synth's high band tracked the recording's at r = -0.37 — no relationship at all.
+         A group with no morph on it now follows dissolve directly, so walking in fuses all
+         three bands; a morph, where there is one, shapes what dissolve lets through. */
+      var dis = dissolve.on ? dissolve.v : 1;
+      var depthOf = function (mv) {
+        if (!dissolve.on) { return mv === null ? 0 : mv; }
+        return dis * (mv === null ? 0.9 : mv);
+      };
+      vocoderDepth(V.voc, 0, depthOf(morphFor("b2.low", tv)));
+      vocoderDepth(V.voc, 1, depthOf(morphFor("b2.mid", tv)));
+      vocoderDepth(V.voc, 2, depthOf(morphFor("b2.high", tv)));
     }
 
     var cut = Math.max(300, Math.min(12000, ch.centroid * 1.6));
