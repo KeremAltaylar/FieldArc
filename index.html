@@ -957,13 +957,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
    stay where they are put now, which is also what C-9 asks for: the same control in the
    same place, every time. */
 .ppcols {
-  display: grid; grid-template-columns: repeat(3, 1fr);
+  display: grid; grid-template-columns: repeat(var(--ppcols, 3), 1fr);
   gap: 0 var(--s-5); align-items: start;
 }
 .ppcol { min-width: 0; }
 .ppcol h2:first-child { margin-top: 0; }
-@media (max-width: 1250px) { .ppcols { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 900px)  { .ppcols { grid-template-columns: 1fr; } }
+
 #pp-body h2 { margin: var(--s-2) 0 var(--s-1); break-after: avoid; }
 #pp-body h2:first-child { margin-top: 0; }
 .pprow {
@@ -3847,19 +3846,52 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var padMod = new Tone.Gain(1).connect(bus);
     var filter = new Tone.Filter(1200, "lowpass").connect(padMod);
 
+    /* ---- What the pad is made of ----
+       It was two triangle oscillators. A triangle's harmonics fall away as one over n
+       squared, so above the third partial there is almost nothing there — which is why a
+       filter sweeping across it could not be felt: it was removing silence. Three stages give
+       the morphs something to work on, and each is an identity at zero so nothing is imposed
+       on a patch that does not ask for it.
+
+       Drive is a tanh curve with the amount as a crossfade, so at 0 the clean signal passes
+       untouched rather than through a curve that happens to be nearly linear.
+
+       Warp is a modulated delay — literally a time warp, the delay time moving under an
+       oscillator. It is what makes a sustained pad move without anything being played. */
+    var padDry = new Tone.Gain(1);
+    var padPre = new Tone.Gain(1);
+    var padShape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 2.6); }, 2048);
+    var padPost = new Tone.Gain(0.62);
+    var padDrive = new Tone.CrossFade(0);
+    var padWarp = new Tone.Chorus({ frequency: 0.55, delayTime: 5.5, depth: 0.6, wet: 0 });
+    padDry.connect(padDrive.a);
+    padDry.connect(padPre); padPre.connect(padShape); padShape.connect(padPost);
+    padPost.connect(padDrive.b);
+    padDrive.connect(padWarp);
+    padWarp.connect(filter);
+    padWarp.start();
+
     /* Three voices, each its own synth so voice leading can be reasoned about one line at
        a time: a bass that moves rarely, and a top voice where the generative activity
        lives. */
-    function mk(type, env, gain) {
-      var g = new Tone.Gain(gain).connect(filter);
-      var sy = new Tone.Synth().connect(g);
-      sy.set({ oscillator: { type: type }, envelope: env });
+    function mk(env, gain, mod, menv) {
+      var g = new Tone.Gain(gain).connect(padDry);
+      var sy = new Tone.FMSynth().connect(g);
+      sy.set({
+        harmonicity: patch.voice.harm, modulationIndex: patch.voice.index,
+        oscillator: { type: "sine" }, modulation: { type: mod },
+        envelope: env, modulationEnvelope: menv
+      });
       return { synth: sy, gain: g };
     }
-    var bass  = mk("triangle", { attack: 0.06, decay: 0.5, sustain: 0.55, release: 2.4,
-                                 attackCurve: "linear", releaseCurve: "exponential" }, 0.9);
-    var top   = mk("triangle", { attack: 0.03, decay: 0.4, sustain: 0.22, release: 1.6,
-                                 attackCurve: "linear", releaseCurve: "exponential" }, 0.8);
+    /* The bass keeps a slow modulation envelope so its timbre opens after the attack rather
+       than with it, which is what stops a held FM note sounding like an organ. */
+    var bass = mk({ attack: 0.06, decay: 0.5, sustain: 0.55, release: 2.4,
+                    attackCurve: "linear", releaseCurve: "exponential" }, 0.9, "triangle",
+                  { attack: 1.8, decay: 2.4, sustain: 0.5, release: 3 });
+    var top  = mk({ attack: 0.03, decay: 0.4, sustain: 0.22, release: 1.6,
+                    attackCurve: "linear", releaseCurve: "exponential" }, 0.8, "square",
+                  { attack: 0.05, decay: 0.6, sustain: 0.25, release: 1.2 });
     /* The inner voice is gone. It was a sine held indefinitely — since the pad stopped
        releasing at the bar line it never stopped — sustaining into a delay at 0.84
        feedback, which accumulates rather than decays. What read as feedback was a standing
@@ -3884,7 +3916,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* Its own filter, because it joins the bus after the pad's one and was therefore the
        only voice the morphs could not reach. Open at 9k so it starts as no filter at all. */
     var sectFilter = new Tone.Filter(9000, "lowpass").connect(sectGain);
-    var sectSynth = new Tone.FMSynth().connect(sectFilter);
+    /* The same three stages, at its own settings — a faster warp, because a counter-line
+       moving quickly against a slowly moving pad is what tells the two apart. */
+    var sectDry = new Tone.Gain(1);
+    var sectPre = new Tone.Gain(1);
+    var sectShape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 3.2); }, 2048);
+    var sectPost = new Tone.Gain(0.58);
+    var sectDrive = new Tone.CrossFade(0);
+    var sectWarp = new Tone.Chorus({ frequency: 1.7, delayTime: 3, depth: 0.7, wet: 0 });
+    sectDry.connect(sectDrive.a);
+    sectDry.connect(sectPre); sectPre.connect(sectShape); sectShape.connect(sectPost);
+    sectPost.connect(sectDrive.b);
+    sectDrive.connect(sectWarp);
+    sectWarp.connect(sectFilter);
+    sectWarp.start();
+    var sectSynth = new Tone.FMSynth().connect(sectDry);
     /* Measured 10dB under the harmony bus at equal velocity — FM simply puts out less for
        the same trigger, and the line disappeared underneath the chords. Raising velocity and
        gain alone put it 7dB over the chords, 0 left it 10dB under. Measured: 3 lands the
@@ -3899,7 +3945,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
 
     return { fx: fx, bus: bus, filter: filter, padMod: padMod, synth: synth,
-             sect: { synth: sectSynth, gain: sectGain, filter: sectFilter, bus: sectBus } };
+             warp: padWarp, drive: padDrive, dry: padDry, pre: padPre, post: padPost,
+             sect: { synth: sectSynth, gain: sectGain, filter: sectFilter, bus: sectBus,
+                     warp: sectWarp, drive: sectDrive, pre: sectPre, post: sectPost } };
   }
 
   /* Once a bar: commit whatever chord the position now asks for, and move the bass to it
@@ -3945,6 +3993,40 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        harmony — losing it entirely loses the chord you are standing in. */
     var mg = morphFor("voice.gain", bed.Tone.Transport.seconds);
     if (V.padMod) { V.padMod.gain.rampTo(mg === null ? 1 : 0.25 + 0.75 * mg, 0.25); }
+
+    /* ---- The pad's timbre ----
+       Each of these falls back to the patch's own value when no morph points at it, so a
+       destination nobody is using is not silently forced to zero. Ramped, never assigned
+       (A-2), and slower than the eighth they are set on so they glide rather than step. */
+    var tv2 = bed.Tone.Transport.seconds;
+    var mIx = morphFor("voice.index", tv2);
+    var mHm = morphFor("voice.harm", tv2);
+    var mDr = morphFor("voice.drive", tv2);
+    var mWp = morphFor("voice.warp", tv2);
+    ["bass", "top"].forEach(function (k) {
+      var sy = V.synth[k].synth;
+      if (sy.modulationIndex) {
+        sy.modulationIndex.rampTo(mIx === null ? patch.voice.index : 0.4 + mIx * 15, 0.4);
+      }
+      if (sy.harmonicity) {
+        sy.harmonicity.rampTo(mHm === null ? patch.voice.harm : 0.5 + mHm * 3.5, 0.4);
+      }
+    });
+    /* A crossfade into a curve is not a drive control. The pad bus sits near -20dBFS, and
+       tanh of a tenth is a straight line — measured, the whole range moved the 2-8kHz band
+       by 0.9dB, which is nothing. The signal has to be pushed into the curve and pulled
+       back afterwards; the crossfade only decides how much of the result you hear. */
+    if (V.drive) {
+      var dv = mDr === null ? patch.voice.drive : mDr;
+      V.drive.fade.rampTo(dv, 0.3);
+      if (V.pre) { V.pre.gain.rampTo(1 + dv * 11, 0.3); }
+      if (V.post) { V.post.gain.rampTo(0.62 / (1 + dv * 3.2), 0.3); }
+    }
+    if (V.warp) {
+      var wp = mWp === null ? patch.voice.warp : mWp;
+      V.warp.wet.rampTo(wp * 0.85, 0.3);
+      V.warp.depth = 0.15 + wp * 0.85;
+    }
 
     var cut = Math.max(300, Math.min(12000, ch.centroid * 1.6));
     var mc = morphFor("voice.cutoff", bed.Tone.Transport.seconds);
@@ -4035,6 +4117,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var mIdx = morphFor("sect.index", tNow);
     if (V2.synth.modulationIndex) {
       V2.synth.modulationIndex.rampTo(mIdx === null ? 7.5 : 1.5 * Math.pow(10.7, mIdx), 0.2);
+    }
+    var mHarm = morphFor("sect.harm", tNow);
+    if (V2.synth.harmonicity) {
+      V2.synth.harmonicity.rampTo(mHarm === null ? patch.sect.harm : 0.5 + mHarm * 4.5, 0.3);
+    }
+    var mDrv = morphFor("sect.drive", tNow);
+    if (V2.drive) {
+      var dv2 = mDrv === null ? patch.sect.drive : mDrv;
+      V2.drive.fade.rampTo(dv2, 0.3);
+      if (V2.pre) { V2.pre.gain.rampTo(1 + dv2 * 13, 0.3); }
+      if (V2.post) { V2.post.gain.rampTo(0.58 / (1 + dv2 * 3.6), 0.3); }
+    }
+    var mWrp = morphFor("sect.warp", tNow);
+    if (V2.warp) {
+      var w2 = mWrp === null ? patch.sect.warp : mWrp;
+      V2.warp.wet.rampTo(w2 * 0.85, 0.3);
+      V2.warp.depth = 0.2 + w2 * 0.8;
     }
 
     var stride = SECT_STRIDE[patch.sect.rhythm] || 4;
@@ -4500,7 +4599,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "voice.cutoff", label: "pad filter" },
     { k: "sect.cutoff",  label: "2nd filter" },
     { k: "sect.index",   label: "2nd timbre" },
-    { k: "voice.gain",   label: "pad level" }
+    { k: "voice.gain",   label: "pad level" },
+    { k: "voice.index",  label: "pad FM" },
+    { k: "voice.harm",   label: "pad ratio" },
+    { k: "voice.drive",  label: "pad drive" },
+    { k: "voice.warp",   label: "pad warp" },
+    { k: "sect.harm",    label: "2nd ratio" },
+    { k: "sect.drive",   label: "2nd drive" },
+    { k: "sect.warp",    label: "2nd warp" }
   ];
   function destLabel(k) {
     for (var i = 0; i < MORPH_DESTS.length; i++) {
@@ -4864,16 +4970,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultPatch() {
     return {
-      version: 11, tempo: 72, key: 50, key2: 55,
+      version: 12, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
-               bass: 0.9, top: 0.8 },
+               bass: 0.9, top: 0.8,
+               /* Where the pad sits when no morph is pointed at it. Modest on purpose: these
+                  are the floor a morph rises from, not the sound. */
+               /* The FM depth starts higher than it otherwise would because harmonicity
+                  has nothing to move when the index is low: measured, the ratio across its
+                  whole range shifted the high band by 0.9dB at an index of 2.5. */
+               index: 4, harm: 1, drive: 0.12, warp: 0.1 },
       /* The engine's own default for every effect is dry (A-8). These are a deliberate
          starting patch, written down where they can be seen and changed. */
       fx:    { delayDiv: "8n.", delayWet: 0.75, delayFb: 0.85, revWet: 0.18, revDecay: 3.4 },
       zones: { radius: 25, on: true },
-      sect:  { on: true, n: 7, gain: 0.8, rhythm: "4n.", chordPull: 0.35 },
+      sect:  { on: true, n: 7, gain: 0.8, rhythm: "4n.", chordPull: 0.35,
+               harm: 2.02, drive: 0.18, warp: 0.14 },
       morph: defaultMorph(),
       sectors: defaultSectors()
     };
@@ -4887,6 +5000,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        loses only what no longer has anything to drive. Rebuilding from scratch would throw
        away a progression to save writing this. */
     var LIVE_DESTS = { "voice.cutoff": 1, "voice.gain": 1, "sect.cutoff": 1, "sect.index": 1 };
+    /* 11 to 12 adds the timbre controls the new voices need and leaves everything else. */
+    if (p && p.version === 11 && p.voice && p.sect) {
+      if (p.voice.index === undefined) { p.voice.index = 4; }
+      if (p.voice.harm === undefined) { p.voice.harm = 1; }
+      if (p.voice.drive === undefined) { p.voice.drive = 0.12; }
+      if (p.voice.warp === undefined) { p.voice.warp = 0.1; }
+      if (p.sect.harm === undefined) { p.sect.harm = 2.02; }
+      if (p.sect.drive === undefined) { p.sect.drive = 0.18; }
+      if (p.sect.warp === undefined) { p.sect.warp = 0.14; }
+      p.version = 12;
+    }
     if (p && p.version >= 4 && p.version < 11 && p.prog) {
       if (!p.morph) { p.morph = defaultMorph(); }
       delete p.morph.dissolve;
@@ -4895,9 +5019,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         return m.shape !== "field" && LIVE_DESTS[m.dest];
       });
       if (!p.morph.list.length) { p.morph.list = defaultMorph().list; }
-      p.version = 11;
+      p.version = 12;
     }
-    if (!p || p.version !== 11 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p || p.version !== 12 || !p.prog) { p = f.properties.patch = defaultPatch(); }
     if (!p.morph) { p.morph = defaultMorph(); }
     return p;
   }
@@ -5032,6 +5156,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "voice.density", label: "density", min: 0.05, max: 1, step: 0.05 },
     { k: "voice.bass", label: "bass", min: 0, max: 1, step: 0.05 },
     { k: "voice.top", label: "top", min: 0, max: 1, step: 0.05 },
+    { k: "voice.index", label: "fm depth", min: 0, max: 16, step: 0.5 },
+    { k: "voice.harm", label: "fm ratio", min: 0.25, max: 4, step: 0.25 },
+    { k: "voice.drive", label: "drive", min: 0, max: 1, step: 0.05 },
+    { k: "voice.warp", label: "warp", min: 0, max: 1, step: 0.05 },
 
     { sec: "Second voice — follows the sectors, not the route" },
     { k: "sect.on", label: "second voice", toggle: true },
@@ -5040,6 +5168,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "sect.rhythm", label: "its rhythm", options: function () { return DIVISIONS; },
       fmt: function (v, p) { return (DIV_LABEL[v] || v) + " · " + divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "sect.chordPull", label: "pull to chord", min: 0, max: 1, step: 0.05 },
+    { k: "sect.harm", label: "its ratio", min: 0.25, max: 5, step: 0.25 },
+    { k: "sect.drive", label: "its drive", min: 0, max: 1, step: 0.05 },
+    { k: "sect.warp", label: "its warp", min: 0, max: 1, step: 0.05 },
 
     { sec: "Effects" },
     { k: "fx.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
@@ -5084,10 +5215,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
     sections.forEach(function (sc) { totalRows += sc.rows.length + 1.6; });
 
-    var COLS = 3;
+    /* Four columns where there is room for them. Thirty-two rows in three is taller than the
+     panel however they are balanced, and the row is label, slider, value — a narrower column
+     only shortens the slider, which is the part with the most to spare. */
+    var COLS = innerWidth >= 1300 ? 4 : (innerWidth >= 1000 ? 3 : (innerWidth >= 720 ? 2 : 1));
     var cols = document.createElement("div");
     cols.className = "ppcols";
-    var colEls = [], ci = 0, load = 0, share = totalRows / COLS;
+    cols.style.setProperty("--ppcols", COLS);
+    var colEls = [];
     for (var c = 0; c < COLS; c++) {
       var d = document.createElement("div");
       d.className = "ppcol";
@@ -5095,11 +5230,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     body.appendChild(cols);
 
-    sections.forEach(function (sc) {
-      var weight = sc.rows.length + 1.6;
-      if (ci < COLS - 1 && load > 0 && load + weight / 2 > share) { ci++; load = 0; }
-      load += weight;
-      var host = colEls[ci];
+    /* Filling each column until it passes its share sounds reasonable and is not: once the
+       last column is reached everything else lands in it, and measured it held sixteen rows
+       against seven in the first. This raises a ceiling until the sections fit under it in
+       the number of columns available, which balances them without reordering anything. */
+    var wts = sections.map(function (sc) { return sc.rows.length + 1.6; });
+    var total = wts.reduce(function (x, y) { return x + y; }, 0);
+    var place = wts.map(function () { return 0; });
+    for (var cap = total / COLS; cap <= total + 1; cap += 0.4) {
+      var g = 1, cur = 0, ok = true, trial = [];
+      for (var q = 0; q < wts.length; q++) {
+        if (cur > 0 && cur + wts[q] > cap && g < COLS) { g++; cur = 0; }
+        trial.push(g - 1);
+        cur += wts[q];
+        if (cur > cap && g >= COLS) { ok = false; }
+      }
+      if (ok) { place = trial; break; }
+      place = trial;
+    }
+
+    sections.forEach(function (sc, idx) {
+      var host = colEls[Math.min(place[idx], colEls.length - 1)];
       if (sc.title) {
         var h = document.createElement("h2");
         h.textContent = sc.title;
