@@ -996,7 +996,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   .ppgrid.ppproggrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 .ppgrid {
-  display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--s-1);
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--s-1);
   margin-bottom: var(--s-1);
 }
 .ppchord {
@@ -3861,11 +3861,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       try {
         bed.voice.sect.synth.triggerRelease();
         ["bass", "top"].forEach(function (k) { bed.voice.synth[k].synth.triggerRelease(); });
+        if (bed.voice.v3 && bed.voice.v3.holder.synth) {
+          bed.voice.v3.holder.synth.triggerRelease();
+        }
       } catch (e) { /* ignore */ }
     }
     harmony.idx = null; harmony.chord = null; harmony.held = false;
     harmony.last = { bass: null, top: null };
     counter.last = null; counter.restRun = 0; counter.tick = 0;
+    third.last = null; third.tick = 0;
     $("#patch-play").textContent = "Sound";
     $("#patch-play").setAttribute("aria-pressed", "false");
   }
@@ -3907,6 +3911,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           bed.sectDiv = patch.sect.rhythm;
           /* One grid for every point's sequencer; each counts its own ticks against it. */
           bed.rhythmLoop = Tone.Transport.scheduleRepeat(rhythmStep, SECT_GRID);
+          bed.thirdLoop = Tone.Transport.scheduleRepeat(thirdStep, SECT_GRID);
         }
         Tone.Transport.start();
         $("#patch-play").textContent = "Stop";
@@ -3952,9 +3957,51 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return fx;
   }
 
+  /* ---- Which instrument a voice is ----
+     Five, because they differ in what they can do rather than only in how they sound. FM and
+     AM both carry a modulation index and a ratio, so the morphs aimed at those keep working;
+     mono has a filter envelope and speaks with an attack; duo is two voices detuned against
+     each other and is the widest; simple is one oscillator and the quietest thing here.
+
+     Swapping one is a node change, not a scheduling change: the Transport repeats are left
+     alone and only the leaf is replaced, so A-16 is not in question. */
+  var SYNTH_TYPES = ["fm", "am", "duo", "mono", "simple"];
+  var SYNTH_LABEL = { fm: "FM", am: "AM", duo: "duo", mono: "mono", simple: "simple" };
+
+  /* Tone's synths are not level-matched to each other: swapping the pad from FM to mono
+     took the master from -10.1dB to -4.6dB with nothing else changed. Choosing an
+     instrument should change the sound and not the loudness, so each carries a trim. */
+  var SYNTH_TRIM = { fm: 0, am: -1, duo: -7, mono: -7, simple: -5 };
+
+  function makeSynth(Tone, type) {
+    if (type === "am") { return new Tone.AMSynth(); }
+    if (type === "duo") { return new Tone.DuoSynth(); }
+    if (type === "mono") { return new Tone.MonoSynth(); }
+    if (type === "simple") { return new Tone.Synth(); }
+    return new Tone.FMSynth();
+  }
+
+  /* The old one is released and disposed a moment later rather than immediately: a synth
+     disposed while it is still sounding cuts rather than releases, which is a click. */
+  function swapSynth(holder, key, dest, type, settings) {
+    var Tone = bed.Tone, old = holder[key];
+    var sy = makeSynth(Tone, type);
+    try { sy.set(settings); } catch (e) { /* a type without those fields */ }
+    sy.volume.value = (SYNTH_TRIM[type] === undefined ? 0 : SYNTH_TRIM[type]) +
+                      (settings && settings.__trim ? settings.__trim : 0);
+    sy.connect(dest);
+    holder[key] = sy;
+    if (old) {
+      try { old.triggerRelease(); } catch (e) { /* was not sounding */ }
+      setTimeout(function () { try { old.dispose(); } catch (e) {} }, 2500);
+    }
+    return sy;
+  }
+
   function buildVoice(Tone, patch) {
     var fx = buildFxChain(Tone, patch.fx, patch.tempo, bed.master);
     var fx2 = buildFxChain(Tone, patch.fx2, patch.tempo, bed.master);
+    var fx3 = buildFxChain(Tone, patch.fx3, patch.tempo, bed.master);
 
     var bus = new Tone.Gain(patch.voice.gain).connect(fx.delay);
     /* Modulation gets its own node. The patch panel owns bus.gain and the morphs own this
@@ -4061,10 +4108,43 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       modulationEnvelope: { attack: 0.04, decay: 0.5, sustain: 0.1, release: 0.8 }
     });
 
-    return { fx: fx, fx2: fx2, bus: bus, filter: filter, padMod: padMod, synth: synth,
+    /* ---- Voice three ----
+       Between the other two and slower than either: the pad holds a chord, the second voice
+       runs against it, and this sits in the middle with notes long enough to be heard as a
+       line rather than as movement. It takes the colour tones — thirds and sevenths — and
+       stays off whatever the bass and the counter-line are already on, so three voices on one
+       chord do not land on the same note. */
+    var v3Bus = new Tone.Gain(patch.v3.gain).connect(fx3.delay);
+    var v3Filter = new Tone.Filter(7000, "lowpass").connect(v3Bus);
+    var v3Dry = new Tone.Gain(1);
+    var v3Pre = new Tone.Gain(1);
+    var v3Shape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 2.8); }, 2048);
+    var v3Post = new Tone.Gain(0.6);
+    var v3Drive = new Tone.CrossFade(0);
+    var v3Warp = new Tone.Chorus({ frequency: 0.35, delayTime: 7, depth: 0.5, wet: 0 });
+    v3Dry.connect(v3Drive.a);
+    v3Dry.connect(v3Pre); v3Pre.connect(v3Shape); v3Shape.connect(v3Post);
+    v3Post.connect(v3Drive.b);
+    v3Drive.connect(v3Warp); v3Warp.connect(v3Filter);
+    v3Warp.start();
+    var v3Holder = {};
+    swapSynth(v3Holder, "synth", v3Dry, patch.v3.synth, {
+      harmonicity: patch.v3.harm, modulationIndex: patch.v3.index,
+      oscillator: { type: "triangle" }, modulation: { type: "sine" },
+      envelope: { attack: 0.5, decay: 1.2, sustain: 0.6, release: 3.2,
+                  attackCurve: "linear", releaseCurve: "exponential" },
+      modulationEnvelope: { attack: 1.2, decay: 1.6, sustain: 0.4, release: 2.4 }
+    });
+
+    return { fx: fx, fx2: fx2, fx3: fx3, bus: bus, filter: filter, padMod: padMod,
+             synth: synth,
+             v3: { holder: v3Holder, bus: v3Bus, gain: v3Bus, filter: v3Filter, dry: v3Dry,
+                   drive: v3Drive, warp: v3Warp, pre: v3Pre, post: v3Post, type: patch.v3.synth },
              warp: padWarp, drive: padDrive, dry: padDry, pre: padPre, post: padPost,
              sect: { synth: sectSynth, gain: sectGain, filter: sectFilter, bus: sectBus,
-                     warp: sectWarp, drive: sectDrive, pre: sectPre, post: sectPost } };
+                     warp: sectWarp, drive: sectDrive, pre: sectPre, post: sectPost,
+                     dry: sectDry },
+             synthType: patch.voice.synth, sectType: patch.sect.synth };
   }
 
   /* Once a bar: commit whatever chord the position now asks for, and move the bass to it
@@ -4348,6 +4428,85 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var dur = 0.28 + Math.random() * 0.6;
     bed.voice.sect.synth.triggerAttackRelease(midiToFreq(best.m) * drift, dur, time,
       0.42 + Math.random() * 0.2);
+  }
+
+  /* ---------- Voice three ----------
+     Its own counter against the same sixteenth grid, so it stays in tempo with everything
+     else while moving at a fraction of the rate. */
+  var third = { last: null, tick: 0 };
+
+  function thirdStep(time) {
+    if (!bed || !bed.on || !bed.voice || !bed.voice.v3 || !pacer) { return; }
+    var patch = pacer.patch, V3 = bed.voice.v3;
+    if (!patch.v3.on) { return; }
+
+    var tv = bed.Tone.Transport.seconds;
+    var mh = morphFor("v3.harm", tv);
+    var sy = V3.holder.synth;
+    if (sy && sy.harmonicity) {
+      sy.harmonicity.rampTo(mh === null ? patch.v3.harm : 0.5 + mh * 4, 0.4);
+    }
+    var mi = morphFor("v3.index", tv);
+    if (sy && sy.modulationIndex) {
+      sy.modulationIndex.rampTo(mi === null ? patch.v3.index : 0.5 + mi * 14, 0.4);
+    }
+    var md = morphFor("v3.drive", tv);
+    if (V3.drive) {
+      var dv = md === null ? patch.v3.drive : md;
+      V3.drive.fade.rampTo(dv, 0.3);
+      V3.pre.gain.rampTo(1 + dv * 11, 0.3);
+      V3.post.gain.rampTo(0.6 / (1 + dv * 3.2), 0.3);
+    }
+    var mw = morphFor("v3.warp", tv);
+    if (V3.warp) {
+      var wv = mw === null ? patch.v3.warp : mw;
+      V3.warp.wet.rampTo(wv * 0.85, 0.3);
+      V3.warp.depth = 0.15 + wv * 0.85;
+    }
+    var mc = morphFor("v3.cutoff", tv);
+    if (V3.filter) {
+      V3.filter.frequency.rampTo(mc === null ? 7000 : 500 * Math.pow(18, mc), 0.3);
+    }
+
+    var stride = SECT_STRIDE[patch.v3.rhythm] || 16;
+    third.tick = (third.tick || 0) + 1;
+    if ((third.tick - 1) % stride !== 0) { return; }
+    if (!harmony.tones || !harmony.tones.length || !sy) { return; }
+
+    /* Whatever the bass is holding and whatever the counter-line last played are left to
+       them. Three voices landing on one pitch class is one voice played three times. */
+    var taken = {};
+    if (harmony.last.bass !== null) { taken[((harmony.last.bass % 12) + 12) % 12] = 1; }
+    if (counter.last !== null) { taken[((counter.last % 12) + 12) % 12] = 1; }
+
+    var lo = patch.key - 7, hi = patch.key + 12, pool = [];
+    harmony.tones.forEach(function (t, idx) {
+      for (var o = -2; o <= 2; o++) {
+        var m = t + o * 12;
+        if (m >= lo && m <= hi) { pool.push({ m: m, idx: idx }); }
+      }
+    });
+    if (!pool.length) { return; }
+
+    var prev = third.last === null ? patch.key + 2 : third.last;
+    var best = null;
+    pool.forEach(function (c) {
+      var pc = ((c.m % 12) + 12) % 12;
+      var score = -Math.abs(c.m - prev) * 0.32;
+      if (taken[pc]) { score -= 3.2; }
+      /* The third and the seventh are what tell one chord quality from another. */
+      if (c.idx === 1 || c.idx === 3) { score += 2.2; }
+      if (c.m === prev) { score -= 2.4; }
+      score += (Math.random() - 0.5) * 1.2;
+      if (!best || score > best.score) { best = { m: c.m, score: score }; }
+    });
+    if (!best) { return; }
+    third.last = best.m;
+
+    var beat = 60 / patch.tempo;
+    var dur = beat * (1.5 + Math.random() * 2.5);
+    sy.triggerAttackRelease(midiToFreq(best.m) * (1 + (Math.random() - 0.5) * 0.004),
+                            dur, time, 0.36 + Math.random() * 0.16);
   }
 
   function zoneFire(z) {
@@ -4821,7 +4980,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "voice.warp",   label: "pad warp" },
     { k: "sect.harm",    label: "2nd ratio" },
     { k: "sect.drive",   label: "2nd drive" },
-    { k: "sect.warp",    label: "2nd warp" }
+    { k: "sect.warp",    label: "2nd warp" },
+    { k: "v3.cutoff",    label: "3rd filter" },
+    { k: "v3.harm",      label: "3rd ratio" },
+    { k: "v3.index",     label: "3rd fm" },
+    { k: "v3.drive",     label: "3rd drive" },
+    { k: "v3.warp",      label: "3rd warp" }
   ];
   function destLabel(k) {
     for (var i = 0; i < MORPH_DESTS.length; i++) {
@@ -5138,7 +5302,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       { r: 2, q: "m7b5" }, { r: 7, q: "7alt" }, { r: 0, q: "m9" },      { r: 0, q: "m6" }
     ];
   }
-  var DIVISIONS = ["4n", "4n.", "8n", "8n.", "16n", "2n"];
+  var DIVISIONS = ["4n", "4n.", "8n", "8n.", "16n", "2n", "1n"];
   /* A dotted division is written with a dot after it, and the readout then joins it to the
      seconds with another one: "1/4· · 1.25 s" reads as a typo. The dot becomes a mark. */
   var DIV_LABEL = { "1n": "1/1", "2n": "1/2", "4n": "1/4", "4n.": "1/4 dotted", "8n": "1/8",
@@ -5185,7 +5349,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultPatch() {
     return {
-      version: 15, tempo: 72, key: 50, key2: 55,
+      version: 16, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -5195,13 +5359,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                /* The FM depth starts higher than it otherwise would because harmonicity
                   has nothing to move when the index is low: measured, the ratio across its
                   whole range shifted the high band by 0.9dB at an index of 2.5. */
-               index: 4, harm: 1, drive: 0.12, warp: 0.1 },
+               index: 4, harm: 1, drive: 0.12, warp: 0.1, synth: "fm" },
       /* The engine's own default for every effect is dry (A-8). These are a deliberate
          starting patch, written down where they can be seen and changed. */
       fx:    { delayDiv: "8n.", delayWet: 0.75, delayFb: 0.85, revWet: 0.18, revDecay: 3.4 },
       /* The counter-line moves faster than the pad, so its echo is shorter and drier and its
          room is smaller. Sharing the pad's was what made the two blur together. */
       fx2:   { delayDiv: "8n", delayWet: 0.4, delayFb: 0.55, revWet: 0.12, revDecay: 1.8 },
+      /* Slower than either of the others and sitting between them. AM by default so it is
+         told apart from two FM voices by more than its register. */
+      v3:    { on: true, gain: 0.55, rhythm: "1n", synth: "am",
+               harm: 1.5, index: 3, drive: 0.1, warp: 0.22 },
+      /* A long line wants a long room and an echo it can sing over rather than through. */
+      fx3:   { delayDiv: "4n", delayWet: 0.32, delayFb: 0.5, revWet: 0.26, revDecay: 5 },
       /* The rhythm chain's own room: shorter delay, less of it, and a small dark reverb.
          Percussion wants a different space from a sustained pad and used to be given the
          pad's. */
@@ -5209,7 +5379,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                revWet: 0.14, revDecay: 1.2 },
       zones: { on: true },
       sect:  { on: true, n: 7, gain: 0.8, rhythm: "4n.", chordPull: 0.35,
-               harm: 2.02, drive: 0.18, warp: 0.14 },
+               harm: 2.02, drive: 0.18, warp: 0.14, synth: "fm" },
       morph: defaultMorph(),
       sectors: defaultSectors()
     };
@@ -5234,6 +5404,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (p.sect.warp === undefined) { p.sect.warp = 0.14; }
       p.version = 12;
     }
+    /* 15 to 16 adds a third voice, its effects, and an instrument choice for each. */
+    if (p && p.version === 15) {
+      if (!p.v3) {
+        p.v3 = { on: true, gain: 0.55, rhythm: "1n", synth: "am",
+                 harm: 1.5, index: 3, drive: 0.1, warp: 0.22 };
+      }
+      if (!p.fx3) {
+        p.fx3 = { delayDiv: "4n", delayWet: 0.32, delayFb: 0.5, revWet: 0.26, revDecay: 5 };
+      }
+      if (p.voice && !p.voice.synth) { p.voice.synth = "fm"; }
+      if (p.sect && !p.sect.synth) { p.sect.synth = "fm"; }
+      p.version = 16;
+    }
     /* 14 to 15 gives the second voice effects of its own. */
     if (p && p.version === 14) {
       if (!p.fx2) {
@@ -5254,7 +5437,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
       if (p.bed) { delete p.bed.radius; delete p.bed.gain; }
       if (p.zones) { delete p.zones.radius; }
-      p.version = 15;
+      p.version = 16;
+      if (!p.v3) {
+        p.v3 = { on: true, gain: 0.55, rhythm: "1n", synth: "am",
+                 harm: 1.5, index: 3, drive: 0.1, warp: 0.22 };
+      }
+      if (!p.fx3) {
+        p.fx3 = { delayDiv: "4n", delayWet: 0.32, delayFb: 0.5, revWet: 0.26, revDecay: 5 };
+      }
+      if (p.voice && !p.voice.synth) { p.voice.synth = "fm"; }
+      if (p.sect && !p.sect.synth) { p.sect.synth = "fm"; }
       if (!p.fx2) {
         p.fx2 = { delayDiv: "8n", delayWet: 0.4, delayFb: 0.55, revWet: 0.12, revDecay: 1.8 };
       }
@@ -5280,7 +5472,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!p.morph.list.length) { p.morph.list = defaultMorph().list; }
       p.version = 14;
     }
-    if (!p || p.version !== 15 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p || p.version !== 16 || !p.prog) { p = f.properties.patch = defaultPatch(); }
     if (!p.fx2) {
       p.fx2 = { delayDiv: "8n", delayWet: 0.4, delayFb: 0.55, revWet: 0.12, revDecay: 1.8 };
     }
@@ -5418,6 +5610,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     { sec: "Voice — synth over the bed", col: 1 },
     { k: "voice.on", label: "voice", toggle: true },
+    { k: "voice.synth", label: "instrument", options: function () { return SYNTH_TYPES; },
+      fmt: function (v) { return SYNTH_LABEL[v] || v; } },
     { k: "voice.gain", label: "gain", min: 0, max: 1, step: 0.05 },
     { k: "voice.density", label: "density", min: 0.05, max: 1, step: 0.05 },
     { k: "voice.bass", label: "bass", min: 0, max: 1, step: 0.05 },
@@ -5429,10 +5623,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     { sec: "Second voice — follows the sectors, not the route", col: 2 },
     { k: "sect.on", label: "second voice", toggle: true },
+    { k: "sect.synth", label: "instrument", options: function () { return SYNTH_TYPES; },
+      fmt: function (v) { return SYNTH_LABEL[v] || v; } },
     { k: "sect.gain", label: "gain", min: 0, max: 1, step: 0.05 },
     { k: "sect.n", label: "sectors", min: 3, max: 12, step: 1 },
     { k: "sect.rhythm", label: "its rhythm", options: function () { return DIVISIONS; },
-      fmt: function (v, p) { return (DIV_LABEL[v] || v) + " · " + divSeconds(v, p.tempo).toFixed(2) + " s"; } },
+      fmt: function (v) { return DIV_LABEL[v] || v; },
+      side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "sect.chordPull", label: "pull to chord", min: 0, max: 1, step: 0.05 },
     { k: "sect.harm", label: "its ratio", min: 0.25, max: 5, step: 0.25 },
     { k: "sect.drive", label: "its drive", min: 0, max: 1, step: 0.05 },
@@ -5440,35 +5637,58 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     { sec: "Effects", col: 1 },
     { k: "fx.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
-      fmt: function (v, p) { return (DIV_LABEL[v] || v) + " · " + divSeconds(v, p.tempo).toFixed(2) + " s"; } },
+      fmt: function (v) { return DIV_LABEL[v] || v; },
+      side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "fx.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
     { k: "fx.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
     { k: "fx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
     { k: "fx.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
 
+    { sec: "Third voice — long tones between the other two", col: 3 },
+    { k: "v3.on", label: "third voice", toggle: true },
+    { k: "v3.synth", label: "instrument", options: function () { return SYNTH_TYPES; },
+      fmt: function (v) { return SYNTH_LABEL[v] || v; } },
+    { k: "v3.gain", label: "gain", min: 0, max: 1, step: 0.05 },
+    { k: "v3.rhythm", label: "its rhythm", options: function () { return DIVISIONS; },
+      fmt: function (v) { return DIV_LABEL[v] || v; },
+      side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
+    { k: "v3.harm", label: "its ratio", min: 0.25, max: 5, step: 0.25 },
+    { k: "v3.index", label: "its fm", min: 0, max: 16, step: 0.5 },
+    { k: "v3.drive", label: "its drive", min: 0, max: 1, step: 0.05 },
+    { k: "v3.warp", label: "its warp", min: 0, max: 1, step: 0.05 },
+
+    { sec: "Effects — third voice", col: 3 },
+    { k: "fx3.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
+      fmt: function (v) { return DIV_LABEL[v] || v; },
+      side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
+    { k: "fx3.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
+    { k: "fx3.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
+    { k: "fx3.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
+    { k: "fx3.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
+
     { sec: "Effects — second voice", col: 2 },
     { k: "fx2.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
-      fmt: function (v, p) { return (DIV_LABEL[v] || v) + " \u00b7 " +
-        divSeconds(v, p.tempo).toFixed(2) + " s"; } },
+      fmt: function (v) { return DIV_LABEL[v] || v; },
+      side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "fx2.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
     { k: "fx2.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
     { k: "fx2.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
     { k: "fx2.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
 
-    { sec: "Rhythm effects — the points, not the synths", col: 3 },
+    { sec: "Rhythm effects — the points, not the synths", col: 4 },
     { k: "rfx.cutoff", label: "tone", min: 400, max: 12000, step: 100, unit: " Hz" },
     { k: "rfx.drive", label: "drive", min: 0, max: 1, step: 0.05 },
     { k: "rfx.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
-      fmt: function (v, p) { return (DIV_LABEL[v] || v) + " \u00b7 " +
-        divSeconds(v, p.tempo).toFixed(2) + " s"; } },
+      fmt: function (v) { return DIV_LABEL[v] || v; },
+      side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "rfx.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
     { k: "rfx.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
     { k: "rfx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
 
-    { sec: "Morphs", col: 3 },
+    { sec: "Morphs", col: 0 },
     { k: "morph.on", label: "morphs", toggle: true },
 
-    { sec: "Zones", col: 3 },
+    { sec: "Zones", col: 0 },
     { k: "zones.on", label: "zone events", toggle: true }
   ];
 
@@ -5502,7 +5722,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* Four columns where there is room for them. Thirty-two rows in three is taller than the
      panel however they are balanced, and the row is label, slider, value — a narrower column
      only shortens the slider, which is the part with the most to spare. */
-    var COLS = innerWidth >= 1300 ? 4 : (innerWidth >= 1000 ? 3 : (innerWidth >= 720 ? 2 : 1));
+    var COLS = innerWidth >= 1460 ? 5
+             : (innerWidth >= 1200 ? 4 : (innerWidth >= 1000 ? 3 : (innerWidth >= 720 ? 2 : 1)));
     var cols = document.createElement("div");
     cols.className = "ppcols";
     cols.style.setProperty("--ppcols", COLS);
@@ -5527,7 +5748,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        Below four columns there is no room to keep the pairs apart, so the sections are
        balanced instead and reading order carries them. */
     var place;
-    if (COLS === 4) {
+    if (COLS === 5) {
       place = sections.map(function (sc) {
         return sc.col === undefined ? 0 : Math.min(sc.col, COLS - 1);
       });
@@ -5596,6 +5817,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           input.appendChild(op);
         });
         input.value = pget(patch, fl.k);
+        /* A division and its length in seconds do not both fit in a select at five
+           columns: measured, "1/8 dotted · 0.42 s" truncated to "1/8 dotted · ◂".
+           The name stays in the select; the seconds go to the readout column, which for a
+           select row was empty. */
+        if (fl.side) { val.textContent = fl.side(input.value, patch); }
         input.addEventListener("change", function () {
           pset(patch, fl.k, input.value); commitPatch(f, patch); renderPatchPanel();
         });
@@ -5956,6 +6182,57 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function applyRevDecay(patch) {
     applyDecayTo(bed.voice.fx.reverb, patch.fx.revDecay);
     if (bed.voice.fx2) { applyDecayTo(bed.voice.fx2.reverb, patch.fx2.revDecay); }
+    if (bed.voice.fx3) { applyDecayTo(bed.voice.fx3.reverb, patch.fx3.revDecay); }
+  }
+
+  /* An instrument is swapped only when it actually changed, and the pad is told to re-attack
+     afterwards: its notes are held, so a swap mid-chord would otherwise leave the new synth
+     silent until the chord moved. */
+  function applySynths(patch) {
+    var V = bed.voice;
+    if (V.synthType !== patch.voice.synth) {
+      V.synthType = patch.voice.synth;
+      ["bass", "top"].forEach(function (k) {
+        swapSynth(V.synth[k], "synth", V.synth[k].gain, patch.voice.synth, {
+          harmonicity: patch.voice.harm, modulationIndex: patch.voice.index,
+          oscillator: { type: "sine" },
+          modulation: { type: k === "bass" ? "triangle" : "square" },
+          envelope: k === "bass"
+            ? { attack: 0.06, decay: 0.5, sustain: 0.55, release: 2.4,
+                attackCurve: "linear", releaseCurve: "exponential" }
+            : { attack: 0.03, decay: 0.4, sustain: 0.22, release: 1.6,
+                attackCurve: "linear", releaseCurve: "exponential" },
+          modulationEnvelope: k === "bass"
+            ? { attack: 1.8, decay: 2.4, sustain: 0.5, release: 3 }
+            : { attack: 0.05, decay: 0.6, sustain: 0.25, release: 1.2 }
+        });
+      });
+      harmony.held = false;
+    }
+    if (V.sect && V.sectType !== patch.sect.synth) {
+      V.sectType = patch.sect.synth;
+      var holder = { synth: V.sect.synth };
+      swapSynth(holder, "synth", V.sect.dry || V.sect.filter, patch.sect.synth, {
+        harmonicity: patch.sect.harm, modulationIndex: 7.5,
+        oscillator: { type: "sine" }, modulation: { type: "triangle" },
+        envelope: { attack: 0.012, decay: 0.35, sustain: 0.18, release: 1.1,
+                    attackCurve: "linear", releaseCurve: "exponential" },
+        modulationEnvelope: { attack: 0.04, decay: 0.5, sustain: 0.1, release: 0.8 }
+      });
+      V.sect.synth = holder.synth;
+      /* The +3 the counter-line was measured to need, on top of its instrument's trim. */
+      V.sect.synth.volume.value += 3;
+    }
+    if (V.v3 && V.v3.type !== patch.v3.synth) {
+      V.v3.type = patch.v3.synth;
+      swapSynth(V.v3.holder, "synth", V.v3.dry, patch.v3.synth, {
+        harmonicity: patch.v3.harm, modulationIndex: patch.v3.index,
+        oscillator: { type: "triangle" }, modulation: { type: "sine" },
+        envelope: { attack: 0.5, decay: 1.2, sustain: 0.6, release: 3.2,
+                    attackCurve: "linear", releaseCurve: "exponential" },
+        modulationEnvelope: { attack: 1.2, decay: 1.6, sustain: 0.4, release: 2.4 }
+      });
+    }
   }
 
   function applyDecayTo(rv, want) {
@@ -6009,6 +6286,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           bed.voice.fx.delay.wet.rampTo(patch.fx.delayWet, 0.2);
           bed.voice.fx.delay.feedback.rampTo(patch.fx.delayFb, 0.2);
           bed.voice.fx.reverb.wet.rampTo(patch.fx.revWet, 0.2);
+          if (bed.voice.v3) {
+            bed.voice.v3.bus.gain.rampTo(patch.v3.on ? patch.v3.gain : 0, 0.2);
+          }
+          if (bed.voice.fx3) {
+            bed.voice.fx3.delay.delayTime.rampTo(Math.min(MAX_DELAY_S - 0.01,
+              divSeconds(patch.fx3.delayDiv, patch.tempo)), 0.2);
+            bed.voice.fx3.delay.wet.rampTo(patch.fx3.delayWet, 0.2);
+            bed.voice.fx3.delay.feedback.rampTo(patch.fx3.delayFb, 0.2);
+            bed.voice.fx3.reverb.wet.rampTo(patch.fx3.revWet, 0.2);
+          }
+          applySynths(patch);
           if (bed.voice.fx2) {
             bed.voice.fx2.delay.delayTime.rampTo(Math.min(MAX_DELAY_S - 0.01,
               divSeconds(patch.fx2.delayDiv, patch.tempo)), 0.2);
