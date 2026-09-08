@@ -2929,7 +2929,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var mode = (f && f.properties.audio_mode === "hits") ? "hits" : "soundscape";
     var wrap = $(".recmode");
     if (wrap) { wrap.hidden = !isPoint; }
-    $("#f-rhythm").hidden = !(isPoint && mode === "hits");
+    /* Every point has a presence to set, so the panel opens for all of them; what changes is
+       whether it also has four hits to sequence. */
+    $("#f-rhythm").hidden = !isPoint;
+    $("#f-rhythm").textContent = mode === "hits" ? "Sound & rhythm" : "Sound";
     if (wrap) {
       wrap.querySelectorAll("button").forEach(function (b) {
         b.setAttribute("aria-pressed", String(b.dataset.amode === mode));
@@ -3053,6 +3056,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }, true);
 
   /* ---------- The rhythm panel ---------- */
+  /* How the point sits in the world, ahead of what it plays. These were on the route's patch
+     and shared by every point on it. */
+  var SOUND_FIELDS = [
+    { k: "radius", label: "carries", min: 20, max: 400, step: 10, unit: " m",
+      hint: "how far away this point starts to be heard" },
+    { k: "gain", label: "level", min: 0, max: 1, step: 0.05,
+      hint: "how loud it is at the centre" },
+    { k: "zoneR", label: "zone", min: 5, max: 160, step: 1, unit: " m",
+      hint: "how close you must be for its zone event to fire" }
+  ];
+
   var RHYTHM_FIELDS = [
     { k: "on", label: "rhythm", toggle: true },
     { k: "steps", label: "steps", min: 4, max: 64, step: 1 },
@@ -3067,15 +3081,42 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function renderRhythmPanel() {
     var f = feature(selected);
     if (!f || f.properties.kind !== "point") { return; }
-    var r = rhythmOf(f), body = $("#rp-body");
-    $("#rp-title").textContent = "Rhythm \u00b7 " + label(f);
+    var r = rhythmOf(f), q = soundOf(f), body = $("#rp-body");
+    $("#rp-title").textContent = "Sound \u00b7 " + label(f);
     body.textContent = "";
+
+    /* Every point has a presence whether or not it has anything to play, so this section is
+       always here and the hits are what may be missing. */
+    var scols = document.createElement("div");
+    scols.className = "ppcols";
+    scols.style.setProperty("--ppcols", innerWidth >= 1000 ? 3 : 1);
+    var scol = document.createElement("div");
+    scol.className = "ppcol";
+    var sh = document.createElement("h2");
+    sh.textContent = "This point";
+    scol.appendChild(sh);
+    var commitQ = function () { save(); updateBed(); redrawZones(); };
+    SOUND_FIELDS.forEach(function (fl) {
+      scol.appendChild(buildSoundRow(fl, q, commitQ));
+    });
+    scols.appendChild(scol);
+    var snote = document.createElement("div");
+    snote.className = "ppcol";
+    var sp = document.createElement("p");
+    sp.className = "hint";
+    sp.textContent = "A stream carries further than a nest. These belong to the point, so " +
+      "every point on a route can differ \u2014 they used to be one setting shared by all " +
+      "of them.";
+    snote.appendChild(sp);
+    scols.appendChild(snote);
+    body.appendChild(scols);
 
     /* C-5: the empty state, which is where a panel usually gives itself away. A sequencer
        with nothing to sequence should say so and say where to go, not offer four rows of
        controls that do nothing when you move them. */
     var hitsOn = f.properties.hits || {};
     var filled = HIT_SLOTS.filter(function (k) { return hitsOn[k]; });
+    if (f.properties.audio_mode !== "hits") { return; }
     if (!filled.length) {
       var none = document.createElement("div");
       none.className = "rpempty";
@@ -3218,6 +3259,38 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   }
 
+  /* The zone circles on the map are drawn from the zone list, so the list has to be told. */
+  function redrawZones() {
+    if (!pacer) { return; }
+    pacer.zones.forEach(function (z) { z.r = soundOfZone(z).zoneR; });
+    drawZones();
+  }
+
+  function buildSoundRow(fl, q, commitQ) {
+    var row = document.createElement("label");
+    row.className = "pprow";
+    var name = document.createElement("span");
+    name.textContent = fl.label;
+    if (fl.hint) { row.title = fl.hint; }
+    row.appendChild(name);
+    var val = document.createElement("i");
+    var input = document.createElement("input");
+    input.type = "range";
+    input.min = fl.min; input.max = fl.max; input.step = fl.step;
+    input.value = q[fl.k];
+    input.dataset.def = fl.k === "radius" ? 140 : (fl.k === "gain" ? 0.9 : 25);
+    input.title = (fl.hint || "") + " \u00b7 double-click to reset";
+    var show = function () {
+      val.textContent = (fl.step < 1 ? (+input.value).toFixed(2) : input.value) + (fl.unit || "");
+    };
+    show();
+    input.addEventListener("input", function () {
+      q[fl.k] = +input.value; show(); commitQ();
+    });
+    row.appendChild(input); row.appendChild(val);
+    return row;
+  }
+
   function buildRhythmRow(fl, r, commitR) {
     var row = document.createElement("label");
     row.className = "pprow";
@@ -3299,8 +3372,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   $("#rp-reset").addEventListener("click", function () {
     var f = feature(selected);
     if (!f) { return; }
+    /* The panel holds both halves now, so the button that says "reset to default" has to
+       mean both of them. */
+    f.properties.sound = { radius: 140, gain: 0.9, zoneR: 25 };
     f.properties.rhythm = defaultRhythm();
-    save(); renderRhythmPanel(); toast("Rhythm reset");
+    save(); redrawZones(); updateBed();
+    renderRhythmPanel(); toast("Point reset");
   });
 
   $("#rec-add").addEventListener("click", function () { $("#rec-file").click(); });
@@ -3403,7 +3480,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return m.coords[m.coords.length - 1];
   }
 
-  var ZONE_R = 25;        /* metres — a zone you can stand in; the patch may override */
+  var ZONE_R = 25;        /* metres — the default a new point starts with */
   var ZONE_NEAR = 60;     /* how far off the route a point still counts */
   var ZONE_MARGIN = 1.3;  /* A-14: leave at 130% of the radius. 325 flickers to 0. */
   var ZONE_COOLDOWN = 8000;
@@ -3415,7 +3492,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var pr = projectToRoute(m, g.geometry.coordinates);
       if (pr.dist > ZONE_NEAR) { return; }
       list.push({
-        id: g.properties.id, lonlat: g.geometry.coordinates, r: ZONE_R,
+        id: g.properties.id, lonlat: g.geometry.coordinates, r: soundOf(g).zoneR,
         name: label(g), icon: g.properties.icon || null,
         has_audio: !!g.properties.has_audio,
         mode: g.properties.audio_mode === "hits" ? "hits" : "soundscape",
@@ -3669,10 +3746,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
               zones: buildZones(m), log: [], patch: patchOf(f) };
     sectorGeometry(m, patchOf(f).sect.n);
     sect.idx = null;
-    ZONE_R = pacer.patch.zones.radius;
-    BED.radius = pacer.patch.bed.radius;
     BED.maxVoices = pacer.patch.bed.voices;
-    BED.gain = pacer.patch.bed.gain;
     harmony.idx = null; harmony.chord = null; harmony.tones = null;
     harmony.last = { bass: null, top: null };
     cellsSet(!!(pacer.patch.morph && pacer.patch.morph.cells));
@@ -4284,8 +4358,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function ensureVoice(z, d) {
-    var Tone = bed.Tone, prox = Math.max(0, 1 - d / BED.radius);
-    var g = Math.pow(prox, 1.5) * BED.gain;
+    var Tone = bed.Tone, q = soundOfZone(z);
+    var prox = Math.max(0, 1 - d / q.radius);
+    var g = Math.pow(prox, 1.5) * q.gain;
 
     var v = bed.voices[z.id];
     if (v) {
@@ -4316,8 +4391,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           v.ready = true;
           v.player.start();
           var dd = segment(pacer ? pacer.pos : z.lonlat, z.lonlat);
-          var pr = Math.max(0, 1 - dd / BED.radius);
-          v.gain.gain.rampTo(Math.pow(pr, 1.5) * BED.gain, BED.fade);
+          var q2 = soundOfZone(z);
+          var pr = Math.max(0, 1 - dd / q2.radius);
+          v.gain.gain.rampTo(Math.pow(pr, 1.5) * q2.gain, BED.fade);
           v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * pr, BED.fade);
         }
       }).connect(v.filter);
@@ -4336,6 +4412,29 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      harmony and with a delay whose time is a division of the same bar. */
 
   var HIT_SLOTS = ["low", "mid", "high", "rand"];
+
+  /* ---- What a point is worth on its own ----
+     How far a point carries, how loud it is, and how close you have to be for its zone to
+     fire were all settings on the route's patch, which meant every point on a route shared
+     them. They are properties of the place, not of the walk: a stream is audible from
+     further off than a nest, and saying so is the whole point of marking them separately.
+     BED keeps the fade time and the voice cap, which are budget, not character. */
+  function soundOf(f) {
+    var q = f.properties.sound;
+    if (!q) {
+      q = f.properties.sound = { radius: 140, gain: 0.9, zoneR: 25 };
+    }
+    if (q.radius === undefined) { q.radius = 140; }
+    if (q.gain === undefined) { q.gain = 0.9; }
+    if (q.zoneR === undefined) { q.zoneR = 25; }
+    return q;
+  }
+
+  /* The zone list carries a copy so the audio path never looks a feature up per frame. */
+  function soundOfZone(z) {
+    var f = feature(z.id);
+    return f ? soundOf(f) : { radius: 140, gain: 0.9, zoneR: 25 };
+  }
 
   /* Pulses spread by the running-sum method: every step adds k and fires when it passes n.
      Same even distribution as Bjorklund's algorithm, and rotation is exposed anyway. */
@@ -4527,7 +4626,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       .map(function (z) { return { z: z, d: segment(pacer.pos, z.lonlat) }; })
       .sort(function (a, b) { return a.d - b.d; })
       .slice(0, BED.maxVoices)
-      .filter(function (x) { return x.d <= BED.radius; });
+      .filter(function (x) { return x.d <= soundOfZone(x.z).radius; });
 
     var want = {};
     near.forEach(function (x) { want[x.z.id] = true; ensureVoice(x.z, x.d); });
@@ -4551,7 +4650,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     pacer.zones
       .filter(function (z) { return z.mode === "hits" && z.has_hits; })
       .map(function (z) { return { z: z, d: segment(pacer.pos, z.lonlat) }; })
-      .filter(function (x) { return x.d <= BED.radius; })
+      .filter(function (x) { return x.d <= soundOfZone(x.z).radius; })
       .sort(function (a, b) { return a.d - b.d; })
       .slice(0, BED.maxVoices)
       .forEach(function (x) {
@@ -4559,8 +4658,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var R = ensureRhythm(x.z);
         var f = feature(x.z.id);
         var r = f ? rhythmOf(f) : null;
-        var prox = Math.max(0, 1 - x.d / BED.radius);
-        var g = Math.pow(prox, 1.5) * BED.gain * (r && r.on ? (r.gain === undefined ? 0.85 : r.gain) : 0);
+        var q3 = soundOfZone(x.z);
+        var prox = Math.max(0, 1 - x.d / q3.radius);
+        var g = Math.pow(prox, 1.5) * q3.gain * (r && r.on ? (r.gain === undefined ? 0.85 : r.gain) : 0);
         R.gain.gain.rampTo(g, BED.fade);
       });
     Object.keys(bed.rhythms).forEach(function (id) {
@@ -5035,9 +5135,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultPatch() {
     return {
-      version: 13, tempo: 72, key: 50, key2: 55,
+      version: 14, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
-      bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
+      bed:   { on: true, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
                bass: 0.9, top: 0.8,
                /* Where the pad sits when no morph is pointed at it. Modest on purpose: these
@@ -5054,7 +5154,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          pad's. */
       rfx:   { cutoff: 9000, drive: 0.15, delayDiv: "8n", delayWet: 0.22, delayFb: 0.34,
                revWet: 0.14, revDecay: 1.2 },
-      zones: { radius: 25, on: true },
+      zones: { on: true },
       sect:  { on: true, n: 7, gain: 0.8, rhythm: "4n.", chordPull: 0.35,
                harm: 2.02, drive: 0.18, warp: 0.14 },
       morph: defaultMorph(),
@@ -5081,6 +5181,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (p.sect.warp === undefined) { p.sect.warp = 0.14; }
       p.version = 12;
     }
+    /* 13 to 14 moves reach, level and zone size off the route and onto each point. A route
+       that had them set carries its values onto every point in the place once, so nothing
+       changes the first time you open it; after that each point is its own. */
+    if (p && p.version === 13) {
+      var oldR = (p.bed && p.bed.radius) || 140;
+      var oldG = (p.bed && p.bed.gain) === undefined ? 0.9 : p.bed.gain;
+      var oldZ = (p.zones && p.zones.radius) || 25;
+      visible().forEach(function (g) {
+        if (g.geometry.type !== "Point" || g.properties.sound) { return; }
+        g.properties.sound = { radius: oldR, gain: oldG, zoneR: oldZ };
+      });
+      if (p.bed) { delete p.bed.radius; delete p.bed.gain; }
+      if (p.zones) { delete p.zones.radius; }
+      p.version = 14;
+      /* This one writes to the points as well as the patch, so it is persisted rather
+         than left to whatever happens to save next. It runs once: the version is 14
+         afterwards. */
+      save();
+    }
     /* 12 to 13 gives the rhythms a chain of their own and changes nothing else. */
     if (p && p.version === 12) {
       if (!p.rfx) {
@@ -5097,9 +5216,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         return m.shape !== "field" && LIVE_DESTS[m.dest];
       });
       if (!p.morph.list.length) { p.morph.list = defaultMorph().list; }
-      p.version = 13;
+      p.version = 14;
     }
-    if (!p || p.version !== 13 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p || p.version !== 14 || !p.prog) { p = f.properties.patch = defaultPatch(); }
     if (!p.rfx) {
       p.rfx = { cutoff: 9000, drive: 0.15, delayDiv: "8n", delayWet: 0.22,
                 delayFb: 0.34, revWet: 0.14, revDecay: 1.2 };
@@ -5179,9 +5298,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     pacer.zones.forEach(function (z) {
       if (!z.has_audio) { return; }
       var d = segment(pacer.pos, z.lonlat);
-      if (d > BED.radius) { return; }
+      var qc = soundOfZone(z);
+      if (d > qc.radius) { return; }
       var f = feature(z.id), a = (f && f.properties.audio) || {};
-      var w = Math.max(0, 1 - d / BED.radius);
+      var w = Math.max(0, 1 - d / qc.radius);
       sumC += (a.centroid_hz || 2000) * w;
       sumF += (a.flatness_mean != null ? a.flatness_mean : 0.3) * w;
       sumO += (a.onset_rate != null ? a.onset_rate : 1) * w;
@@ -5228,8 +5348,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     { sec: "Bed — the recordings around you" },
     { k: "bed.on", label: "bed", toggle: true },
-    { k: "bed.gain", label: "gain", min: 0, max: 1, step: 0.05 },
-    { k: "bed.radius", label: "audible radius", min: 40, max: 400, step: 10, unit: " m" },
+
     { k: "bed.voices", label: "max voices", min: 1, max: 8, step: 1 },
 
     { sec: "Voice — synth over the bed" },
@@ -5276,8 +5395,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "morph.on", label: "morphs", toggle: true },
 
     { sec: "Zones" },
-    { k: "zones.on", label: "zone events", toggle: true },
-    { k: "zones.radius", label: "zone radius", min: 8, max: 120, step: 1, unit: " m" }
+    { k: "zones.on", label: "zone events", toggle: true }
   ];
 
   function pget(o, path) {
@@ -5693,11 +5811,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     save();
     if (pacer && pacer.f === f) {
       pacer.patch = patch;
-      ZONE_R = patch.zones.radius;
-      BED.radius = patch.bed.radius;
       BED.maxVoices = patch.bed.voices;
-      BED.gain = patch.bed.gain;
-      pacer.zones.forEach(function (z) { z.r = patch.zones.radius; });
+      pacer.zones.forEach(function (z) { z.r = soundOfZone(z).zoneR; });
       if (!sect.seeds || sect.seeds.length !== patch.sect.n) {
         sectorGeometry(pacer.m, patch.sect.n);
         sect.idx = null;
