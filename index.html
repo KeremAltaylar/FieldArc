@@ -986,7 +986,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .pprow select { width: 100%; }
 .pprow button { width: 100%; }
 .ppwide { column-span: all; }
-.ppproggrid { grid-template-columns: repeat(4, 1fr); gap: 2px var(--s-2); }
+/* Two class names, not one: .ppgrid is declared after this and at equal specificity would
+   win the column count back. W-7, again. */
+.ppgrid.ppproggrid { grid-template-columns: repeat(16, minmax(0, 1fr)); gap: var(--s-1); }
+@media (max-width: 1500px) {
+  .ppgrid.ppproggrid { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .ppgrid.ppproggrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
 .ppgrid {
   display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--s-1);
   margin-bottom: var(--s-1);
@@ -1015,14 +1023,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 /* One chord, one line. Sixteen two-line cards took four rows of the panel, and everything
    a chord needs to say fits across a single line: which step, its root, its quality, which
    key it belongs to, whether it is a secondary dominant, and what that resolves to. */
+/* The progression is a sequence in time, so it is laid out as one: sixteen columns left to
+   right, each chord stacked inside its own. It reads as the order you walk them in, and the
+   whole thing is one row tall. */
 .ppline {
-  grid-template-columns: 1.1rem minmax(0, 1fr) minmax(0, 1.3fr) auto auto minmax(0, 3.4rem);
-  grid-row-gap: 0;
-  padding: 1px var(--s-1);
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 2px 3px; min-width: 0;
 }
+.ppline b { text-align: left; }
+.ppline select { width: 100%; min-width: 0; padding: 0 1px; }
+.ppline .ppkv { display: flex; gap: 2px; }
+.ppline .ppkv button { flex: 1 1 0; min-width: 0; padding: 1px 0; }
 .ppline .ppres {
-  grid-column: auto; text-align: right;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 /* A morph carries four controls and a readout. Sharing the chord cell's shape put two
@@ -5385,7 +5398,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   var PATCH_FIELDS = [
-    { sec: "Transport" },
+    { sec: "Transport", col: 0 },
     { k: "tempo", label: "tempo", min: 40, max: 140, step: 1, unit: " bpm" },
     { k: "key", label: "key", min: 38, max: 62, step: 1, fmt: noteName },
     { k: "key2", label: "second key", min: 38, max: 62, step: 1,
@@ -5398,12 +5411,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         return noteName(v) + (rel ? " · " + rel : "");
       } },
 
-    { sec: "Bed — the recordings around you" },
+    { sec: "Bed — the recordings around you", col: 0 },
     { k: "bed.on", label: "bed", toggle: true },
 
     { k: "bed.voices", label: "max voices", min: 1, max: 8, step: 1 },
 
-    { sec: "Voice — synth over the bed" },
+    { sec: "Voice — synth over the bed", col: 1 },
     { k: "voice.on", label: "voice", toggle: true },
     { k: "voice.gain", label: "gain", min: 0, max: 1, step: 0.05 },
     { k: "voice.density", label: "density", min: 0.05, max: 1, step: 0.05 },
@@ -5414,7 +5427,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "voice.drive", label: "drive", min: 0, max: 1, step: 0.05 },
     { k: "voice.warp", label: "warp", min: 0, max: 1, step: 0.05 },
 
-    { sec: "Second voice — follows the sectors, not the route" },
+    { sec: "Second voice — follows the sectors, not the route", col: 2 },
     { k: "sect.on", label: "second voice", toggle: true },
     { k: "sect.gain", label: "gain", min: 0, max: 1, step: 0.05 },
     { k: "sect.n", label: "sectors", min: 3, max: 12, step: 1 },
@@ -5425,7 +5438,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "sect.drive", label: "its drive", min: 0, max: 1, step: 0.05 },
     { k: "sect.warp", label: "its warp", min: 0, max: 1, step: 0.05 },
 
-    { sec: "Effects" },
+    { sec: "Effects", col: 1 },
     { k: "fx.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
       fmt: function (v, p) { return (DIV_LABEL[v] || v) + " · " + divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "fx.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
@@ -5433,7 +5446,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "fx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
     { k: "fx.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
 
-    { sec: "Effects — second voice" },
+    { sec: "Effects — second voice", col: 2 },
     { k: "fx2.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
       fmt: function (v, p) { return (DIV_LABEL[v] || v) + " \u00b7 " +
         divSeconds(v, p.tempo).toFixed(2) + " s"; } },
@@ -5442,7 +5455,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "fx2.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
     { k: "fx2.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
 
-    { sec: "Rhythm effects — the points, not the synths" },
+    { sec: "Rhythm effects — the points, not the synths", col: 3 },
     { k: "rfx.cutoff", label: "tone", min: 400, max: 12000, step: 100, unit: " Hz" },
     { k: "rfx.drive", label: "drive", min: 0, max: 1, step: 0.05 },
     { k: "rfx.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
@@ -5452,10 +5465,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "rfx.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
     { k: "rfx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
 
-    { sec: "Morphs" },
+    { sec: "Morphs", col: 3 },
     { k: "morph.on", label: "morphs", toggle: true },
 
-    { sec: "Zones" },
+    { sec: "Zones", col: 3 },
     { k: "zones.on", label: "zone events", toggle: true }
   ];
 
@@ -5480,7 +5493,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        touching it. */
     var sections = [], cur = null, totalRows = 0;
     PATCH_FIELDS.forEach(function (fl) {
-      if (fl.sec) { cur = { title: fl.sec, rows: [] }; sections.push(cur); return; }
+      if (fl.sec) { cur = { title: fl.sec, col: fl.col, rows: [] }; sections.push(cur); return; }
       if (!cur) { cur = { title: "", rows: [] }; sections.push(cur); }
       cur.rows.push(fl);
     });
@@ -5505,19 +5518,34 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        last column is reached everything else lands in it, and measured it held sixteen rows
        against seven in the first. This raises a ceiling until the sections fit under it in
        the number of columns available, which balances them without reordering anything. */
-    var wts = sections.map(function (sc) { return sc.rows.length + 1.6; });
-    var total = wts.reduce(function (x, y) { return x + y; }, 0);
-    var place = wts.map(function () { return 0; });
-    for (var cap = total / COLS; cap <= total + 1; cap += 0.4) {
-      var g = 1, cur = 0, ok = true, trial = [];
-      for (var q = 0; q < wts.length; q++) {
-        if (cur > 0 && cur + wts[q] > cap && g < COLS) { g++; cur = 0; }
-        trial.push(g - 1);
-        cur += wts[q];
-        if (cur > cap && g >= COLS) { ok = false; }
+    /* Where there is room for four columns each section goes where it belongs rather than
+       where it fits: a voice and its own effects in one column, the second voice and its
+       effects in the next. Balancing by height put a voice's delay three columns from the
+       voice, which is tidy and useless — you set a delay while listening to the thing it is
+       delaying.
+
+       Below four columns there is no room to keep the pairs apart, so the sections are
+       balanced instead and reading order carries them. */
+    var place;
+    if (COLS === 4) {
+      place = sections.map(function (sc) {
+        return sc.col === undefined ? 0 : Math.min(sc.col, COLS - 1);
+      });
+    } else {
+      var wts = sections.map(function (sc) { return sc.rows.length + 1.6; });
+      var total = wts.reduce(function (x, y) { return x + y; }, 0);
+      place = wts.map(function () { return 0; });
+      for (var cap = total / COLS; cap <= total + 1; cap += 0.4) {
+        var g = 1, cur2 = 0, ok = true, trial = [];
+        for (var q = 0; q < wts.length; q++) {
+          if (cur2 > 0 && cur2 + wts[q] > cap && g < COLS) { g++; cur2 = 0; }
+          trial.push(g - 1);
+          cur2 += wts[q];
+          if (cur2 > cap && g >= COLS) { ok = false; }
+        }
+        if (ok) { place = trial; break; }
+        place = trial;
       }
-      if (ok) { place = trial; break; }
-      place = trial;
     }
 
     sections.forEach(function (sc, idx) {
@@ -5882,10 +5910,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       res.className = "ppres";
       res.textContent = chordLabel(patch, i);
 
+      var kv = document.createElement("div");
+      kv.className = "ppkv";
+      kv.appendChild(kBtn); kv.appendChild(vBtn);
       cell.appendChild(rootSel);
       cell.appendChild(qSel);
-      cell.appendChild(kBtn);
-      cell.appendChild(vBtn);
+      cell.appendChild(kv);
       cell.appendChild(res);
       cell.style.borderLeft = "3px solid " + rootColour(chordRoot(patch, i));
       grid.appendChild(cell);
