@@ -3777,6 +3777,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         Tone.Transport.bpm.value = patch.tempo;
         /* Stopped while the context was resuming. Do not build a graph nobody asked for. */
         if (!wantSound) { bed.on = false; return; }
+        if (!bed.rfx) { bed.rfx = buildRhythmFx(Tone, patch); }
+        /* Built dry, then given the patch. Without this the drive stage sits at zero
+           whatever the patch says, because construction only sets what the constructor
+           takes and the drive is three nodes deep. */
+        applyRhythmFx(patch);
         if (!bed.voice) { bed.voice = buildVoice(Tone, patch); }
         if (!bed.loop) {
           bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
@@ -4381,6 +4386,66 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return r;
   }
 
+  /* ---- The rhythm chain ----
+     Its own, and not the synths'. Point rhythms were joining the synth delay, which meant a
+     long dotted delay chosen to suit a held pad was also smearing every hit, and a reverb
+     decay set for harmony was set for percussion too. They are different instruments and
+     they want different rooms: the rhythm chain is short, dark and tight by default, and the
+     morphs never touch it.
+
+     Built once with the bed and kept — nothing here is torn down while it runs (A-16). */
+  function buildRhythmFx(Tone, patch) {
+    var out = new Tone.Gain(1).connect(bed.master);
+    var rv = new Tone.Reverb({ decay: patch.rfx.revDecay, wet: 0 }).connect(out);
+    /* A send again, and a high-passed one, for the same reason the synth delay is: repeats
+       of a kick accumulate into a rumble otherwise. */
+    var din = new Tone.Gain(1);
+    var hp = new Tone.Filter({ type: "highpass", frequency: 220, Q: 0.7 });
+    var dl = new Tone.FeedbackDelay({
+      maxDelay: MAX_DELAY_S, delayTime: divSeconds(patch.rfx.delayDiv, patch.tempo),
+      feedback: patch.rfx.delayFb, wet: 1
+    });
+    var send = new Tone.Gain(0);
+    din.connect(rv);
+    din.connect(hp); hp.connect(dl); dl.connect(send); send.connect(rv);
+
+    /* Tone shaping before the sends: one filter that sweeps from a low-pass through to
+       almost open, and a drive with the same gain staging the voices use — a crossfade into
+       a curve with nothing pushing it is not a drive control. */
+    var filt = new Tone.Filter({ type: "lowpass", frequency: patch.rfx.cutoff, Q: 1.1 });
+    var pre = new Tone.Gain(1);
+    var shape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 3); }, 2048);
+    var post = new Tone.Gain(0.6);
+    var drive = new Tone.CrossFade(0);
+    var input = new Tone.Gain(1);
+    input.connect(drive.a);
+    input.connect(pre); pre.connect(shape); shape.connect(post); post.connect(drive.b);
+    drive.connect(filt);
+    filt.connect(din);
+
+    rv.wet.rampTo(patch.rfx.revWet, 0.3);
+    send.gain.rampTo(patch.rfx.delayWet, 0.3);
+
+    return { input: input, out: out, reverb: rv, delay: dl, send: send.gain,
+             filter: filt, drive: drive, pre: pre, post: post };
+  }
+
+  /* Applied whenever the patch changes; there is one chain and every rhythm point feeds it. */
+  function applyRhythmFx(patch) {
+    var R = bed && bed.rfx;
+    if (!R) { return; }
+    var c = patch.rfx;
+    R.filter.frequency.rampTo(c.cutoff, 0.2);
+    R.drive.fade.rampTo(c.drive, 0.2);
+    R.pre.gain.rampTo(1 + c.drive * 12, 0.2);
+    R.post.gain.rampTo(0.6 / (1 + c.drive * 3.4), 0.2);
+    R.delay.delayTime.rampTo(Math.min(MAX_DELAY_S - 0.01,
+      divSeconds(c.delayDiv, patch.tempo)), 0.2);
+    R.delay.feedback.rampTo(c.delayFb, 0.2);
+    R.send.rampTo(c.delayWet, 0.2);
+    R.reverb.wet.rampTo(c.revWet, 0.2);
+  }
+
   /* One player per slot, loaded once, kept until the point goes out of range. A pool would
      let a hit overlap itself; for percussive material a retrigger is what you want anyway,
      and it costs four nodes per point instead of a pool per slot. */
@@ -4389,8 +4454,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (R) { return R; }
     var Tone = bed.Tone;
     R = bed.rhythms[z.id] = { ready: 0, players: {}, urls: {}, tick: 0, step: 0,
-                              gain: new Tone.Gain(0).connect(bed.voice ? bed.voice.fx.delay
-                                                                      : bed.master) };
+                              gain: new Tone.Gain(0).connect(bed.rfx ? bed.rfx.input
+                                                                     : bed.master) };
     HIT_SLOTS.forEach(function (slot) {
       getAudio(z.id + "#" + slot).then(function (blob) {
         if (!blob || !bed || !bed.rhythms[z.id]) { return; }
@@ -4970,7 +5035,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultPatch() {
     return {
-      version: 12, tempo: 72, key: 50, key2: 55,
+      version: 13, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, gain: 0.9, radius: 140, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -4984,6 +5049,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       /* The engine's own default for every effect is dry (A-8). These are a deliberate
          starting patch, written down where they can be seen and changed. */
       fx:    { delayDiv: "8n.", delayWet: 0.75, delayFb: 0.85, revWet: 0.18, revDecay: 3.4 },
+      /* The rhythm chain's own room: shorter delay, less of it, and a small dark reverb.
+         Percussion wants a different space from a sustained pad and used to be given the
+         pad's. */
+      rfx:   { cutoff: 9000, drive: 0.15, delayDiv: "8n", delayWet: 0.22, delayFb: 0.34,
+               revWet: 0.14, revDecay: 1.2 },
       zones: { radius: 25, on: true },
       sect:  { on: true, n: 7, gain: 0.8, rhythm: "4n.", chordPull: 0.35,
                harm: 2.02, drive: 0.18, warp: 0.14 },
@@ -5011,6 +5081,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (p.sect.warp === undefined) { p.sect.warp = 0.14; }
       p.version = 12;
     }
+    /* 12 to 13 gives the rhythms a chain of their own and changes nothing else. */
+    if (p && p.version === 12) {
+      if (!p.rfx) {
+        p.rfx = { cutoff: 9000, drive: 0.15, delayDiv: "8n", delayWet: 0.22,
+                  delayFb: 0.34, revWet: 0.14, revDecay: 1.2 };
+      }
+      p.version = 13;
+    }
     if (p && p.version >= 4 && p.version < 11 && p.prog) {
       if (!p.morph) { p.morph = defaultMorph(); }
       delete p.morph.dissolve;
@@ -5019,9 +5097,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         return m.shape !== "field" && LIVE_DESTS[m.dest];
       });
       if (!p.morph.list.length) { p.morph.list = defaultMorph().list; }
-      p.version = 12;
+      p.version = 13;
     }
-    if (!p || p.version !== 12 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p || p.version !== 13 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p.rfx) {
+      p.rfx = { cutoff: 9000, drive: 0.15, delayDiv: "8n", delayWet: 0.22,
+                delayFb: 0.34, revWet: 0.14, revDecay: 1.2 };
+    }
     if (!p.morph) { p.morph = defaultMorph(); }
     return p;
   }
@@ -5179,6 +5261,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "fx.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
     { k: "fx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
     { k: "fx.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
+
+    { sec: "Rhythm effects — the points, not the synths" },
+    { k: "rfx.cutoff", label: "tone", min: 400, max: 12000, step: 100, unit: " Hz" },
+    { k: "rfx.drive", label: "drive", min: 0, max: 1, step: 0.05 },
+    { k: "rfx.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
+      fmt: function (v, p) { return (DIV_LABEL[v] || v) + " \u00b7 " +
+        divSeconds(v, p.tempo).toFixed(2) + " s"; } },
+    { k: "rfx.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
+    { k: "rfx.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
+    { k: "rfx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
 
     { sec: "Morphs" },
     { k: "morph.on", label: "morphs", toggle: true },
@@ -5626,6 +5718,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           bed.voice.fx.reverb.wet.rampTo(patch.fx.revWet, 0.2);
           applyRevDecay(patch);
           applySectRhythm(patch);
+          applyRhythmFx(patch);
         }
         updateBed();
       }
