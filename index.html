@@ -3816,6 +3816,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
     bed.voices = {};
     Object.keys(bed.rhythms || {}).forEach(function (id) { disposeRhythm(id); });
+    /* Everything a zone started, whether or not it has finished. */
+    (bed.oneShots || []).forEach(function (n) {
+      try { n.stop(); } catch (e) { /* already done */ }
+      setTimeout(function () { try { n.dispose(); } catch (e) {} }, 400);
+    });
+    bed.oneShots = [];
     bed.on = false;
     if (bed.Tone) { try { bed.Tone.Transport.stop(); } catch (e) {} }
     if (bed.voice) {
@@ -3840,8 +3846,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var limiter = new Tone.Limiter(-1).toDestination();
           var meter = new Tone.Meter();
           limiter.connect(meter);
-          bed = { on: false, voices: {}, rhythms: {}, master: limiter, meter: meter,
-                  Tone: Tone };
+          bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: limiter,
+                  meter: meter, Tone: Tone };
         }
         bed.on = true;
         window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
@@ -4314,24 +4320,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function zoneFire(z) {
     if (!bed || !bed.on || !bed.voice) { return; }
+    /* Anything a zone starts is registered, because the Sound button has to be able to
+       stop it. A one-shot player is not on the Transport and is not in bed.voices, so
+       stopping the bed left it playing to the end — and a soundscape can be minutes. */
     var Tone = bed.Tone, patch = pacer.patch;
     /* A-10: a touch ahead of the audio clock, past the render-block boundary, so the attack
        is not truncated into a click. */
     var at = Tone.now() + 0.008;
 
-    if (z.has_audio) {
-      getAudio(z.id).then(function (blob) {
-        if (!blob || !bed || !bed.on) { return; }
-        var url = URL.createObjectURL(blob);
-        var p = new Tone.Player({
-          url: url, autostart: true, fadeIn: 0.02, fadeOut: 0.3,
-          onstop: function () {
-            setTimeout(function () { try { p.dispose(); } catch (e) {} URL.revokeObjectURL(url); }, 50);
-          }
-        }).connect(bed.voice.fx.delay);
-      });
-      return;
-    }
+    /* A soundscape is not a zone event. Crossing the boundary used to fire the whole
+       recording as a one-shot at full level — which is why a soundscape appeared to start
+       abruptly with no approach: the bed voice was fading in correctly underneath a copy
+       of the same recording that was not. The bed owns soundscapes; distance is their
+       envelope and there is nothing for a zone to add.
+
+       A point set to four hits has no soundscape to duplicate, so its zone still speaks —
+       with the timbre its icon asks for, below. */
+    if (z.has_audio && z.mode !== "hits") { return; }
 
     var tim = ZONE_TIMBRE[z.icon] || ZONE_TIMBRE.tree;
     /* A zone sings inside the chord you are standing in, so an event never fights the
@@ -4344,8 +4349,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         envelope: { attack: 0.08, decay: 0.6, sustain: 0.2, release: tim.dur,
                     releaseCurve: "exponential" }
       }).connect(bed.voice.fx.delay);
+      bed.oneShots.push(n);
       n.triggerAttackRelease(tim.dur, at, 0.35);
-      setTimeout(function () { try { n.dispose(); } catch (e) {} }, (tim.dur + 3) * 1000);
+      setTimeout(function () {
+        bed.oneShots = bed.oneShots.filter(function (x) { return x !== n; });
+        try { n.dispose(); } catch (e) {}
+      }, (tim.dur + 3) * 1000);
       return;
     }
     var s = new Tone.Synth({
@@ -4353,8 +4362,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       envelope: { attack: 0.02, decay: 0.5, sustain: 0.3, release: tim.dur,
                   releaseCurve: "exponential" }
     }).connect(bed.voice.fx.delay);
+    bed.oneShots.push(s);
     s.triggerAttackRelease(midiToFreq(midi), tim.dur, at, 0.4);
-    setTimeout(function () { try { s.dispose(); } catch (e) {} }, (tim.dur + 3) * 1000);
+    setTimeout(function () {
+      bed.oneShots = bed.oneShots.filter(function (x) { return x !== s; });
+      try { s.dispose(); } catch (e) {}
+    }, (tim.dur + 3) * 1000);
   }
 
   function ensureVoice(z, d) {
@@ -4375,7 +4388,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     v = bed.voices[z.id] = { ready: false, idle: false };
     getAudio(z.id).then(function (blob) {
-      if (!blob || !bed || !bed.voices[z.id]) { return; }
+      if (!blob || !bed || !bed.on || !bed.voices[z.id]) { return; }
       var f = feature(z.id), a = (f && f.properties.audio) || {};
       v.url = URL.createObjectURL(blob);
       v.gain = new Tone.Gain(0).connect(bed.master);
@@ -4387,7 +4400,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       v.player = new Tone.Player({
         url: v.url, loop: true, fadeIn: 0.05, fadeOut: 0.1,
         onload: function () {
-          if (!bed || !bed.voices[z.id]) { return; }
+          /* bed.on as well as the registry: a recording that finished decoding after the
+             Sound button was pressed would otherwise start into a stopped bed. */
+          if (!bed || !bed.on || !bed.voices[z.id]) {
+            try { v.player.dispose(); } catch (e) {}
+            return;
+          }
           v.ready = true;
           v.player.start();
           var dd = segment(pacer ? pacer.pos : z.lonlat, z.lonlat);
