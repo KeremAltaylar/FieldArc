@@ -986,6 +986,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .pprow select { width: 100%; }
 .pprow button { width: 100%; }
 .ppwide { column-span: all; }
+.ppproggrid { grid-template-columns: repeat(4, 1fr); gap: 2px var(--s-2); }
 .ppgrid {
   display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--s-1);
   margin-bottom: var(--s-1);
@@ -1011,6 +1012,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   letter-spacing: 0.04em; text-transform: none; color: var(--dim);
 }
 .ppgen { padding: 2px var(--s-2); font-size: var(--t-xs); }
+/* One chord, one line. Sixteen two-line cards took four rows of the panel, and everything
+   a chord needs to say fits across a single line: which step, its root, its quality, which
+   key it belongs to, whether it is a secondary dominant, and what that resolves to. */
+.ppline {
+  grid-template-columns: 1.1rem minmax(0, 1fr) minmax(0, 1.3fr) auto auto minmax(0, 3.4rem);
+  grid-row-gap: 0;
+  padding: 1px var(--s-1);
+}
+.ppline .ppres {
+  grid-column: auto; text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* A morph carries four controls and a readout. Sharing the chord cell's shape put two
    selects next to two buttons in about a hundred pixels and they overlapped. Its own
    three-row shape gives each row the width it needs. */
@@ -1021,6 +1035,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .ppmorph > select { grid-column: span 2; }
 .ppmorph > input[type="range"] { grid-column: span 2; }
 .ppmorph .ppres { grid-column: 1 / -1; }
+.mtrace {
+  grid-column: 1 / -1; width: 100%; height: 22px; display: block;
+  background: color-mix(in oklch, var(--sunk) 55%, transparent);
+  border-radius: 2px;
+}
 /* The action belongs beside its heading, not on a line of its own underneath it — two
    buttons each taking a full row cost more height than the whole Zones section. */
 .pphead {
@@ -3771,6 +3790,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
                           clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
     window.__fa.rhythm = { euclid: euclid, rotated: rotated, of: rhythmOf, slots: HIT_SLOTS };
+    window.__fa.morph.trace = traceDraw;   /* measurable without waiting on a frame */
     window.__fa.projectToRoute = projectToRoute;
 
     $("#pacerbar").hidden = false;
@@ -3887,42 +3907,41 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* ---------- Voice and effects ----------
      A synth layer over the bed, driven by the same archive: density from how eventful the
      nearby recordings are, timbre balance from how noisy they are, filter from how bright. */
-  function buildVoice(Tone, patch) {
-    var fx = {};
-    /* Every effect is built dry and opened only to what the patch asks for (A-8). */
-    fx.reverb = new Tone.Reverb({ decay: patch.fx.revDecay, wet: 0 }).connect(bed.master);
-    /* Seconds, not notation: a division string is resolved against whatever the Transport
-       tempo happens to be at construction, which is not necessarily the patch tempo. */
-    /* A send, not an insert. The problem was real — a delay at 0.85 feedback is a comb
-       resonator and the pad is held indefinitely, so a sustained low root rings up; G6/9
-       puts the bass at about 49Hz and that is where it happened. My first fix hand-built the
-       feedback loop to get a filter inside it, and that was a mistake: measured, the wet path
-       put out +6.9dB from a -24.8dB input with the feedback set to zero, and the reverb after
-       it reached +47dB. Tone.FeedbackDelay is tested and this is not the place to be writing
-       a delay.
+  /* ---- A chain, built twice ----
+     The pad and the second voice shared one delay and one reverb, so a dotted quarter chosen
+     for a held chord was also the echo on a counter-line moving four times as fast. They are
+     two instruments and they want two spaces.
 
-       So the delay becomes a send. The dry path goes to the reverb at full range and is never
-       touched; a high-passed copy feeds the delay, whose output returns through a send gain.
-       Low frequencies never enter the repeats, which is all the original fix needed to do,
-       and the dry signal keeps its bottom end. */
+     The delay is a send: the dry path reaches the reverb at full range and untouched, and a
+     high-passed copy feeds the delay and returns through a send gain. Low frequencies never
+     enter the repeats, which is what stops a sustained low root ringing up, and the dry
+     signal keeps its bottom end. */
+  function buildFxChain(Tone, cfg, tempo, out) {
+    var fx = {};
+    fx.reverb = new Tone.Reverb({ decay: cfg.revDecay, wet: 0 }).connect(out);
     var dIn = new Tone.Gain(1);
     var dHP = new Tone.Filter({ type: "highpass", frequency: 170, Q: 0.7 });
     var dDelay = new Tone.FeedbackDelay({
       maxDelay: MAX_DELAY_S,
-      delayTime: delaySeconds(patch),
-      feedback: patch.fx.delayFb, wet: 1
+      delayTime: Math.min(MAX_DELAY_S - 0.01, divSeconds(cfg.delayDiv, tempo)),
+      feedback: cfg.delayFb, wet: 1
     });
     var dSend = new Tone.Gain(0);            /* dry until asked (A-8) */
     dIn.connect(fx.reverb);
     dIn.connect(dHP); dHP.connect(dDelay); dDelay.connect(dSend);
     dSend.connect(fx.reverb);
-    /* Named so everything already talking to fx.delay keeps working unchanged. */
     dIn.delayTime = dDelay.delayTime;
     dIn.feedback = dDelay.feedback;
     dIn.wet = dSend.gain;
     fx.delay = dIn;
-    fx.reverb.wet.rampTo(patch.fx.revWet, 0.3);
-    fx.delay.wet.rampTo(patch.fx.delayWet, 0.3);
+    fx.reverb.wet.rampTo(cfg.revWet, 0.3);
+    fx.delay.wet.rampTo(cfg.delayWet, 0.3);
+    return fx;
+  }
+
+  function buildVoice(Tone, patch) {
+    var fx = buildFxChain(Tone, patch.fx, patch.tempo, bed.master);
+    var fx2 = buildFxChain(Tone, patch.fx2, patch.tempo, bed.master);
 
     var bus = new Tone.Gain(patch.voice.gain).connect(fx.delay);
     /* Modulation gets its own node. The patch panel owns bus.gain and the morphs own this
@@ -3996,7 +4015,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        you hear that something is there without hearing what it is doing. Raised until it
        measured about 5dB down: present as its own part, still clearly not the lead. */
     var SECT_TRIM = 0.78;
-    var sectBus = new Tone.Gain(SECT_TRIM).connect(fx.delay);
+    var sectBus = new Tone.Gain(SECT_TRIM).connect(fx2.delay);
     var sectGain = new Tone.Gain(patch.sect.gain).connect(sectBus);
     /* Its own filter, because it joins the bus after the pad's one and was therefore the
        only voice the morphs could not reach. Open at 9k so it starts as no filter at all. */
@@ -4029,7 +4048,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       modulationEnvelope: { attack: 0.04, decay: 0.5, sustain: 0.1, release: 0.8 }
     });
 
-    return { fx: fx, bus: bus, filter: filter, padMod: padMod, synth: synth,
+    return { fx: fx, fx2: fx2, bus: bus, filter: filter, padMod: padMod, synth: synth,
              warp: padWarp, drive: padDrive, dry: padDry, pre: padPre, post: padPost,
              sect: { synth: sectSynth, gain: sectGain, filter: sectFilter, bus: sectBus,
                      warp: sectWarp, drive: sectDrive, pre: sectPre, post: sectPost } };
@@ -5153,7 +5172,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultPatch() {
     return {
-      version: 14, tempo: 72, key: 50, key2: 55,
+      version: 15, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -5167,6 +5186,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       /* The engine's own default for every effect is dry (A-8). These are a deliberate
          starting patch, written down where they can be seen and changed. */
       fx:    { delayDiv: "8n.", delayWet: 0.75, delayFb: 0.85, revWet: 0.18, revDecay: 3.4 },
+      /* The counter-line moves faster than the pad, so its echo is shorter and drier and its
+         room is smaller. Sharing the pad's was what made the two blur together. */
+      fx2:   { delayDiv: "8n", delayWet: 0.4, delayFb: 0.55, revWet: 0.12, revDecay: 1.8 },
       /* The rhythm chain's own room: shorter delay, less of it, and a small dark reverb.
          Percussion wants a different space from a sustained pad and used to be given the
          pad's. */
@@ -5199,6 +5221,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (p.sect.warp === undefined) { p.sect.warp = 0.14; }
       p.version = 12;
     }
+    /* 14 to 15 gives the second voice effects of its own. */
+    if (p && p.version === 14) {
+      if (!p.fx2) {
+        p.fx2 = { delayDiv: "8n", delayWet: 0.4, delayFb: 0.55, revWet: 0.12, revDecay: 1.8 };
+      }
+      p.version = 15;
+    }
     /* 13 to 14 moves reach, level and zone size off the route and onto each point. A route
        that had them set carries its values onto every point in the place once, so nothing
        changes the first time you open it; after that each point is its own. */
@@ -5212,10 +5241,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
       if (p.bed) { delete p.bed.radius; delete p.bed.gain; }
       if (p.zones) { delete p.zones.radius; }
-      p.version = 14;
+      p.version = 15;
+      if (!p.fx2) {
+        p.fx2 = { delayDiv: "8n", delayWet: 0.4, delayFb: 0.55, revWet: 0.12, revDecay: 1.8 };
+      }
       /* This one writes to the points as well as the patch, so it is persisted rather
-         than left to whatever happens to save next. It runs once: the version is 14
-         afterwards. */
+         than left to whatever happens to save next. It runs once. */
       save();
     }
     /* 12 to 13 gives the rhythms a chain of their own and changes nothing else. */
@@ -5236,7 +5267,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!p.morph.list.length) { p.morph.list = defaultMorph().list; }
       p.version = 14;
     }
-    if (!p || p.version !== 14 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p || p.version !== 15 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p.fx2) {
+      p.fx2 = { delayDiv: "8n", delayWet: 0.4, delayFb: 0.55, revWet: 0.12, revDecay: 1.8 };
+    }
     if (!p.rfx) {
       p.rfx = { cutoff: 9000, drive: 0.15, delayDiv: "8n", delayWet: 0.22,
                 delayFb: 0.34, revWet: 0.14, revDecay: 1.2 };
@@ -5398,6 +5432,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "fx.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
     { k: "fx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
     { k: "fx.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
+
+    { sec: "Effects — second voice" },
+    { k: "fx2.delayDiv", label: "delay time", options: function () { return DIVISIONS; },
+      fmt: function (v, p) { return (DIV_LABEL[v] || v) + " \u00b7 " +
+        divSeconds(v, p.tempo).toFixed(2) + " s"; } },
+    { k: "fx2.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
+    { k: "fx2.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
+    { k: "fx2.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
+    { k: "fx2.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
 
     { sec: "Rhythm effects — the points, not the synths" },
     { k: "rfx.cutoff", label: "tone", min: 400, max: 12000, step: 100, unit: " Hz" },
@@ -5660,16 +5703,96 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         commitPatch(f, patch); renderPatchPanel();
       });
 
+      /* The shape itself, with where it has got to. A morph is a slow thing — eleven minutes
+         for the longest — and a number that moves too slowly to see is indistinguishable from
+         a number that is not moving. One period is drawn across the cell with the current
+         phase marked, so what the morph is about to do is visible as well as what it is
+         doing. */
+      var trace = document.createElement("canvas");
+      trace.className = "mtrace";
+      trace.dataset.morph = m.id;
       cell.appendChild(onBtn);
       cell.appendChild(del);
       cell.appendChild(shape);
       cell.appendChild(dst);
       cell.appendChild(per);
       cell.appendChild(dep);
+      cell.appendChild(trace);
       cell.appendChild(perOut);
       grid.appendChild(cell);
     });
     body.appendChild(grid);
+    traceStart();
+  }
+
+  /* ---- The morph traces ----
+     Drawn from the same function the audio reads, so the picture cannot drift from the sound:
+     if the two disagree it is the drawing that is wrong, and there is only one place to look.
+     Runs only while the panel is open, at a rate a morph can actually change at. */
+  var traceRAF = null, traceLast = 0;
+
+  function traceDraw() {
+    var list = morphList();
+    if (!list.length) { return; }
+    var t = morphClock();
+    var byId = {};
+    list.forEach(function (m) { byId[m.id] = m; });
+    document.querySelectorAll("#pp-body .mtrace").forEach(function (cv) {
+      var m = byId[cv.dataset.morph];
+      if (!m) { return; }
+      var w = cv.clientWidth, h = cv.clientHeight;
+      if (!w || !h) { return; }
+      var dpr = Math.min(2, window.devicePixelRatio || 1);
+      if (cv.width !== Math.round(w * dpr)) {
+        cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+      }
+      var g = cv.getContext("2d");
+      if (!g) { return; }
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, w, h);
+
+      var per = Math.max(4, m.period || 60);
+      var u0 = t / per + (m.phase || 0);
+      var frac = u0 - Math.floor(u0);
+      var seed = (m.id || "m").charCodeAt(m.id ? m.id.length - 1 : 0) || 7;
+
+      /* One period, ending at now, so the line runs into the marker rather than away. */
+      g.beginPath();
+      for (var i = 0; i <= w; i++) {
+        var u = u0 - 1 + i / w;
+        var v = (m.bias || 0) + (m.depth === undefined ? 1 : m.depth) * morphShape(m.shape, u, seed);
+        v = v < 0 ? 0 : v > 1 ? 1 : v;
+        var y = h - 1 - v * (h - 2);
+        if (i === 0) { g.moveTo(0, y); } else { g.lineTo(i, y); }
+      }
+      g.strokeStyle = m.on ? "rgba(186,206,181,0.85)" : "rgba(186,206,181,0.25)";
+      g.lineWidth = 1;
+      g.stroke();
+
+      var now = morphValue(m, t);
+      if (now === null) { return; }
+      var ny = h - 1 - now * (h - 2);
+      g.fillStyle = m.on ? "rgba(214,236,206,0.95)" : "rgba(214,236,206,0.3)";
+      g.beginPath(); g.arc(w - 1.5, ny, 2, 0, 6.2832); g.fill();
+      /* Where in its cycle it is, which the line alone cannot say for a shape that repeats. */
+      g.fillStyle = "rgba(186,206,181,0.18)";
+      g.fillRect(0, h - 1, w * frac, 1);
+    });
+  }
+
+  function traceTick(now) {
+    if ($("#patchpanel").hidden) { traceRAF = null; return; }
+    traceRAF = requestAnimationFrame(traceTick);
+    if (document.hidden) { return; }
+    var gap = (window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches) ? 1000 : 100;
+    if (now - traceLast < gap) { return; }
+    traceLast = now;
+    traceDraw();
+  }
+
+  function traceStart() {
+    if (!traceRAF) { traceRAF = requestAnimationFrame(traceTick); }
   }
 
   /* Sixteen chords across the route. Walking from one end to the other plays the whole
@@ -5696,11 +5819,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     head.appendChild(gen);
 
     var grid = document.createElement("div");
-    grid.className = "ppgrid ppwide";
+    grid.className = "ppgrid ppwide ppproggrid";
 
     patch.prog.forEach(function (c, i) {
       var cell = document.createElement("div");
-      cell.className = "ppchord";
+      cell.className = "ppchord ppline";
       cell.dataset.step = i;
 
       var n = document.createElement("b");
@@ -5797,23 +5920,30 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      wet signal is held down until it lands — regenerating under a live wet signal drops the
      tail with a click. Both this and the rhythm below were written to the patch and read
      only at construction, so the two controls did nothing at all once the sound was running. */
-  var revPending = null;
+  /* The pending value lives on the reverb now rather than in one shared variable, because
+     there are two reverbs and a single pending slot would have let one steal the other's
+     target. */
   function applyRevDecay(patch) {
-    var rv = bed.voice.fx.reverb;
-    if (Math.abs(rv.decay - patch.fx.revDecay) < 0.05) { return; }
-    revPending = patch.fx.revDecay;
+    applyDecayTo(bed.voice.fx.reverb, patch.fx.revDecay);
+    if (bed.voice.fx2) { applyDecayTo(bed.voice.fx2.reverb, patch.fx2.revDecay); }
+  }
+
+  function applyDecayTo(rv, want) {
+    if (Math.abs(rv.decay - want) < 0.05) { return; }
+    rv.__want = want;
     if (rv.__busy) { return; }
     rv.__busy = true;
+    var back = rv.wet.value;
     (function run() {
-      var want = revPending;
-      revPending = null;
+      var target = rv.__want;
+      rv.__want = null;
       rv.wet.rampTo(0, 0.08);
       setTimeout(function () {
-        try { rv.decay = want; } catch (e) { rv.__busy = false; return; }
+        try { rv.decay = target; } catch (e) { rv.__busy = false; return; }
         rv.generate().then(function () {
-          if (revPending !== null) { run(); return; }
+          if (rv.__want !== null && rv.__want !== undefined) { run(); return; }
           rv.__busy = false;
-          if (pacer) { rv.wet.rampTo(pacer.patch.fx.revWet, 0.2); }
+          rv.wet.rampTo(back, 0.2);
         }).catch(function () { rv.__busy = false; });
       }, 90);
     })();
@@ -5849,6 +5979,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           bed.voice.fx.delay.wet.rampTo(patch.fx.delayWet, 0.2);
           bed.voice.fx.delay.feedback.rampTo(patch.fx.delayFb, 0.2);
           bed.voice.fx.reverb.wet.rampTo(patch.fx.revWet, 0.2);
+          if (bed.voice.fx2) {
+            bed.voice.fx2.delay.delayTime.rampTo(Math.min(MAX_DELAY_S - 0.01,
+              divSeconds(patch.fx2.delayDiv, patch.tempo)), 0.2);
+            bed.voice.fx2.delay.wet.rampTo(patch.fx2.delayWet, 0.2);
+            bed.voice.fx2.delay.feedback.rampTo(patch.fx2.delayFb, 0.2);
+            bed.voice.fx2.reverb.wet.rampTo(patch.fx2.revWet, 0.2);
+          }
           applyRevDecay(patch);
           applySectRhythm(patch);
           applyRhythmFx(patch);
@@ -5858,7 +5995,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
-  $("#pp-close").addEventListener("click", function () { $("#patchpanel").hidden = true; });
+  $("#pp-close").addEventListener("click", function () {
+    $("#patchpanel").hidden = true;
+    if (traceRAF) { cancelAnimationFrame(traceRAF); traceRAF = null; }
+  });
   $("#pp-reset").addEventListener("click", function () {
     var f = feature(selected);
     if (!f) { return; }
