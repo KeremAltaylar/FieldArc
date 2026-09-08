@@ -243,7 +243,9 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .cardmeta b { display: block; color: var(--dim); font-weight: 400; }
 
-.chips { display: flex; gap: var(--s-1); }
+/* A chip that is off should look off. Bordered and dim when unset, filled when set — a
+   pair of identical-looking buttons tells you nothing about the state you are in. */
+.chips { display: flex; gap: var(--s-2); flex-wrap: wrap; }
 .chips button {
   text-transform: lowercase;
   letter-spacing: 0.04em;
@@ -269,7 +271,8 @@ h2 {
 .modes button { flex: 1; }
 
 /* ---- Point type ---- */
-.iconpick { display: flex; gap: var(--s-1); margin-top: var(--s-2); }
+.iconpick { display: flex; gap: var(--s-1); flex-wrap: wrap; }
+.iconpick button { padding: var(--s-1); }
 .iconbtn {
   flex: 1;
   display: grid; place-items: center;
@@ -469,6 +472,130 @@ input[type="text"]:focus-visible, textarea:focus-visible {
   outline-offset: 1px;
 }
 
+
+/* ---- The card ----
+   Everything here used to arrive at one weight in one stack: the name looked like a
+   placeholder, the sections had no names, and nothing said what was primary. The title is
+   a title now, each part carries a quiet eyebrow, and the space between parts is larger
+   than the space inside them — which is most of what makes a card read as organised. */
+#card { display: flex; flex-direction: column; gap: var(--s-3); }
+.cardhead { display: flex; flex-direction: column; gap: 2px; }
+.ckind {
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: var(--track-eyebrow); text-transform: uppercase; color: var(--faint);
+}
+#f-name {
+  font-family: var(--font-display); font-size: var(--t-md);
+  padding: 2px 0; background: transparent; border: 0;
+  border-bottom: 1px solid transparent; border-radius: 0;
+}
+#f-name::placeholder { color: var(--faint); }
+#f-name:hover { border-bottom-color: var(--bdr); }
+#f-name:focus-visible {
+  outline: none; border-bottom-color: var(--lamp); background: transparent;
+}
+.cgroup { display: flex; flex-direction: column; gap: var(--s-1); }
+.eyebrow {
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: var(--track-eyebrow); text-transform: uppercase; color: var(--faint);
+}
+#f-note { min-height: 2.5rem; }
+
+/* A row of solid accent bars was the loudest thing on the patch panel — five "on" states
+   shouting over the controls they belong to. Inside the panels a pressed toggle is tinted
+   and outlined rather than filled: still unmistakably on, no longer the first thing you
+   see. The chips and the mode switch on the card keep the solid fill, where there is one
+   of them and it is the answer to a question. */
+#pp-body button[aria-pressed="true"], #rp-body button[aria-pressed="true"] {
+  color: var(--ink);
+  background: color-mix(in oklch, var(--accent) 20%, transparent);
+  border-color: color-mix(in oklch, var(--accent) 55%, transparent);
+}
+#pp-body button[aria-pressed="true"]:hover, #rp-body button[aria-pressed="true"]:hover {
+  background: color-mix(in oklch, var(--accent) 34%, transparent);
+}
+#pp-body button[aria-pressed="false"], #rp-body button[aria-pressed="false"] {
+  color: var(--faint);
+}
+
+/* ---- Controls ----
+   A range input left to the browser is the clearest sign nobody designed a panel: the track
+   is a system colour, the thumb is a system shape, and neither responds to anything. These
+   are built from the tokens like everything else. The filled portion is a gradient stop
+   driven by --fill, which the script keeps in step with the value. */
+input[type="range"] {
+  --fill: 50%;
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 16px; background: transparent; cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px; border-radius: 999px;
+  background: linear-gradient(to right,
+    var(--accent) 0 var(--fill),
+    color-mix(in oklch, var(--ink) 13%, transparent) var(--fill) 100%);
+}
+input[type="range"]::-moz-range-track {
+  height: 3px; border-radius: 999px;
+  background: color-mix(in oklch, var(--ink) 13%, transparent);
+}
+input[type="range"]::-moz-range-progress { height: 3px; border-radius: 999px; background: var(--accent); }
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 11px; height: 11px; margin-top: -4px; border: 0;
+  border-radius: 50%; background: var(--ink);
+  box-shadow: 0 0 0 0 transparent;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 11px; height: 11px; border: 0; border-radius: 50%; background: var(--ink);
+}
+input[type="range"]:hover::-webkit-slider-thumb,
+input[type="range"]:focus-visible::-webkit-slider-thumb {
+  background: var(--lamp);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--lamp) 20%, transparent);
+}
+input[type="range"]:hover::-moz-range-thumb { background: var(--lamp); }
+input[type="range"]:focus-visible { outline: none; }
+input[type="range"]:active::-webkit-slider-thumb {
+  background: var(--lamp);
+  box-shadow: 0 0 0 5px color-mix(in oklch, var(--lamp) 26%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  input[type="range"]::-webkit-slider-thumb {
+    transition: background var(--d-fast) var(--ease), box-shadow var(--d-fast) var(--ease);
+  }
+}
+
+/* A select should not be the only element on a panel wearing the operating system's clothes. */
+select {
+  font: inherit; font-size: var(--t-xs); font-family: var(--font-mono);
+  color: var(--ink); background: var(--sunk);
+  border: 1px solid var(--bdr); border-radius: 2px;
+  padding: 2px 1.4rem 2px var(--s-2);
+  -webkit-appearance: none; appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 0.62rem center, right 0.4rem center;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+select:hover { border-color: color-mix(in oklch, var(--accent) 40%, transparent); }
+select:focus-visible { outline: 2px solid var(--lamp); outline-offset: 1px; }
+
+/* ---- Section headings ----
+   An eyebrow with a rule running off to the edge. It costs nothing and it is the difference
+   between a list of controls and a panel with parts. */
+#pp-body h2, #rp-body h2 {
+  display: flex; align-items: center; gap: var(--s-3);
+  font-family: var(--font-mono); font-size: var(--t-xs); font-weight: 400;
+  letter-spacing: var(--track-eyebrow); text-transform: uppercase;
+  color: var(--faint);
+}
+#pp-body h2::after, #rp-body h2::after {
+  content: ""; flex: 1 1 auto; height: 1px;
+  background: color-mix(in oklch, var(--ink) 10%, transparent);
+}
+
 /* ---- Recording ---- */
 .rec { margin-bottom: var(--s-4); }
 .reclabel {
@@ -539,8 +666,18 @@ dl.props dt { color: var(--faint); font-family: var(--font-mono); font-size: var
               letter-spacing: var(--track-meta); text-transform: uppercase; min-width: 7.5rem; }
 dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--dim); }
 
-.actions { display: flex; gap: var(--s-2); }
-.actions button { flex: 1; }
+.actions { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+.actions button { flex: 1 1 auto; min-width: 4.2rem; padding: var(--s-1) var(--s-2); }
+/* Delete sits apart and reads as what it is. It was indistinguishable from Zoom to. */
+.actions button.danger {
+  flex: 0 0 auto; margin-left: auto;
+  color: color-mix(in oklch, var(--ink) 82%, #ff8a7a);
+  border-color: color-mix(in oklch, #ff8a7a 26%, transparent);
+}
+.actions button.danger:hover {
+  color: var(--sunk); background: color-mix(in oklch, #ff8a7a 78%, var(--ink));
+  border-color: transparent;
+}
 
 /* ---- Map ---- */
 #map { position: relative; background: var(--sunk); }
@@ -751,11 +888,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 /* Which of the two things a point can hold. Two buttons, because there are two answers
    and a select would hide one of them. */
-.recmode { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-1); }
-#hitgrid { display: grid; gap: var(--s-1); }
+/* Two answers to one question, so they share a frame and only one is lit. */
+.recmode {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  border: 1px solid var(--bdr); border-radius: 2px; overflow: hidden;
+}
+.recmode button { border: 0; border-radius: 0; }
+.recmode button + button { border-left: 1px solid var(--bdr); }
+/* Two by two rather than four rows. Four hits is a small set and stacking them cost the
+   card more height than it had, which put the actions below the fold. */
+#hitgrid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-1); }
 .hitrow {
-  display: grid; grid-template-columns: 3.2rem 1fr auto; align-items: center;
-  gap: var(--s-2);
+  display: grid; grid-template-columns: 2.4rem 1fr auto; align-items: center;
+  gap: var(--s-1);
+  min-width: 0;
   font-family: var(--font-mono); font-size: var(--t-xs);
   letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint);
 }
@@ -782,14 +928,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .rpat i.on, .rpat i.on.beat { background: var(--accent); }
 .rpat i.on { background: var(--accent); }
 .rpat i.now { outline: 1px solid var(--lamp); }
+.rpempty {
+  display: flex; flex-direction: column; gap: var(--s-2);
+  max-width: 40rem; padding: var(--s-5) 0;
+}
+.rpempty-t {
+  margin: 0; font-family: var(--font-display); font-size: var(--t-md); color: var(--dim);
+}
+.rpempty .hint { margin: 0; }
 .rname { display: flex; flex-direction: column; line-height: 1.25; }
 .rname em {
   font-style: normal; text-transform: none; letter-spacing: 0;
   color: var(--dim); font-size: 10px;
 }
+/* Three label-slider-value groups on one line run together: a value sits right beside the
+   next label and reads as belonging to it. The gap between groups is wider than the gap
+   inside them, which is all it takes to separate them. */
 .rvoice {
   display: grid; grid-template-columns: 5.4rem 1fr 1fr 1fr; align-items: center;
-  gap: var(--s-2); margin-bottom: var(--s-1);
+  gap: var(--s-5); margin-bottom: var(--s-1);
   font-family: var(--font-mono); font-size: var(--t-xs);
   letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint);
 }
@@ -831,7 +988,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .pprow button { width: 100%; }
 .ppwide { column-span: all; }
 .ppgrid {
-  display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--s-1);
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--s-1);
   margin-bottom: var(--s-1);
 }
 .ppchord {
@@ -855,6 +1012,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   letter-spacing: 0.04em; text-transform: none; color: var(--dim);
 }
 .ppgen { padding: 2px var(--s-2); font-size: var(--t-xs); }
+/* A morph carries four controls and a readout. Sharing the chord cell's shape put two
+   selects next to two buttons in about a hundred pixels and they overlapped. Its own
+   three-row shape gives each row the width it needs. */
+.ppmorph {
+  grid-template-columns: 1.1rem auto auto 1fr;
+  grid-row-gap: 3px;
+}
+.ppmorph > select { grid-column: span 2; }
+.ppmorph > input[type="range"] { grid-column: span 2; }
+.ppmorph .ppres { grid-column: 1 / -1; }
 /* The action belongs beside its heading, not on a line of its own underneath it — two
    buttons each taking a full row cost more height than the whole Zones section. */
 .pphead {
@@ -1099,12 +1266,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <div class="empty" id="nosel">Nothing selected. Click a point or a route on the map.</div>
 
       <div id="card" hidden>
-      <input type="text" id="f-name" placeholder="Unnamed" aria-label="Name">
+      <div class="cardhead">
+        <span class="ckind" id="f-kind">Point</span>
+        <input type="text" id="f-name" placeholder="Unnamed" aria-label="Name">
+      </div>
       <textarea id="f-note" rows="2" placeholder="What is here?" aria-label="Note"></textarea>
-      <div class="iconpick" id="card-icons" role="group" aria-label="Point type"></div>
+      <div class="cgroup" id="g-type">
+        <span class="eyebrow">Type</span>
+        <div class="iconpick" id="card-icons" role="group" aria-label="Point type"></div>
+      </div>
       <input type="text" id="f-tags" placeholder="tags, comma separated" aria-label="Tags">
-      <div class="rec">
-        <span class="reclabel">Recording</span>
+      <div class="rec cgroup">
+        <span class="eyebrow">Sound</span>
         <div class="recmode" role="group" aria-label="What this point holds">
           <button type="button" data-amode="soundscape" aria-pressed="true"
                   title="One recording of any length, played as it is">Soundscape</button>
@@ -1130,7 +1303,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         </div>
       </div>
 
-      <p class="cardmeta" id="f-meta"></p>
+      <div class="cgroup">
+        <span class="eyebrow">Where and when</span>
+        <p class="cardmeta" id="f-meta"></p>
+      </div>
       <div class="chips">
         <button type="button" id="f-sensitive" aria-pressed="false"
           title="A nest, den or rare species — its position is fuzzed when the archive is published">sensitive</button>
@@ -2828,6 +3004,55 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   });
 
+  /* ---------- Control affordances ----------
+     What separates a panel from a form. The filled part of every track follows its value;
+     holding shift while dragging moves one step at a time instead of jumping to the pointer;
+     double-clicking returns a control to the value the patch was designed with. The last two
+     are what audio people check for first, and their absence reads as unfinished however
+     good the rest looks (C-12 — met in substance here rather than in the shape of a knob,
+     because twenty-five knobs cannot also fit on one screen). */
+  function paintRange(el) {
+    var lo = +el.min || 0, hi = el.max === "" ? 100 : +el.max, v = +el.value;
+    var pct = hi > lo ? ((v - lo) / (hi - lo)) * 100 : 0;
+    el.style.setProperty("--fill", pct.toFixed(2) + "%");
+  }
+
+  function syncRanges(root) {
+    (root || document).querySelectorAll('input[type="range"]').forEach(paintRange);
+  }
+
+  var fineLast = new WeakMap();
+  document.addEventListener("input", function (e) {
+    var el = e.target;
+    if (!el || el.type !== "range") { return; }
+    /* Shift narrows a drag to single steps. The browser has already jumped the value to the
+       pointer, so this pulls it back to one step from where it was. */
+    if (e.shiftKey && fineLast.has(el)) {
+      var was = fineLast.get(el), step = +el.step || 1, now = +el.value;
+      if (now !== was) {
+        var next = was + (now > was ? step : -step);
+        var lo = +el.min || 0, hi = el.max === "" ? 100 : +el.max;
+        el.value = Math.max(lo, Math.min(hi, next));
+      }
+    }
+    fineLast.set(el, +el.value);
+    paintRange(el);
+  }, true);
+
+  document.addEventListener("pointerdown", function (e) {
+    if (e.target && e.target.type === "range") { fineLast.set(e.target, +e.target.value); }
+  }, true);
+
+  /* Double-click resets. The default travels on the element so one handler serves every
+     panel without knowing what any of them contain. */
+  document.addEventListener("dblclick", function (e) {
+    var el = e.target;
+    if (!el || el.type !== "range" || el.dataset.def === undefined) { return; }
+    el.value = el.dataset.def;
+    paintRange(el);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }, true);
+
   /* ---------- The rhythm panel ---------- */
   var RHYTHM_FIELDS = [
     { k: "on", label: "rhythm", toggle: true },
@@ -2846,6 +3071,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var r = rhythmOf(f), body = $("#rp-body");
     $("#rp-title").textContent = "Rhythm \u00b7 " + label(f);
     body.textContent = "";
+
+    /* C-5: the empty state, which is where a panel usually gives itself away. A sequencer
+       with nothing to sequence should say so and say where to go, not offer four rows of
+       controls that do nothing when you move them. */
+    var hitsOn = f.properties.hits || {};
+    var filled = HIT_SLOTS.filter(function (k) { return hitsOn[k]; });
+    if (!filled.length) {
+      var none = document.createElement("div");
+      none.className = "rpempty";
+      var et = document.createElement("p");
+      et.className = "rpempty-t";
+      et.textContent = "No hits attached yet.";
+      var ed = document.createElement("p");
+      ed.className = "hint";
+      ed.textContent = "This point is set to four hits. Attach a low, a mid, a high and a " +
+        "free sound on its card, and each one gets a Euclidean pattern here, in tempo " +
+        "with the route.";
+      none.appendChild(et); none.appendChild(ed);
+      body.appendChild(none);
+      return;
+    }
 
     /* Nothing is rebuilt on an edit: the sequencer reads the pattern every step, so a change
        is heard on the next one rather than needing the point reloaded. */
@@ -2916,6 +3162,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var inp = document.createElement("input");
         inp.type = "range"; inp.min = spec[1]; inp.max = spec[2]; inp.step = spec[3];
         inp.value = cfg[spec[0]];
+        inp.dataset.def = defaultRhythm().voices[slot][spec[0]];
+        inp.title = "Shift-drag for fine steps · double-click to reset";
         var out = document.createElement("i");
         var show = function () {
           out.textContent = spec[3] < 1 ? (+inp.value).toFixed(2) : inp.value;
@@ -2934,6 +3182,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       body.appendChild(row);
       drawPattern(slot, r);
     });
+    syncRanges(body);
     markPattern();
   }
 
@@ -2999,6 +3248,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       input = document.createElement("input");
       input.type = "range"; input.min = fl.min; input.max = fl.max; input.step = fl.step;
       input.value = r[fl.k];
+      input.dataset.def = defaultRhythm()[fl.k];
+      input.title = "Shift-drag for fine steps · double-click to reset";
       var show = function () {
         val.textContent = fl.step < 1 ? (+input.value).toFixed(2) : input.value;
       };
@@ -4567,8 +4818,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     ];
   }
   var DIVISIONS = ["4n", "4n.", "8n", "8n.", "16n", "2n"];
-  var DIV_LABEL = { "1n": "1/1", "2n": "1/2", "4n": "1/4", "4n.": "1/4·", "8n": "1/8",
-                    "8n.": "1/8·", "16n": "1/16" };
+  /* A dotted division is written with a dot after it, and the readout then joins it to the
+     seconds with another one: "1/4· · 1.25 s" reads as a typo. The dot becomes a mark. */
+  var DIV_LABEL = { "1n": "1/1", "2n": "1/2", "4n": "1/4", "4n.": "1/4 dotted", "8n": "1/8",
+                    "8n.": "1/8 dotted", "16n": "1/16" };
 
   /* Each point type gets its own voice. A water zone and an insect zone should not sound
      the same, and the icons already say which is which. */
@@ -4857,6 +5110,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     renderProgression(f, patch, body);
     renderMorphs(f, patch, body);
+    syncRanges(body);
   }
 
   function buildRow(fl, patch, f) {
@@ -4900,6 +5154,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         input.type = "range";
         input.min = fl.min; input.max = fl.max; input.step = fl.step;
         input.value = pget(patch, fl.k);
+        try { input.dataset.def = pget(defaultPatch(), fl.k); } catch (e) { /* none */ }
+        input.title = "Shift-drag for fine steps · double-click to reset";
         var show = function () {
           var v = +input.value;
           val.textContent = fl.fmt ? fl.fmt(v, patch)
@@ -4955,7 +5211,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     patch.morph.list.forEach(function (m, i) {
       var cell = document.createElement("div");
-      cell.className = "ppchord";
+      cell.className = "ppchord ppmorph";
 
       var n = document.createElement("b");
       n.textContent = (i + 1);
@@ -6034,6 +6290,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var f = selected ? feature(selected) : null;
     $("#card").hidden = !f;
     $("#nosel").hidden = !!f;
+    if ($("#hint")) { $("#hint").hidden = !!f; }
     if (!f) { clearPlayer(); return; }
     loadPlayer(f);
 
@@ -6059,6 +6316,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderAudioMode(f);
     $("#f-walk").setAttribute("aria-pressed", String(!!pacer && pacer.f === f));
 
+    $("#f-kind").textContent = f.properties.kind === "route" ? "Route" : "Point";
+    $("#g-type").hidden = f.properties.kind !== "point";
     $("#card-icons").hidden = f.properties.kind !== "point";
     if (f.properties.kind === "point") {
       renderIconPicker($("#card-icons"), f.properties.icon || null, function (k) {
