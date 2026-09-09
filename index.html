@@ -904,6 +904,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
   padding-left: var(--s-1); padding-right: var(--s-1);
 }
+.grainenv {
+  display: block; width: 100%; height: 44px; margin-top: var(--s-1);
+  background: color-mix(in oklch, var(--sunk) 55%, transparent);
+  border-radius: 2px;
+}
 .grainwave {
   display: block; width: 100%; height: 68px;
   margin-bottom: var(--s-3);
@@ -3143,10 +3148,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "spread", label: "spread", min: 0, max: 1, step: 0.02 },
     { k: "scatter", label: "scatter", min: 0, max: 1, step: 0.02 },
     { k: "pitch", label: "pitch", min: -24, max: 24, step: 1, unit: " st" },
-    { k: "window", label: "envelope", min: 0, max: 1, step: 0.02 },
-    { k: "shape", label: "attack \u2194 decay", min: 0, max: 1, step: 0.02 },
     { k: "gain", label: "level", min: 0, max: 1, step: 0.05 },
     { k: "vary", label: "vary per hit", min: 0, max: 1, step: 0.02 }
+  ];
+
+  /* Fractions of the grain, shown as percentages, because that is what they are — a grain
+     whose size is being varied per hit cannot hold a time in milliseconds and keep its
+     shape. */
+  var GRAIN_ENV_FIELDS = [
+    { k: "attack", label: "attack", min: 0, max: 1, step: 0.01,
+      fmt: function (v) { return Math.round(v * 100) + "%"; } },
+    { k: "decay", label: "decay", min: 0, max: 1, step: 0.01,
+      fmt: function (v) { return Math.round(v * 100) + "%"; } },
+    { k: "sustain", label: "sustain", min: 0, max: 1, step: 0.02,
+      fmt: function (v) { return Math.round(v * 100) + "%"; } },
+    { k: "release", label: "release", min: 0, max: 1, step: 0.01,
+      fmt: function (v) { return Math.round(v * 100) + "%"; } }
   ];
 
   /* The grains panel. One Euclidean line at the top because that is the rhythm, then the
@@ -3181,6 +3198,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     var cols = document.createElement("div");
     cols.className = "ppcols";
+    /* Four columns of content in a grid that defaults to three puts the last one on a row
+       of its own — the same way a third mode button wrapped out of a two-column group.
+       Set explicitly, and stepped down rather than squeezed on a narrow panel. */
+    cols.style.setProperty("--ppcols", innerWidth >= 1220 ? 4 : (innerWidth >= 820 ? 2 : 1));
     var col = document.createElement("div");
     col.className = "ppcol";
     var h1 = document.createElement("h2");
@@ -3204,6 +3225,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
     cols.appendChild(col2);
 
+    var colE = document.createElement("div");
+    colE.className = "ppcol";
+    var hE = document.createElement("h2");
+    hE.textContent = "The grain envelope";
+    colE.appendChild(hE);
+    GRAIN_ENV_FIELDS.forEach(function (fl) {
+      colE.appendChild(buildRhythmRow(fl, g, function () { save(); grainEnvDraw(); }));
+    });
+    var eshape = document.createElement("canvas");
+    eshape.className = "grainenv";
+    eshape.title = "The shape every grain is cut to, before vary moves it";
+    colE.appendChild(eshape);
+    cols.appendChild(colE);
+
     var col3 = document.createElement("div");
     col3.className = "ppcol";
     var note = document.createElement("p");
@@ -3217,9 +3252,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "bites, across the whole recording at one; scatter spreads the grains around that " +
       "point inside a single burst; vary changes the shape of the cloud itself — size, " +
       "number, spread, level, envelope and pitch by whole semitones. " +
-      "Envelope is how much of each grain is shaped rather than cut — at zero the grain " +
-      "keeps whatever transient the recording had, at one it is all curve. Attack \u2194 decay " +
-      "moves the peak inside it: left is a struck sound, right is a swell that stops dead.";
+      "The envelope is four stages as fractions of the grain, so it keeps its shape when " +
+      "the size varies: a short attack into a long release is a struck sound, a long " +
+      "attack into a short release is a swell that stops dead, and sustain is the level " +
+      "held in between. The marks on the waveform are drawn in that shape, after vary has " +
+      "moved it.";
     col3.appendChild(note);
     var strip = document.createElement("div");
     strip.className = "rpat grainpat";
@@ -3250,10 +3287,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       g.scatter = +(Math.random() * 0.5).toFixed(2);
       g.vary = +(Math.random() * 0.6).toFixed(2);
       g.roam = +(0.4 + Math.random() * 0.6).toFixed(2);
-      g.window = +(0.3 + Math.random() * 0.7).toFixed(2);
       /* Weighted toward the struck end: this is a rhythm section, and a bar of nothing but
          backwards swells has no pulse in it. */
-      g.shape = +Math.pow(Math.random(), 2).toFixed(2);
+      g.attack = +(Math.pow(Math.random(), 2.2) * 0.5).toFixed(2);
+      g.decay = +(Math.random() * 0.5).toFixed(2);
+      g.sustain = +(Math.random() * 0.8).toFixed(2);
+      g.release = +(0.15 + Math.random() * 0.6).toFixed(2);
       save();
       renderRhythmPanel();
       toast("E(" + g.pulses + "," + st + ") \u00b7 " + g.count + " grains");
@@ -3261,6 +3300,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     mhead.appendChild(rnd);
     body.appendChild(mhead);
     markGrainPattern();
+    grainEnvDraw();
     grainWaveStart();
   }
 
@@ -3325,13 +3365,69 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var R = (bed && bed.rhythms) ? bed.rhythms[f.properties.id] : null;
     if (!R || !R.recent) { return; }
     var now = performance.now();
+    var mid = h / 2, amp = h / 2 - 1;
     for (var i = 0; i < R.recent.length; i++) {
       var hit = R.recent[i], age = now - hit.at;
       if (age < 0 || age > 1400) { continue; }
       var alpha = 0.9 * (1 - age / 1400);
       ctx.fillStyle = "rgba(214,236,206," + alpha.toFixed(3) + ")";
-      ctx.fillRect(hit.pos * w, 0, Math.max(1, hit.len * w), h);
+      var x = hit.pos * w, gw = hit.len * w;
+      /* Under about six pixels the shape is smaller than the line that would draw it, so
+         a mark is more honest than a curve nobody can read. */
+      if (gw < 6 || hit.a === undefined) {
+        ctx.fillRect(x, 0, Math.max(1, gw), h);
+        continue;
+      }
+      var a = hit.a, d = hit.d, su = hit.s, r2 = hit.r;
+      var hold = Math.max(0, 1 - a - d - r2);
+      ctx.beginPath();
+      ctx.moveTo(x, mid);
+      ctx.lineTo(x + a * gw, mid - amp);
+      ctx.lineTo(x + (a + d) * gw, mid - amp * su);
+      ctx.lineTo(x + (a + d + hold) * gw, mid - amp * su);
+      ctx.lineTo(x + gw, mid);
+      ctx.lineTo(x + (a + d + hold) * gw, mid + amp * su);
+      ctx.lineTo(x + (a + d) * gw, mid + amp * su);
+      ctx.lineTo(x + a * gw, mid + amp);
+      ctx.closePath();
+      ctx.fill();
     }
+  }
+
+  /* The shape as set, drawn once beside its own faders. The marks on the waveform show
+     what actually played, which vary has moved; this shows what was asked for, so the two
+     together say how far the variation is taking it. */
+  function grainEnvDraw() {
+    var cv = document.querySelector("#rp-body .grainenv");
+    if (!cv) { return; }
+    var f = feature(selected);
+    if (!f) { return; }
+    var w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) { return; }
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (cv.width !== Math.round(w * dpr)) {
+      cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    }
+    var ctx = cv.getContext("2d");
+    if (!ctx) { return; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var g = rhythmOf(f).grains || defaultGrains();
+    var e = grainEnvelope(g, 1);           /* a grain of length 1, so the shape is the shape */
+    ctx.fillStyle = "rgba(186,206,181,0.22)";
+    ctx.strokeStyle = "rgba(214,236,206,0.9)";
+    ctx.lineWidth = 1;
+    var pad = 2, hh = h - pad * 2;
+    function y(v) { return pad + hh * (1 - v); }
+    ctx.beginPath();
+    ctx.moveTo(0, y(0));
+    ctx.lineTo(e.a * w, y(1));
+    ctx.lineTo((e.a + e.d) * w, y(e.s));
+    ctx.lineTo((e.a + e.d + e.hold) * w, y(e.s));
+    ctx.lineTo(w, y(0));
+    ctx.stroke();
+    ctx.lineTo(w, y(0)); ctx.lineTo(0, y(0)); ctx.closePath();
+    ctx.fill();
   }
 
   var gwRAF = null;
@@ -5518,7 +5614,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return {
       pulses: 11, rotate: 0, offset: 0.15, grain: 90, count: 6,
       spread: 0.5, scatter: 0.25, gain: 0.85, pitch: 0, vary: 0.35, roam: 1,
-      shape: 0.2, window: 0.7
+      /* Attack, decay and release are fractions of the grain rather than milliseconds,
+         because grain size is varied per hit — a fixed 20ms attack is the whole envelope
+         on a 30ms grain and a click on a 400ms one. Sustain is a level, not a time; the
+         hold fills whatever the other three leave. */
+      attack: 0.04, decay: 0.3, sustain: 0.5, release: 0.45
     };
   }
 
@@ -5532,6 +5632,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!r.grains) { r.grains = defaultGrains(); }
     /* Field by field, so a point saved before a control existed gains it rather than being
        reset to defaults it never chose. */
+    /* The two-number envelope became four. Anything saved with the old pair is carried
+       across rather than reset: window was how much of the grain was shaped and shape was
+       where its peak sat, which is an attack and a release with no decay or sustain. */
+    if (r.grains.attack === undefined && r.grains.window !== undefined) {
+      var wOld = Math.max(0, Math.min(1, r.grains.window));
+      var sOld = Math.max(0, Math.min(1, r.grains.shape === undefined ? 0.2 : r.grains.shape));
+      var span = 0.04 + wOld * 0.96;
+      r.grains.attack = +(span * sOld).toFixed(3);
+      r.grains.release = +(span * (1 - sOld)).toFixed(3);
+      r.grains.decay = 0;
+      r.grains.sustain = 1;
+    }
+    delete r.grains.window;
+    delete r.grains.shape;
     var gd = defaultGrains();
     Object.keys(gd).forEach(function (k) {
       if (r.grains[k] === undefined) { r.grains[k] = gd[k]; }
@@ -5703,9 +5817,43 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       scatter: clamp((g.scatter === undefined ? 0.25 : g.scatter) + r() * v * 0.5, 0, 1),
       pitch:   (g.pitch || 0) + Math.round(r() * v * 7),
       gain:    clamp((g.gain === undefined ? 0.85 : g.gain) * (1 + r() * v * 0.45), 0.02, 1),
-      shape:   clamp((g.shape === undefined ? 0.2 : g.shape) + r() * v * 0.45, 0, 1),
-      window:  clamp((g.window === undefined ? 0.7 : g.window) + r() * v * 0.5, 0, 1)
+      attack:  clamp((g.attack === undefined ? 0.04 : g.attack) + r() * v * 0.25, 0, 1),
+      decay:   clamp((g.decay === undefined ? 0.3 : g.decay) + r() * v * 0.35, 0, 1),
+      sustain: clamp((g.sustain === undefined ? 0.5 : g.sustain) + r() * v * 0.4, 0, 1),
+      release: clamp((g.release === undefined ? 0.45 : g.release) + r() * v * 0.4, 0, 1)
     };
+  }
+
+  /* ---- The grain envelope ----
+     A real four-stage envelope rather than a fade in and a fade out, because a fade pair
+     can only make a shape that rises and falls once. Attack, decay and release are
+     fractions of the grain and sustain is the level between them, so the hold fills
+     whatever the other three leave.
+
+     Fractions rather than milliseconds because grain size varies per hit: a fixed 20ms
+     attack is the entire envelope on a 30ms grain and a click on a 400ms one, so the shape
+     would change every time the size did.
+
+     If the three times ask for more than the grain they are scaled to fit rather than
+     clipped, which keeps their proportions — an envelope asked for at twice the available
+     length should be the same shape at half the speed, not the first half of itself with
+     the tail cut off. Each stage keeps a floor of 0.8ms, because under about a millisecond
+     a ramp is a step and a step is a click (A-3). */
+  function grainEnvelope(g, grainSec) {
+    function c(x, d) { return Math.max(0, Math.min(1, x === undefined ? d : x)); }
+    var a = c(g.attack, 0.04), d = c(g.decay, 0.3), r = c(g.release, 0.45);
+    var sus = c(g.sustain, 0.5);
+    var floor = Math.min(0.0008, grainSec / 8);
+    var aS = Math.max(floor, a * grainSec);
+    var dS = Math.max(floor, d * grainSec);
+    var rS = Math.max(floor, r * grainSec);
+    var sum = aS + dS + rS;
+    if (sum > grainSec) {
+      var k = grainSec / sum;
+      aS *= k; dS *= k; rS *= k;
+    }
+    return { a: aS, d: dS, r: rS, s: sus, hold: Math.max(0, grainSec - aS - dS - rS),
+             len: grainSec };
   }
 
   function fireGrains(R, gSet, time, stepSecs) {
@@ -5714,32 +5862,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var g = variedGrains(gSet);
     var n = Math.max(1, Math.min(32, g.count | 0));
     var grainSec = Math.max(0.01, Math.min(2, (g.grain || 90) / 1000));
-    /* ---- The grain envelope ----
-       Two numbers rather than a list of named windows, because the two that matter here
-       are continuous and both belong in the morph and vary systems: how much of the grain
-       is envelope at all, and where inside it the peak sits.
-
-       Window at zero leaves the grain almost as it was cut, keeping whatever transient the
-       recording had, with just enough ramp not to click. At one the fades consume the whole
-       grain and there is no flat top left — the difference between hearing a fragment of a
-       recording and hearing a shaped particle of it.
-
-       Shape decides the balance. Near zero the attack is instant and the decay is the rest
-       of the grain, which is what makes a field recording behave like a drum. Near one it
-       is reversed: a swell that stops dead, which is the sound of tape played backwards
-       and the reason granular rhythm sections do not just sound like chopping. Half is
-       symmetric, the neutral bell. */
-    var win = Math.max(0, Math.min(1, g.window === undefined ? 0.7 : g.window));
-    var shp = Math.max(0, Math.min(1, g.shape === undefined ? 0.2 : g.shape));
-    /* Floored at 2ms total: a window of zero still has to protect against the click, and
-       below about a millisecond a ramp is a step (A-3). */
-    var envTotal = Math.max(0.002, Math.min(grainSec, grainSec * (0.04 + win * 0.96)));
-    var fadeIn = Math.max(0.0008, envTotal * shp);
-    var fadeOut = Math.max(0.0008, envTotal * (1 - shp));
-    if (fadeIn + fadeOut > grainSec) {
-      var k = grainSec / (fadeIn + fadeOut);
-      fadeIn *= k; fadeOut *= k;
-    }
+    var env = grainEnvelope(g, grainSec);
     var spread = Math.max(0, Math.min(1, g.spread === undefined ? 0.5 : g.spread)) * stepSecs;
     var scatter = Math.max(0, Math.min(1, g.scatter === undefined ? 0.25 : g.scatter));
     var dur = buf.duration;
@@ -5749,27 +5872,46 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var at = time + (n === 1 ? 0 : (i / n) * spread);
       var off = base + (Math.random() - 0.5) * scatter * dur;
       off = Math.max(0, Math.min(Math.max(0, dur - grainSec), off));
-      var src;
+      var src, vca;
       try {
+        /* The source carries no fade of its own now: the envelope is scheduled on a gain
+           after it, because a four-stage shape cannot be expressed as a fade pair. */
         src = new Tone.ToneBufferSource({
-          url: buf, fadeIn: fadeIn, fadeOut: fadeOut, curve: "linear",
-          onended: function () { try { this.dispose(); } catch (e) { /* gone */ } }
+          url: buf, fadeIn: 0, fadeOut: 0, curve: "linear",
+          onended: function () {
+            try { this.dispose(); } catch (e) { /* gone */ }
+          }
         });
+        vca = new Tone.Gain(0);
       } catch (e) { return; }   /* no ToneBufferSource in this build */
       src.playbackRate.value = Math.pow(2, (g.pitch || 0) / 12) *
                                (1 + (Math.random() - 0.5) * 0.02);
-      src.connect(R.gain);
+      src.connect(vca);
+      vca.connect(R.gain);
       /* Level falls slightly across the burst so it reads as one gesture with a shape
          rather than as n separate hits of equal weight. */
       var w = lvl * (1 - 0.35 * (i / Math.max(1, n)));
       try {
-        src.start(at, off, grainSec, w);
-        /* Where it bit, as a fraction of the file, for the waveform to mark. Capped so a
-           long walk past a dense point cannot grow this without bound. */
+        var p0 = vca.gain;
+        p0.setValueAtTime(0, at);
+        p0.linearRampToValueAtTime(w, at + env.a);
+        p0.linearRampToValueAtTime(w * env.s, at + env.a + env.d);
+        p0.setValueAtTime(w * env.s, at + env.a + env.d + env.hold);
+        p0.linearRampToValueAtTime(0, at + grainSec);
+        src.start(at, off, grainSec);
+        /* Where it bit and what shape it was, for the waveform to draw. Capped so a long
+           walk past a dense point cannot grow this without bound. */
         R.recent.push({ at: performance.now() + (at - Tone.now()) * 1000,
-                        pos: off / dur, len: grainSec / dur });
+                        pos: off / dur, len: grainSec / dur,
+                        a: env.a / grainSec, d: env.d / grainSec,
+                        s: env.s, r: env.r / grainSec });
         if (R.recent.length > 96) { R.recent.splice(0, R.recent.length - 96); }
-      } catch (e) { try { src.dispose(); } catch (e2) {} }
+        setTimeout(function () { try { vca.dispose(); } catch (e) {} },
+                   (grainSec + (at - Tone.now())) * 1000 + 400);
+      } catch (e) {
+        try { src.dispose(); } catch (e2) {}
+        try { vca.dispose(); } catch (e3) {}
+      }
     }
   }
 
