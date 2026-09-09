@@ -4040,8 +4040,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     this._env.connect(this._tone); this._tone.connect(this.output);
     this._a.start(); this._b.start();
     this._idx = -1;
-    this.harmonicity = new Tone.Signal(1);
-    this.modulationIndex = new Tone.Signal(4);
+    this.harmonicity = new Tone.Signal(0.35);
+    this.modulationIndex = new Tone.Signal(0.5);
     this._poll = setInterval(this._follow.bind(this), 120);
     this._follow();
   }
@@ -4049,7 +4049,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      follows. The table pair is rebuilt only when the position crosses into a new pair, which
      is rare - setting partials every frame would cost far more than the crossfade does. */
   WavetableVoice.prototype._follow = function () {
-    var pos = (this.harmonicity.value - 0.25) / 4.75;
+    var pos = this.harmonicity.value;
     pos = pos < 0 ? 0 : pos > 1 ? 1 : pos;
     var span = WAVE_TABLES.length - 1, x = pos * span;
     var i = Math.min(span - 1, Math.floor(x)), f = x - i;
@@ -4060,7 +4060,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     this._ga.gain.rampTo(1 - f, 0.12);
     this._gb.gain.rampTo(f, 0.12);
-    this._tone.frequency.rampTo(500 + (this.modulationIndex.value / 16) * 9000, 0.15);
+    var br = this.modulationIndex.value;
+    br = br < 0 ? 0 : br > 1 ? 1 : br;
+    this._tone.frequency.rampTo(500 + br * 9000, 0.15);
   };
   WavetableVoice.prototype.set = function (o) {
     if (!o) { return this; }
@@ -4112,18 +4114,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     this._noise.connect(this._exc); this._exc.connect(this._env);
     this._env.connect(this._comb); this._comb.connect(this.output);
     this._noise.start();
-    this.harmonicity = new Tone.Signal(1);
-    this.modulationIndex = new Tone.Signal(4);
+    this.harmonicity = new Tone.Signal(0.4);
+    this.modulationIndex = new Tone.Signal(0.5);
     this._poll = setInterval(this._follow.bind(this), 120);
     this._follow();
   }
   CombVoice.prototype._follow = function () {
-    var d = (this.harmonicity.value - 0.25) / 4.75;
+    var d = this.harmonicity.value;
     d = d < 0 ? 0 : d > 1 ? 1 : d;
     this._comb.dampening = 600 + d * 7000;
     /* Never to one. A comb at unity feedback does not decay, it accumulates, and the last
        thing here that behaved that way was the inner voice that had to be removed. */
-    this._comb.resonance.rampTo(0.55 + (this.modulationIndex.value / 16) * 0.42, 0.15);
+    var r = this.modulationIndex.value;
+    r = r < 0 ? 0 : r > 1 ? 1 : r;
+    this._comb.resonance.rampTo(0.55 + r * 0.42, 0.15);
   };
   CombVoice.prototype.set = WavetableVoice.prototype.set;
   CombVoice.prototype.connect = WavetableVoice.prototype.connect;
@@ -4176,6 +4180,101 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return new Tone.FMSynth();
   }
 
+  /* ---- What the two timbre controls are, per instrument ----
+     A ratio and a modulation depth mean something on an FM voice and nothing at all on a
+     plucked string. Rather than show every voice the same two faders and let most of them
+     do nothing, each instrument names its own two, with its own range, its own default and
+     its own destination inside the synth. The patch stores two numbers either way; what
+     changes is what they are called, how far they go and where they land.
+
+     The morphs read the same table, so a morph pointed at a voice's colour sweeps whatever
+     that instrument calls colour, across that instrument's range - which is the difference
+     between a morph you can hear and a morph that moves a parameter the current synth does
+     not have. */
+  var SYNTH_PARAMS = {
+    fm: {
+      harm:  { label: "ratio", min: 0.25, max: 4, step: 0.25, def: 1, path: "harmonicity" },
+      index: { label: "depth", min: 0, max: 16, step: 0.5, def: 4, path: "modulationIndex" }
+    },
+    am: {
+      harm:  { label: "ratio", min: 0.25, max: 4, step: 0.25, def: 1.5, path: "harmonicity" },
+      index: { label: "depth", min: 0, max: 16, step: 0.5, def: 3, path: "modulationIndex" }
+    },
+    duo: {
+      harm:  { label: "detune", min: 0.25, max: 4, step: 0.25, def: 1.5, path: "harmonicity" },
+      index: { label: "vibrato", min: 0, max: 1, step: 0.05, def: 0.2, path: "vibratoAmount" }
+    },
+    mono: {
+      harm:  { label: "resonance", min: 0.5, max: 14, step: 0.5, def: 2, path: "filter.Q" },
+      index: { label: "filter env", min: 0, max: 7, step: 0.25, def: 3,
+               path: "filterEnvelope.octaves" }
+    },
+    simple: {
+      harm:  { label: "detune", min: -24, max: 24, step: 1, def: 0, path: "detune" },
+      index: { label: "release", min: 0.2, max: 6, step: 0.1, def: 1.6, path: "envelope.release" }
+    },
+    pluck: {
+      harm:  { label: "damping", min: 300, max: 8000, step: 100, def: 3200, path: "dampening" },
+      index: { label: "resonance", min: 0.5, max: 0.99, step: 0.01, def: 0.92, path: "resonance" }
+    },
+    metal: {
+      harm:  { label: "harmonicity", min: 1, max: 12, step: 0.1, def: 4.1, path: "harmonicity" },
+      index: { label: "octaves", min: 0.4, max: 4, step: 0.1, def: 1.2, path: "octaves" }
+    },
+    membrane: {
+      harm:  { label: "pitch decay", min: 0.01, max: 0.4, step: 0.01, def: 0.12,
+               path: "pitchDecay" },
+      index: { label: "octaves", min: 1, max: 8, step: 0.1, def: 3.2, path: "octaves" }
+    },
+    wavetable: {
+      harm:  { label: "table", min: 0, max: 1, step: 0.02, def: 0.35, path: "harmonicity" },
+      index: { label: "brightness", min: 0, max: 1, step: 0.02, def: 0.5,
+               path: "modulationIndex" }
+    },
+    comb: {
+      harm:  { label: "damping", min: 0, max: 1, step: 0.02, def: 0.4, path: "harmonicity" },
+      index: { label: "resonance", min: 0, max: 1, step: 0.02, def: 0.5, path: "modulationIndex" }
+    }
+  };
+
+  function paramsFor(type) { return SYNTH_PARAMS[type] || SYNTH_PARAMS.fm; }
+
+  /* One setter for three kinds of destination: a Signal or Param takes a ramp, a plain
+     number is assigned. Assigning where a ramp is possible is what A-2 forbids, so the ramp
+     is tried first and the assignment is the fallback, not the other way round. */
+  function setParam(sy, path, v, ramp) {
+    if (!sy || !path) { return false; }
+    var parts = path.split("."), host = sy, i;
+    for (i = 0; i < parts.length - 1; i++) {
+      host = host && host[parts[i]];
+      if (!host) { return false; }
+    }
+    var key = parts[parts.length - 1], node = host[key];
+    if (node === undefined || node === null) { return false; }
+    if (typeof node.rampTo === "function") { node.rampTo(v, ramp); return true; }
+    if (typeof node === "object" && typeof node.value === "number") { node.value = v; return true; }
+    if (typeof node === "number") { host[key] = v; return true; }
+    return false;
+  }
+
+  /* A morph delivers 0 to 1; the instrument decides what that means. Where no morph points
+     at a control the patch's own value is used, so a destination nobody drives is left
+     where it was set rather than forced to the middle of a range. */
+  function applyTimbre(sy, type, patchHarm, mHarm, patchIndex, mIndex, ramp) {
+    if (!sy) { return; }
+    var P = paramsFor(type);
+    if (P.harm) {
+      setParam(sy, P.harm.path,
+               mHarm === null ? patchHarm : P.harm.min + mHarm * (P.harm.max - P.harm.min),
+               ramp);
+    }
+    if (P.index) {
+      setParam(sy, P.index.path,
+               mIndex === null ? patchIndex : P.index.min + mIndex * (P.index.max - P.index.min),
+               ramp);
+    }
+  }
+
   /* The old one is released and disposed a moment later rather than immediately: a synth
      disposed while it is still sounding cuts rather than releases, which is a click. */
   function swapSynth(holder, key, dest, type, settings) {
@@ -4195,6 +4294,51 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       setTimeout(function () { try { old.dispose(); } catch (e) {} }, 2500);
     }
     return sy;
+  }
+
+  /* ---- The drive blend ----
+     This was Tone.CrossFade, and the third voice was silent from the moment sound started
+     because of it. Not the wiring and not the patch: a CrossFade derives its two branch
+     gains from an internal constant source feeding a panner, and on the third voice that
+     source reported state "started" while emitting nothing at all. Measured, voice one's
+     internal constant put out 0 dBFS and voice three's put out silence, which left both
+     branch gains at zero and the node passing nothing. Four of these were built during
+     startup and the fourth was the one that failed.
+
+     Two gains summed do the same job with nothing hidden inside them: the blend is visible
+     in two numbers that can be read back, it cannot fail to start, and at zero the driven
+     branch is muted outright rather than leaking the -66 dB a CrossFade leaks at its null
+     (A-8). The fade is linear rather than equal-power, which is the right law here anyway -
+     these are two versions of one signal, not two different sources being panned between. */
+  function makeBlend(Tone, fade) {
+    var out = new Tone.Gain(1);
+    var a = new Tone.Gain(1 - fade).connect(out);
+    var b = new Tone.Gain(fade).connect(out);
+    var blend = { a: a, b: b, output: out };
+    blend.connect = function (d) { out.connect(d); return blend; };
+    blend.disconnect = function (d) {
+      try { d === undefined ? out.disconnect() : out.disconnect(d); } catch (e) {}
+      return blend;
+    };
+    blend.dispose = function () {
+      [a, b, out].forEach(function (n) { try { n.dispose(); } catch (e) {} });
+      return blend;
+    };
+    var held = fade;
+    blend.fade = {
+      rampTo: function (v, t) {
+        v = v < 0 ? 0 : (v > 1 ? 1 : v);
+        var secs = t === undefined ? 0.1 : t;
+        a.gain.rampTo(1 - v, secs);
+        b.gain.rampTo(v, secs);
+        held = v;
+      }
+    };
+    Object.defineProperty(blend.fade, "value", {
+      get: function () { return held; },
+      set: function (v) { blend.fade.rampTo(v, 0); }
+    });
+    return blend;
   }
 
   function buildVoice(Tone, patch) {
@@ -4225,7 +4369,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var padPre = new Tone.Gain(1);
     var padShape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 2.6); }, 2048);
     var padPost = new Tone.Gain(0.62);
-    var padDrive = new Tone.CrossFade(0);
+    var padDrive = makeBlend(Tone, 0);
     var padWarp = new Tone.Chorus({ frequency: 0.55, delayTime: 5.5, depth: 0.6, wet: 0 });
     padDry.connect(padDrive.a);
     padDry.connect(padPre); padPre.connect(padShape); padShape.connect(padPost);
@@ -4285,7 +4429,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var sectPre = new Tone.Gain(1);
     var sectShape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 3.2); }, 2048);
     var sectPost = new Tone.Gain(0.58);
-    var sectDrive = new Tone.CrossFade(0);
+    var sectDrive = makeBlend(Tone, 0);
     var sectWarp = new Tone.Chorus({ frequency: 1.7, delayTime: 3, depth: 0.7, wet: 0 });
     sectDry.connect(sectDrive.a);
     sectDry.connect(sectPre); sectPre.connect(sectShape); sectShape.connect(sectPost);
@@ -4319,7 +4463,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var v3Pre = new Tone.Gain(1);
     var v3Shape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 2.8); }, 2048);
     var v3Post = new Tone.Gain(0.6);
-    var v3Drive = new Tone.CrossFade(0);
+    var v3Drive = makeBlend(Tone, 0);
     var v3Warp = new Tone.Chorus({ frequency: 0.35, delayTime: 7, depth: 0.5, wet: 0 });
     v3Dry.connect(v3Drive.a);
     v3Dry.connect(v3Pre); v3Pre.connect(v3Shape); v3Shape.connect(v3Post);
@@ -4403,13 +4547,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var mDr = morphFor("voice.drive", tv2);
     var mWp = morphFor("voice.warp", tv2);
     ["bass", "top"].forEach(function (k) {
-      var sy = V.synth[k].synth;
-      if (sy.modulationIndex) {
-        sy.modulationIndex.rampTo(mIx === null ? patch.voice.index : 0.4 + mIx * 15, 0.4);
-      }
-      if (sy.harmonicity) {
-        sy.harmonicity.rampTo(mHm === null ? patch.voice.harm : 0.5 + mHm * 3.5, 0.4);
-      }
+      applyTimbre(V.synth[k].synth, patch.voice.synth,
+                  patch.voice.harm, mHm, patch.voice.index, mIx, 0.4);
     });
     /* A crossfade into a curve is not a drive control. The pad bus sits near -20dBFS, and
        tanh of a tenth is a straight line — measured, the whole range moved the 2-8kHz band
@@ -4514,13 +4653,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       V2.filter.frequency.rampTo(mCut === null ? 9000 : 900 * Math.pow(10, mCut), 0.2);
     }
     var mIdx = morphFor("sect.index", tNow);
-    if (V2.synth.modulationIndex) {
-      V2.synth.modulationIndex.rampTo(mIdx === null ? 7.5 : 1.5 * Math.pow(10.7, mIdx), 0.2);
-    }
     var mHarm = morphFor("sect.harm", tNow);
-    if (V2.synth.harmonicity) {
-      V2.synth.harmonicity.rampTo(mHarm === null ? patch.sect.harm : 0.5 + mHarm * 4.5, 0.3);
-    }
+    applyTimbre(V2.synth, patch.sect.synth,
+                patch.sect.harm, mHarm, patch.sect.index, mIdx, 0.3);
     var mDrv = morphFor("sect.drive", tNow);
     if (V2.drive) {
       var dv2 = mDrv === null ? patch.sect.drive : mDrv;
@@ -4644,14 +4779,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     var tv = bed.Tone.Transport.seconds;
     var mh = morphFor("v3.harm", tv);
-    var sy = V3.holder.synth;
-    if (sy && sy.harmonicity) {
-      sy.harmonicity.rampTo(mh === null ? patch.v3.harm : 0.5 + mh * 4, 0.4);
-    }
     var mi = morphFor("v3.index", tv);
-    if (sy && sy.modulationIndex) {
-      sy.modulationIndex.rampTo(mi === null ? patch.v3.index : 0.5 + mi * 14, 0.4);
-    }
+    var sy = V3.holder.synth;
+    applyTimbre(sy, patch.v3.synth, patch.v3.harm, mh, patch.v3.index, mi, 0.4);
     var md = morphFor("v3.drive", tv);
     if (V3.drive) {
       var dv = md === null ? patch.v3.drive : md;
@@ -4926,7 +5056,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var pre = new Tone.Gain(1);
     var shape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 3); }, 2048);
     var post = new Tone.Gain(0.6);
-    var drive = new Tone.CrossFade(0);
+    var drive = makeBlend(Tone, 0);
     var input = new Tone.Gain(1);
     input.connect(drive.a);
     input.connect(pre); pre.connect(shape); shape.connect(post); post.connect(drive.b);
@@ -5189,11 +5319,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "v3.drive",     label: "3rd drive" },
     { k: "v3.warp",      label: "3rd warp" }
   ];
-  function destLabel(k) {
+  /* A morph aimed at the pad's colour moves whatever the pad's instrument calls colour, so
+     the list says so: "pad · damping" on a pluck, "pad · ratio" on FM. The destination is
+     the same either way — it is the name that was hiding what it does. */
+  function destLabel(k, patch) {
+    var base = k;
     for (var i = 0; i < MORPH_DESTS.length; i++) {
-      if (MORPH_DESTS[i].k === k) { return MORPH_DESTS[i].label; }
+      if (MORPH_DESTS[i].k === k) { base = MORPH_DESTS[i].label; break; }
     }
-    return k;
+    if (!patch) { return base; }
+    var m = /^(voice|sect|v3)\.(harm|index)$/.exec(k);
+    if (!m) { return base; }
+    var voice = patch[m[1]];
+    if (!voice || !voice.synth) { return base; }
+    var d = paramsFor(voice.synth)[m[2] === "harm" ? "harm" : "index"];
+    return d && d.label ? base.split(" ")[0] + " \u00b7 " + d.label : base;
   }
   var MORPH_SHAPE_NOTE = {
     drift:  "a smoothed random walk — never the same twice, never sudden",
@@ -5551,7 +5691,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultPatch() {
     return {
-      version: 16, tempo: 72, key: 50, key2: 55,
+      version: 17, tempo: 72, key: 50, key2: 55,
       prog: defaultProgression(),
       bed:   { on: true, voices: 4 },
       voice: { on: true, gain: 0.45, density: 0.5,
@@ -5581,7 +5721,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                revWet: 0.14, revDecay: 1.2 },
       zones: { on: true },
       sect:  { on: true, n: 7, gain: 0.8, rhythm: "4n.", chordPull: 0.35,
-               harm: 2.02, drive: 0.18, warp: 0.14, synth: "fm" },
+               harm: 2.02, index: 7.5, drive: 0.18, warp: 0.14, synth: "fm" },
       morph: defaultMorph(),
       sectors: defaultSectors()
     };
@@ -5605,6 +5745,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (p.sect.drive === undefined) { p.sect.drive = 0.18; }
       if (p.sect.warp === undefined) { p.sect.warp = 0.14; }
       p.version = 12;
+    }
+    /* 16 to 17 gives the second voice the same two timbre controls as the other two, and
+       moves every voice's pair onto whatever its instrument calls them. Values already
+       stored stay: they were FM's ratio and depth, and the instrument is still FM unless
+       it is changed, at which point they are reset to that instrument's own defaults. */
+    if (p && p.version === 16) {
+      if (p.sect && p.sect.index === undefined) { p.sect.index = 7.5; }
+      p.version = 17;
     }
     /* 15 to 16 adds a third voice, its effects, and an instrument choice for each. */
     if (p && p.version === 15) {
@@ -5639,7 +5787,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
       if (p.bed) { delete p.bed.radius; delete p.bed.gain; }
       if (p.zones) { delete p.zones.radius; }
-      p.version = 16;
+      p.version = 17;
+      if (p.sect && p.sect.index === undefined) { p.sect.index = 7.5; }
       if (!p.v3) {
         p.v3 = { on: true, gain: 0.55, rhythm: "1n", synth: "am",
                  harm: 1.5, index: 3, drive: 0.1, warp: 0.22 };
@@ -5674,7 +5823,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!p.morph.list.length) { p.morph.list = defaultMorph().list; }
       p.version = 14;
     }
-    if (!p || p.version !== 16 || !p.prog) { p = f.properties.patch = defaultPatch(); }
+    if (!p || p.version !== 17 || !p.prog) { p = f.properties.patch = defaultPatch(); }
     if (!p.fx2) {
       p.fx2 = { delayDiv: "8n", delayWet: 0.4, delayFb: 0.55, revWet: 0.12, revDecay: 1.8 };
     }
@@ -5818,10 +5967,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "voice.density", label: "density", min: 0.05, max: 1, step: 0.05 },
     { k: "voice.bass", label: "bass", min: 0, max: 1, step: 0.05 },
     { k: "voice.top", label: "top", min: 0, max: 1, step: 0.05 },
-    { k: "voice.index", label: "timbre", min: 0, max: 16, step: 0.5,
-      hint: "FM and AM: modulation depth. Wavetable: brightness. Comb: resonance. Struck instruments ignore it." },
-    { k: "voice.harm", label: "colour", min: 0.25, max: 4, step: 0.25,
-      hint: "FM and AM: the ratio. Wavetable: which table. Comb: damping. Struck instruments ignore it." },
+    { k: "voice.harm", dyn: function (p) { return paramsFor(p.voice.synth).harm; } },
+    { k: "voice.index", dyn: function (p) { return paramsFor(p.voice.synth).index; } },
     { k: "voice.drive", label: "drive", min: 0, max: 1, step: 0.05 },
     { k: "voice.warp", label: "warp", min: 0, max: 1, step: 0.05 },
 
@@ -5835,8 +5982,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       fmt: function (v) { return DIV_LABEL[v] || v; },
       side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "sect.chordPull", label: "pull to chord", min: 0, max: 1, step: 0.05 },
-    { k: "sect.harm", label: "its colour", min: 0.25, max: 5, step: 0.25,
-      hint: "FM and AM: the ratio. Wavetable: which table. Comb: damping. Struck instruments ignore it." },
+    { k: "sect.harm", dyn: function (p) { return paramsFor(p.sect.synth).harm; } },
+    { k: "sect.index", dyn: function (p) { return paramsFor(p.sect.synth).index; } },
     { k: "sect.drive", label: "its drive", min: 0, max: 1, step: 0.05 },
     { k: "sect.warp", label: "its warp", min: 0, max: 1, step: 0.05 },
 
@@ -5857,10 +6004,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "v3.rhythm", label: "its rhythm", options: function () { return DIVISIONS; },
       fmt: function (v) { return DIV_LABEL[v] || v; },
       side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
-    { k: "v3.harm", label: "its colour", min: 0.25, max: 5, step: 0.25,
-      hint: "FM and AM: the ratio. Wavetable: which table. Comb: damping. Struck instruments ignore it." },
-    { k: "v3.index", label: "its timbre", min: 0, max: 16, step: 0.5,
-      hint: "FM and AM: modulation depth. Wavetable: brightness. Comb: resonance. Struck instruments ignore it." },
+    { k: "v3.harm", dyn: function (p) { return paramsFor(p.v3.synth).harm; } },
+    { k: "v3.index", dyn: function (p) { return paramsFor(p.v3.synth).index; } },
     { k: "v3.drive", label: "its drive", min: 0, max: 1, step: 0.05 },
     { k: "v3.warp", label: "its warp", min: 0, max: 1, step: 0.05 },
 
@@ -5991,7 +6136,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     syncRanges(body);
   }
 
-  function buildRow(fl, patch, f) {
+  function buildRow(src, patch, f) {
+      /* A row whose label and range belong to the instrument rather than to the patch key.
+         Resolved at render time, and the panel is re-rendered when an instrument changes,
+         so the fader in front of you always says what it actually does. */
+      var fl = src;
+      if (src.dyn) {
+        var d = src.dyn(patch) || {};
+        fl = { k: src.k, label: d.label || src.label, min: d.min, max: d.max, step: d.step,
+               unit: d.unit, hint: d.hint, def: d.def };
+      }
       var row = document.createElement("label");
       row.className = "pprow";
       if (fl.hint) { row.title = fl.hint; }
@@ -6031,14 +6185,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
            select row was empty. */
         if (fl.side) { val.textContent = fl.side(input.value, patch); }
         input.addEventListener("change", function () {
-          pset(patch, fl.k, input.value); commitPatch(f, patch); renderPatchPanel();
+          pset(patch, fl.k, input.value);
+          /* A ratio of 2.02 is a sensible FM ratio and a nonsensical pluck damping. When the
+             instrument changes its two controls go to that instrument's defaults rather than
+             carrying the previous one's numbers into a range where they mean nothing. */
+          if (/\.synth$/.test(fl.k)) {
+            var voice = fl.k.replace(/\.synth$/, ""), P = paramsFor(input.value);
+            if (P.harm) { pset(patch, voice + ".harm", P.harm.def); }
+            if (P.index) { pset(patch, voice + ".index", P.index.def); }
+          }
+          commitPatch(f, patch); renderPatchPanel();
         });
       } else {
         input = document.createElement("input");
         input.type = "range";
         input.min = fl.min; input.max = fl.max; input.step = fl.step;
         input.value = pget(patch, fl.k);
-        try { input.dataset.def = pget(defaultPatch(), fl.k); } catch (e) { /* none */ }
+        try {
+          input.dataset.def = fl.def === undefined ? pget(defaultPatch(), fl.k) : fl.def;
+        } catch (e) { /* none */ }
         input.title = "Shift-drag for fine steps · double-click to reset";
         var show = function () {
           var v = +input.value;
@@ -6131,7 +6296,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var showPer = function () {
         var v = +per.value;
         perOut.textContent = Math.floor(v / 60) + ":" + String(v % 60).padStart(2, "0") +
-          " · " + destLabel(m.dest);
+          " · " + destLabel(m.dest, patch);
       };
       showPer();
       per.addEventListener("input", function () {
@@ -6147,7 +6312,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var dst = document.createElement("select");
       MORPH_DESTS.forEach(function (d) {
         var o = document.createElement("option");
-        o.value = d.k; o.textContent = d.label;
+        o.value = d.k; o.textContent = destLabel(d.k, patch);
         dst.appendChild(o);
       });
       dst.value = m.dest;
@@ -6421,7 +6586,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       V.sectType = patch.sect.synth;
       var holder = { synth: V.sect.synth };
       swapSynth(holder, "synth", V.sect.dry || V.sect.filter, patch.sect.synth, {
-        harmonicity: patch.sect.harm, modulationIndex: 7.5,
+        harmonicity: patch.sect.harm, modulationIndex: patch.sect.index,
         oscillator: { type: "sine" }, modulation: { type: "triangle" },
         envelope: { attack: 0.012, decay: 0.35, sustain: 0.18, release: 1.1,
                     attackCurve: "linear", releaseCurve: "exponential" },
