@@ -3131,6 +3131,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "pulses", label: "pulses", min: 0, max: 64, step: 1 },
     { k: "rotate", label: "rotation", min: 0, max: 63, step: 1 },
     { k: "offset", label: "offset", min: 0, max: 1, step: 0.01 },
+    { k: "roam", label: "roam", min: 0, max: 1, step: 0.02 },
     { k: "grain", label: "grain size", min: 20, max: 500, step: 5, unit: " ms" },
     { k: "count", label: "grains per pulse", min: 1, max: 32, step: 1 },
     { k: "spread", label: "spread", min: 0, max: 1, step: 0.02 },
@@ -3197,10 +3198,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "from the recording. Offset is where in the file they come from; scatter is how far " +
       "each one wanders from there, so a burst reads across the recording rather than " +
       "repeating one slice. Spread is how far the burst is thrown across the step — at " +
-      "zero they land together as one transient, at one they fill the step. Vary is how " +
-      "different each hit is from the last: at zero every pulse is the cloud you set, and " +
-      "upward it moves all of it — size, number, spread, where it bites, and the pitch by " +
-      "whole semitones.";
+      "zero they land together as one transient, at one they fill the step. " +
+      "Three different randomnesses, kept apart on purpose: roam moves where each pulse " +
+      "bites, across the whole recording at one; scatter spreads the grains around that " +
+      "point inside a single burst; vary changes the shape of the cloud itself — size, " +
+      "number, spread, level and pitch by whole semitones.";
     col3.appendChild(note);
     var strip = document.createElement("div");
     strip.className = "rpat grainpat";
@@ -3230,6 +3232,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       g.spread = +(Math.random() * 0.8).toFixed(2);
       g.scatter = +(Math.random() * 0.5).toFixed(2);
       g.vary = +(Math.random() * 0.6).toFixed(2);
+      g.roam = +(0.4 + Math.random() * 0.6).toFixed(2);
       save();
       renderRhythmPanel();
       toast("E(" + g.pulses + "," + st + ") \u00b7 " + g.count + " grains");
@@ -5409,7 +5412,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function defaultGrains() {
     return {
       pulses: 11, rotate: 0, offset: 0.15, grain: 90, count: 6,
-      spread: 0.5, scatter: 0.25, gain: 0.85, pitch: 0, vary: 0.35
+      spread: 0.5, scatter: 0.25, gain: 0.85, pitch: 0, vary: 0.35, roam: 1
     };
   }
 
@@ -5570,12 +5573,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      tonal material reads as broken rather than as variation. */
   function variedGrains(g) {
     var v = Math.max(0, Math.min(1, g.vary === undefined ? 0 : g.vary));
-    if (v <= 0) { return g; }
+    var roam = Math.max(0, Math.min(1, g.roam === undefined ? 0 : g.roam));
+    if (v <= 0 && roam <= 0) { return g; }
     function r() { return (Math.random() - 0.5) * 2; }
     function clamp(x, lo, hi) { return x < lo ? lo : (x > hi ? hi : x); }
+    /* Wrapped rather than clamped. Clamping a wandering offset piles every value that
+       falls off either end onto 0 and 1, so a recording granulated near its start would
+       keep biting its first sample — an audible tic on exactly the material that made it
+       happen. Wrapping spreads uniformly instead, and a body of recorded material has no
+       edge that matters. At roam 1 the offset fader stops meaning anything, which is the
+       honest consequence of asking for the whole file every step. */
+    function wrap(x) { return ((x % 1) + 1) % 1; }
     return {
       pulses: g.pulses, rotate: g.rotate,
-      offset:  clamp((g.offset === undefined ? 0.15 : g.offset) + r() * v * 0.5, 0, 1),
+      /* Half, so the fader reaches full coverage exactly at 1 rather than at 0.5.
+         Measured before this: mean circular distance from the set point was 0.249 at both
+         0.5 and 1.0 — the top half of the control did nothing, because plus or minus half
+         a file already wraps onto the whole of it. */
+      offset:  wrap((g.offset === undefined ? 0.15 : g.offset) + r() * roam * 0.5),
       grain:   clamp((g.grain || 90) * Math.pow(2, r() * v * 1.4), 20, 500),
       count:   Math.round(clamp((g.count || 6) * (1 + r() * v * 1.1), 1, 32)),
       spread:  clamp((g.spread === undefined ? 0.5 : g.spread) + r() * v * 0.6, 0, 1),
