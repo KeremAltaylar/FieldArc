@@ -3287,12 +3287,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       g.scatter = +(Math.random() * 0.5).toFixed(2);
       g.vary = +(Math.random() * 0.6).toFixed(2);
       g.roam = +(0.4 + Math.random() * 0.6).toFixed(2);
-      /* Weighted toward the struck end: this is a rhythm section, and a bar of nothing but
-         backwards swells has no pulse in it. */
-      g.attack = +(Math.pow(Math.random(), 2.2) * 0.5).toFixed(2);
-      g.decay = +(Math.random() * 0.5).toFixed(2);
-      g.sustain = +(Math.random() * 0.8).toFixed(2);
-      g.release = +(0.15 + Math.random() * 0.6).toFixed(2);
+      /* A generated envelope is always a struck one: a snap of an attack and a release in
+         the middle of its range. This is a rhythm section, and a bar of backwards swells
+         has no pulse in it — the swell is there to be dialled in deliberately, not to
+         arrive by accident. Decay and sustain are left free, because those change the
+         weight of the hit rather than whether it is a hit. */
+      g.attack = +(0.005 + Math.random() * 0.035).toFixed(3);
+      g.decay = +(0.15 + Math.random() * 0.4).toFixed(2);
+      g.sustain = +(Math.random() * 0.7).toFixed(2);
+      g.release = +(0.3 + Math.random() * 0.25).toFixed(2);
       save();
       renderRhythmPanel();
       toast("E(" + g.pulses + "," + st + ") \u00b7 " + g.count + " grains");
@@ -5817,10 +5820,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       scatter: clamp((g.scatter === undefined ? 0.25 : g.scatter) + r() * v * 0.5, 0, 1),
       pitch:   (g.pitch || 0) + Math.round(r() * v * 7),
       gain:    clamp((g.gain === undefined ? 0.85 : g.gain) * (1 + r() * v * 0.45), 0.02, 1),
-      attack:  clamp((g.attack === undefined ? 0.04 : g.attack) + r() * v * 0.25, 0, 1),
+      /* Attack and release vary multiplicatively where decay and sustain vary additively,
+         and the difference is the whole point: added jitter of a quarter turns a 4% attack
+         into a 29% one, which is not a varied struck grain but a different instrument. A
+         proportion keeps the character — a short attack stays short however hard it is
+         varied, a moderate release stays moderate, and a long attack deliberately dialled
+         in stays long. Randomness moves the grain around inside its own kind rather than
+         wandering out of it. */
+      attack:  clamp((g.attack === undefined ? 0.04 : g.attack) * (1 + r() * v * 0.6), 0.002, 1),
       decay:   clamp((g.decay === undefined ? 0.3 : g.decay) + r() * v * 0.35, 0, 1),
       sustain: clamp((g.sustain === undefined ? 0.5 : g.sustain) + r() * v * 0.4, 0, 1),
-      release: clamp((g.release === undefined ? 0.45 : g.release) + r() * v * 0.4, 0, 1)
+      release: clamp((g.release === undefined ? 0.45 : g.release) * (1 + r() * v * 0.5), 0.02, 1)
     };
   }
 
