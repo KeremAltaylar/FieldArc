@@ -893,9 +893,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 /* Which of the two things a point can hold. Two buttons, because there are two answers
    and a select would hide one of them. */
 /* Two answers to one question, so they share a frame and only one is lit. */
+/* Three now, not two. Left at two columns the third mode wrapped onto its own row and
+   took the divider with it, which read as a broken control rather than a third option.
+   minmax(0,1fr) so the cells can shrink rather than forcing the group wider than the card. */
 .recmode {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0;
   border: 1px solid var(--bdr); border-radius: 2px; overflow: hidden;
+}
+.recmode button {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  padding-left: var(--s-1); padding-right: var(--s-1);
 }
 .recmode button { border: 0; border-radius: 0; }
 .recmode button + button { border-left: 1px solid var(--bdr); }
@@ -1318,6 +1325,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                   title="One recording of any length, played as it is">Soundscape</button>
           <button type="button" data-amode="hits" aria-pressed="false"
                   title="Four hits, sequenced into a rhythm in tempo with the route">4 hits</button>
+          <button type="button" data-amode="grains" aria-pressed="false"
+                  title="One recording, granulated into a rhythm in tempo with the route">Grains</button>
         </div>
         <div id="hitgrid" hidden></div>
         <input type="file" id="hit-file" accept="audio/*,.wav,.aif,.aiff,.caf" hidden>
@@ -2962,13 +2971,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      switch back and find them still there. */
   function renderAudioMode(f) {
     var isPoint = f && f.properties.kind === "point";
-    var mode = (f && f.properties.audio_mode === "hits") ? "hits" : "soundscape";
+    var am = f && f.properties.audio_mode;
+    var mode = (am === "hits" || am === "grains") ? am : "soundscape";
     var wrap = $(".recmode");
     if (wrap) { wrap.hidden = !isPoint; }
     /* Every point has a presence to set, so the panel opens for all of them; what changes is
        whether it also has four hits to sequence. */
     $("#f-rhythm").hidden = !isPoint;
-    $("#f-rhythm").textContent = mode === "hits" ? "Sound & rhythm" : "Sound";
+    $("#f-rhythm").textContent = (mode === "hits" || mode === "grains")
+      ? "Sound & rhythm" : "Sound";
     if (wrap) {
       wrap.querySelectorAll("button").forEach(function (b) {
         b.setAttribute("aria-pressed", String(b.dataset.amode === mode));
@@ -2976,6 +2987,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     var grid = $("#hitgrid");
     grid.hidden = !(isPoint && mode === "hits");
+    /* Grains needs the same single recording a soundscape does, so the attach button stays;
+       only the four-hit grid is specific to hits. */
     $("#rec-add").hidden = !isPoint ? $("#rec-add").hidden : (mode === "hits");
     if (grid.hidden) { grid.textContent = ""; return; }
 
@@ -3114,6 +3127,131 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "gain", label: "level", min: 0, max: 1, step: 0.05 }
   ];
 
+  var GRAIN_FIELDS = [
+    { k: "pulses", label: "pulses", min: 0, max: 64, step: 1 },
+    { k: "rotate", label: "rotation", min: 0, max: 63, step: 1 },
+    { k: "offset", label: "offset", min: 0, max: 1, step: 0.01 },
+    { k: "grain", label: "grain size", min: 20, max: 500, step: 5, unit: " ms" },
+    { k: "count", label: "grains per pulse", min: 1, max: 32, step: 1 },
+    { k: "spread", label: "spread", min: 0, max: 1, step: 0.02 },
+    { k: "scatter", label: "scatter", min: 0, max: 1, step: 0.02 },
+    { k: "pitch", label: "pitch", min: -24, max: 24, step: 1, unit: " st" },
+    { k: "gain", label: "level", min: 0, max: 1, step: 0.05 }
+  ];
+
+  /* The grains panel. One Euclidean line at the top because that is the rhythm, then the
+     cloud behind each pulse. C-5's empty state matters more here than in the hits panel:
+     the controls are meaningless with no recording, and saying so is cheaper than letting
+     someone move nine faders that do nothing. */
+  function renderGrainPanel(f, r, body) {
+    if (!f.properties.has_audio) {
+      var none = document.createElement("div");
+      none.className = "rpempty";
+      var et = document.createElement("p");
+      et.className = "rpempty-t";
+      et.textContent = "No recording attached yet.";
+      var ed = document.createElement("p");
+      ed.className = "hint";
+      ed.textContent = "This point is set to grains. Attach one recording on its card — any " +
+        "length — and a Euclidean line will read short grains out of it, in tempo with the " +
+        "route. The same file works as a soundscape if you change your mind.";
+      none.appendChild(et); none.appendChild(ed);
+      body.appendChild(none);
+      return;
+    }
+
+    var g = r.grains || (r.grains = defaultGrains());
+    var commitR = function () { save(); };
+
+    var cols = document.createElement("div");
+    cols.className = "ppcols";
+    var col = document.createElement("div");
+    col.className = "ppcol";
+    var h1 = document.createElement("h2");
+    h1.textContent = "The line";
+    col.appendChild(h1);
+    [RHYTHM_FIELDS[0], RHYTHM_FIELDS[1], RHYTHM_FIELDS[2]].forEach(function (fl) {
+      col.appendChild(buildRhythmRow(fl, r, function () { save(); markGrainPattern(); }));
+    });
+    GRAIN_FIELDS.slice(0, 2).forEach(function (fl) {
+      col.appendChild(buildRhythmRow(fl, g, function () { save(); markGrainPattern(); }));
+    });
+    cols.appendChild(col);
+
+    var col2 = document.createElement("div");
+    col2.className = "ppcol";
+    var h2 = document.createElement("h2");
+    h2.textContent = "The cloud";
+    col2.appendChild(h2);
+    GRAIN_FIELDS.slice(2).forEach(function (fl) {
+      col2.appendChild(buildRhythmRow(fl, g, commitR));
+    });
+    cols.appendChild(col2);
+
+    var col3 = document.createElement("div");
+    col3.className = "ppcol";
+    var note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "One Euclidean line, and behind every pulse a burst of grains cut " +
+      "from the recording. Offset is where in the file they come from; scatter is how far " +
+      "each one wanders from there, so a burst reads across the recording rather than " +
+      "repeating one slice. Spread is how far the burst is thrown across the step — at " +
+      "zero they land together as one transient, at one they fill the step.";
+    col3.appendChild(note);
+    var strip = document.createElement("div");
+    strip.className = "rpat grainpat";
+    col3.appendChild(strip);
+    cols.appendChild(col3);
+    body.appendChild(cols);
+
+    var mhead = document.createElement("div");
+    mhead.className = "pphead";
+    var hh = document.createElement("h2");
+    hh.textContent = "The pattern";
+    mhead.appendChild(hh);
+    var rnd = document.createElement("button");
+    rnd.type = "button"; rnd.className = "ghost ppgen";
+    rnd.textContent = "Generate a pattern";
+    rnd.title = "A Euclidean line and a cloud to go behind it";
+    rnd.addEventListener("click", function () {
+      var st = Math.max(1, Math.min(64, r.steps | 0));
+      /* Coprime with the step count where it can be, so the line does not simply repeat
+         every bar — the same reasoning as the four-hit generator. */
+      var choices = [5, 7, 9, 11, 13, 17, 19, 21, 23].filter(function (x) { return x < st; });
+      g.pulses = choices[Math.floor(Math.random() * choices.length)] || 5;
+      g.rotate = Math.floor(Math.random() * st);
+      g.offset = +(Math.random() * 0.8).toFixed(2);
+      g.grain = 30 + Math.floor(Math.random() * 12) * 20;
+      g.count = 2 + Math.floor(Math.random() * 10);
+      g.spread = +(Math.random() * 0.8).toFixed(2);
+      g.scatter = +(Math.random() * 0.5).toFixed(2);
+      save();
+      renderRhythmPanel();
+      toast("E(" + g.pulses + "," + st + ") \u00b7 " + g.count + " grains");
+    });
+    mhead.appendChild(rnd);
+    body.appendChild(mhead);
+    markGrainPattern();
+  }
+
+  /* The line drawn as cells, the same way the four hits are — the numbers say what the
+     pattern is, the cells say what it feels like. */
+  function markGrainPattern() {
+    var strip = document.querySelector("#rp-body .grainpat");
+    if (!strip) { return; }
+    var f = feature(selected);
+    if (!f) { return; }
+    var r = rhythmOf(f), g = r.grains || defaultGrains();
+    var st = Math.max(1, Math.min(64, r.steps | 0));
+    var pat = rotated(euclid(Math.min(g.pulses, st), st), g.rotate || 0);
+    strip.textContent = "";
+    for (var i = 0; i < st; i++) {
+      var c = document.createElement("i");
+      c.className = "rcell" + (pat[i] ? " on" : "");
+      strip.appendChild(c);
+    }
+  }
+
   function renderRhythmPanel() {
     var f = feature(selected);
     if (!f || f.properties.kind !== "point") { return; }
@@ -3150,6 +3288,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* C-5: the empty state, which is where a panel usually gives itself away. A sequencer
        with nothing to sequence should say so and say where to go, not offer four rows of
        controls that do nothing when you move them. */
+    if (f.properties.audio_mode === "grains") { renderGrainPanel(f, r, body); return; }
     var hitsOn = f.properties.hits || {};
     var filled = HIT_SLOTS.filter(function (k) { return hitsOn[k]; });
     if (f.properties.audio_mode !== "hits") { return; }
@@ -3531,7 +3670,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         id: g.properties.id, lonlat: g.geometry.coordinates, r: soundOf(g).zoneR,
         name: label(g), icon: g.properties.icon || null,
         has_audio: !!g.properties.has_audio,
-        mode: g.properties.audio_mode === "hits" ? "hits" : "soundscape",
+        mode: (g.properties.audio_mode === "hits" || g.properties.audio_mode === "grains")
+          ? g.properties.audio_mode : "soundscape",
         has_hits: !!(g.properties.hits && HIT_SLOTS.some(function (k) {
           return g.properties.hits[k];
         })),
@@ -3808,6 +3948,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                           clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
     window.__fa.rhythm = { euclid: euclid, rotated: rotated, of: rhythmOf, slots: HIT_SLOTS };
     window.__fa.zoneFire = zoneFire;   /* which zones speak, testable without walking one */
+    window.__fa.grains = { fire: fireGrains, def: defaultGrains };   /* testable without an upload */
     window.__fa.morph.trace = traceDraw;   /* measurable without waiting on a frame */
     window.__fa.projectToRoute = projectToRoute;
 
@@ -5090,7 +5231,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
        Zone events remain for points with nothing attached, which is the case they were
        written for: a bare marker that says something as you pass it. */
-    if (z.has_audio || z.has_hits || z.mode === "hits") { return; }
+    if (z.has_audio || z.has_hits || z.mode === "hits" || z.mode === "grains") { return; }
 
     var tim = ZONE_TIMBRE[z.icon] || ZONE_TIMBRE.tree;
     /* A zone sings inside the chord you are standing in, so an event never fights the
@@ -5247,6 +5388,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     };
   }
 
+  /* ---- Grains ----
+     The third thing a point can be. A soundscape is one recording played as it is, four
+     hits are four files sequenced against each other, and this is one recording read as a
+     cloud: a single Euclidean line on the same 64-step grid, and behind each pulse a burst
+     of short grains taken from somewhere in the file.
+
+     One line rather than four, which is what makes room for the burst to be interesting.
+     The count is what separates this from a slicer — one grain a pulse is a chopped-up
+     sample, sixteen is a texture — and the scatter is what stops the burst being the same
+     sixteen grains every time (A-11).
+
+     It reads the same file a soundscape uses, so switching a point between the two modes
+     costs nothing and needs no second upload. */
+  function defaultGrains() {
+    return {
+      pulses: 11, rotate: 0, offset: 0.15, grain: 90, count: 6,
+      spread: 0.5, scatter: 0.25, gain: 0.85, pitch: 0
+    };
+  }
+
   function rhythmOf(f) {
     if (!f.properties.rhythm) { f.properties.rhythm = defaultRhythm(); }
     var r = f.properties.rhythm;
@@ -5254,6 +5415,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     HIT_SLOTS.forEach(function (k) {
       if (!r.voices[k]) { r.voices[k] = defaultRhythm().voices[k]; }
     });
+    if (!r.grains) { r.grains = defaultGrains(); }
     return r;
   }
 
@@ -5327,6 +5489,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     R = bed.rhythms[z.id] = { ready: 0, players: {}, urls: {}, tick: 0, step: 0,
                               gain: new Tone.Gain(0).connect(bed.rfx ? bed.rfx.input
                                                                      : bed.master) };
+    /* A grains point loads its one recording as a buffer rather than a player: a player
+       plays a file, and what this needs is to read arbitrary slices of it at arbitrary
+       times, many at once. */
+    if (z.mode === "grains") {
+      getAudio(z.id).then(function (blob) {
+        if (!blob || !bed || !bed.rhythms[z.id]) { return; }
+        var url = URL.createObjectURL(blob);
+        R.grainUrl = url;
+        R.buffer = new Tone.ToneAudioBuffer(url, function () { R.ready++; },
+          function () { /* a file that will not decode simply never plays */ });
+      }).catch(function () { /* nothing attached yet */ });
+      return R;
+    }
     HIT_SLOTS.forEach(function (slot) {
       getAudio(z.id + "#" + slot).then(function (blob) {
         if (!blob || !bed || !bed.rhythms[z.id]) { return; }
@@ -5347,6 +5522,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     delete bed.rhythms[id];
     try { R.gain.gain.rampTo(0, 0.25); } catch (e) { /* ignore */ }
     setTimeout(function () {
+      try { if (R.buffer) { R.buffer.dispose(); } } catch (e) {}
+      try { if (R.grainUrl) { URL.revokeObjectURL(R.grainUrl); } } catch (e) {}
       HIT_SLOTS.forEach(function (slot) {
         try { if (R.players[slot]) { R.players[slot].dispose(); } } catch (e) {}
         if (R.urls[slot]) { URL.revokeObjectURL(R.urls[slot]); }
@@ -5358,6 +5535,47 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* Every sixteenth, for every point in earshot. Each point counts its own ticks, so two
      points on different step lengths stay independent while sharing one clock — the same
      reason the second voice runs on a fixed grid rather than rescheduling itself. */
+  /* ---- One burst of grains ----
+     Every grain is its own short source with a fade at each end. Without the fade a grain
+     starts and stops mid-waveform and each one is a click, which at sixteen grains a pulse
+     is not a texture but a rattle (A-3). The fade is capped at 40% of the grain so a very
+     short grain is still a grain and not two ramps meeting.
+
+     The burst is spread across the step rather than fired at once, because a stack of
+     simultaneous grains is one loud transient — the spread is what turns the same numbers
+     into a cloud. */
+  function fireGrains(R, g, time, stepSecs) {
+    var Tone = bed.Tone, buf = R.buffer;
+    if (!buf || !buf.loaded || !buf.duration) { return; }
+    var n = Math.max(1, Math.min(32, g.count | 0));
+    var grainSec = Math.max(0.01, Math.min(2, (g.grain || 90) / 1000));
+    var fade = Math.min(0.02, grainSec * 0.4);
+    var spread = Math.max(0, Math.min(1, g.spread === undefined ? 0.5 : g.spread)) * stepSecs;
+    var scatter = Math.max(0, Math.min(1, g.scatter === undefined ? 0.25 : g.scatter));
+    var dur = buf.duration;
+    var base = Math.max(0, Math.min(1, g.offset === undefined ? 0.15 : g.offset)) * dur;
+    var lvl = Math.max(0.02, g.gain === undefined ? 0.85 : g.gain);
+    for (var i = 0; i < n; i++) {
+      var at = time + (n === 1 ? 0 : (i / n) * spread);
+      var off = base + (Math.random() - 0.5) * scatter * dur;
+      off = Math.max(0, Math.min(Math.max(0, dur - grainSec), off));
+      var src;
+      try {
+        src = new Tone.ToneBufferSource({
+          url: buf, fadeIn: fade, fadeOut: fade, curve: "linear",
+          onended: function () { try { this.dispose(); } catch (e) { /* gone */ } }
+        });
+      } catch (e) { return; }   /* no ToneBufferSource in this build */
+      src.playbackRate.value = Math.pow(2, (g.pitch || 0) / 12) *
+                               (1 + (Math.random() - 0.5) * 0.02);
+      src.connect(R.gain);
+      /* Level falls slightly across the burst so it reads as one gesture with a shape
+         rather than as n separate hits of equal weight. */
+      var w = lvl * (1 - 0.35 * (i / Math.max(1, n)));
+      try { src.start(at, off, grainSec, w); } catch (e) { try { src.dispose(); } catch (e2) {} }
+    }
+  }
+
   function rhythmStep(time) {
     if (!bed || !bed.on || !pacer) { return; }
     if (!$("#rhythmpanel").hidden) { setTimeout(markPattern, 0); }
@@ -5374,6 +5592,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var steps = Math.max(1, Math.min(64, r.steps | 0));
       var at = R.step % steps;
       R.step = (R.step + 1) % steps;
+      if (f.properties.audio_mode === "grains") {
+        var g = r.grains || defaultGrains();
+        if (g.pulses > 0) {
+          var gp = rotated(euclid(Math.min(g.pulses, steps), steps), g.rotate || 0);
+          if (gp[at]) {
+            fireGrains(R, g, time, divSeconds(r.div, pacer.patch.tempo) * stride);
+          }
+        }
+        continue;
+      }
       for (var v = 0; v < HIT_SLOTS.length; v++) {
         var slot = HIT_SLOTS[v], cfg = r.voices[slot];
         var pl = R.players[slot];
@@ -5394,7 +5622,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* The panel's bed toggle used to be decorative — patch.bed.on was written and never
        read. Off means no recordings sound, so the nearest set is empty. */
     var near = !pacer.patch.bed.on ? [] : pacer.zones
-      .filter(function (z) { return z.has_audio && z.mode !== "hits"; })
+      /* A grains point owns the same file, so the bed must not also play it as a
+         soundscape underneath its own sequencer. */
+      .filter(function (z) { return z.has_audio && z.mode === "soundscape"; })
       .map(function (z) { return { z: z, d: segment(pacer.pos, z.lonlat) }; })
       .sort(function (a, b) { return a.d - b.d; })
       .slice(0, BED.maxVoices)
@@ -5420,7 +5650,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!bed || !bed.on || !pacer) { return; }
     var want = {};
     pacer.zones
-      .filter(function (z) { return z.mode === "hits" && z.has_hits; })
+      .filter(function (z) {
+        return (z.mode === "hits" && z.has_hits) || (z.mode === "grains" && z.has_audio);
+      })
       .map(function (z) { return { z: z, d: segment(pacer.pos, z.lonlat) }; })
       .filter(function (x) { return x.d <= soundOfZone(x.z).radius; })
       .sort(function (a, b) { return a.d - b.d; })
