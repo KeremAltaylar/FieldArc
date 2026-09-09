@@ -44,7 +44,11 @@ if (location.search.indexOf("rafshim") !== -1) {
   --font-body:    "Newsreader", Georgia, serif;
   --font-mono:    "Courier Prime", ui-monospace, monospace;
 
-  --t-xs: 0.68rem; --t-sm: 0.78rem; --t-base: 1.0625rem; --t-md: 1.15rem;
+  /* 0.68rem computed to 10.88px, and every button, eyebrow and meta line in the app used
+     it. Outdoors, walking, in sunlight, that is not a style choice — it is the whole
+     interface sitting under a legibility floor. 0.72rem is 11.52px: over the floor with
+     margin rather than gaming it by a fraction of a pixel. */
+  --t-xs: 0.72rem; --t-sm: 0.78rem; --t-base: 1.0625rem; --t-md: 1.15rem;
   --t-lg: clamp(1.5rem, 2.4vw, 1.9rem);
   --track-meta: 0.18em; --track-eyebrow: 0.28em;
 
@@ -1011,9 +1015,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   color: var(--faint); text-align: right;
 }
 .ppchord { grid-template-columns: 1.1rem 1fr 1fr auto auto; grid-row-gap: 2px; }
-.ppchord select { min-width: 0; padding: 0 2px; font-size: 10px; }
+.ppchord select { min-width: 0; padding: 0 2px; font-size: 11px; }
 .ppchord input[type=range] { width: 100%; height: 12px; accent-color: #bbceb5; }
-.ppmini { padding: 2px var(--s-1); font-size: 10px; letter-spacing: 0.06em; }
+.ppmini { padding: 2px var(--s-1); font-size: 11px; letter-spacing: 0.06em; }
 .ppres {
   grid-column: 1 / -1;
   font-style: normal; font-family: var(--font-mono); font-size: 10px;
@@ -5996,7 +6000,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       fmt: function (v) { return DIV_LABEL[v] || v; },
       side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "fx.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
-    { k: "fx.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
+    { k: "fx.delayFb", label: "feedback", min: 0, max: 0.85, step: 0.02 },
     { k: "fx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
     { k: "fx.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
 
@@ -6018,7 +6022,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       fmt: function (v) { return DIV_LABEL[v] || v; },
       side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "fx3.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
-    { k: "fx3.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
+    { k: "fx3.delayFb", label: "feedback", min: 0, max: 0.85, step: 0.02 },
     { k: "fx3.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
     { k: "fx3.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
 
@@ -6027,7 +6031,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       fmt: function (v) { return DIV_LABEL[v] || v; },
       side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "fx2.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
-    { k: "fx2.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
+    { k: "fx2.delayFb", label: "feedback", min: 0, max: 0.85, step: 0.02 },
     { k: "fx2.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
     { k: "fx2.revDecay", label: "reverb decay", min: 0.4, max: 10, step: 0.2, unit: " s" },
 
@@ -6038,7 +6042,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       fmt: function (v) { return DIV_LABEL[v] || v; },
       side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "rfx.delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
-    { k: "rfx.delayFb", label: "delay feedback", min: 0, max: 0.85, step: 0.02 },
+    { k: "rfx.delayFb", label: "feedback", min: 0, max: 0.85, step: 0.02 },
     { k: "rfx.revWet", label: "reverb mix", min: 0, max: 1, step: 0.02 },
 
     { sec: "Morphs", col: 0 },
