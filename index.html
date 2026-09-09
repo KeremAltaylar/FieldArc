@@ -3137,6 +3137,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "spread", label: "spread", min: 0, max: 1, step: 0.02 },
     { k: "scatter", label: "scatter", min: 0, max: 1, step: 0.02 },
     { k: "pitch", label: "pitch", min: -24, max: 24, step: 1, unit: " st" },
+    { k: "window", label: "envelope", min: 0, max: 1, step: 0.02 },
+    { k: "shape", label: "attack \u2194 decay", min: 0, max: 1, step: 0.02 },
     { k: "gain", label: "level", min: 0, max: 1, step: 0.05 },
     { k: "vary", label: "vary per hit", min: 0, max: 1, step: 0.02 }
   ];
@@ -3202,7 +3204,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "Three different randomnesses, kept apart on purpose: roam moves where each pulse " +
       "bites, across the whole recording at one; scatter spreads the grains around that " +
       "point inside a single burst; vary changes the shape of the cloud itself — size, " +
-      "number, spread, level and pitch by whole semitones.";
+      "number, spread, level, envelope and pitch by whole semitones. " +
+      "Envelope is how much of each grain is shaped rather than cut — at zero the grain " +
+      "keeps whatever transient the recording had, at one it is all curve. Attack \u2194 decay " +
+      "moves the peak inside it: left is a struck sound, right is a swell that stops dead.";
     col3.appendChild(note);
     var strip = document.createElement("div");
     strip.className = "rpat grainpat";
@@ -3233,6 +3238,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       g.scatter = +(Math.random() * 0.5).toFixed(2);
       g.vary = +(Math.random() * 0.6).toFixed(2);
       g.roam = +(0.4 + Math.random() * 0.6).toFixed(2);
+      g.window = +(0.3 + Math.random() * 0.7).toFixed(2);
+      /* Weighted toward the struck end: this is a rhythm section, and a bar of nothing but
+         backwards swells has no pulse in it. */
+      g.shape = +Math.pow(Math.random(), 2).toFixed(2);
       save();
       renderRhythmPanel();
       toast("E(" + g.pulses + "," + st + ") \u00b7 " + g.count + " grains");
@@ -5412,7 +5421,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function defaultGrains() {
     return {
       pulses: 11, rotate: 0, offset: 0.15, grain: 90, count: 6,
-      spread: 0.5, scatter: 0.25, gain: 0.85, pitch: 0, vary: 0.35, roam: 1
+      spread: 0.5, scatter: 0.25, gain: 0.85, pitch: 0, vary: 0.35, roam: 1,
+      shape: 0.2, window: 0.7
     };
   }
 
@@ -5596,7 +5606,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       spread:  clamp((g.spread === undefined ? 0.5 : g.spread) + r() * v * 0.6, 0, 1),
       scatter: clamp((g.scatter === undefined ? 0.25 : g.scatter) + r() * v * 0.5, 0, 1),
       pitch:   (g.pitch || 0) + Math.round(r() * v * 7),
-      gain:    clamp((g.gain === undefined ? 0.85 : g.gain) * (1 + r() * v * 0.45), 0.02, 1)
+      gain:    clamp((g.gain === undefined ? 0.85 : g.gain) * (1 + r() * v * 0.45), 0.02, 1),
+      shape:   clamp((g.shape === undefined ? 0.2 : g.shape) + r() * v * 0.45, 0, 1),
+      window:  clamp((g.window === undefined ? 0.7 : g.window) + r() * v * 0.5, 0, 1)
     };
   }
 
@@ -5606,7 +5618,32 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var g = variedGrains(gSet);
     var n = Math.max(1, Math.min(32, g.count | 0));
     var grainSec = Math.max(0.01, Math.min(2, (g.grain || 90) / 1000));
-    var fade = Math.min(0.02, grainSec * 0.4);
+    /* ---- The grain envelope ----
+       Two numbers rather than a list of named windows, because the two that matter here
+       are continuous and both belong in the morph and vary systems: how much of the grain
+       is envelope at all, and where inside it the peak sits.
+
+       Window at zero leaves the grain almost as it was cut, keeping whatever transient the
+       recording had, with just enough ramp not to click. At one the fades consume the whole
+       grain and there is no flat top left — the difference between hearing a fragment of a
+       recording and hearing a shaped particle of it.
+
+       Shape decides the balance. Near zero the attack is instant and the decay is the rest
+       of the grain, which is what makes a field recording behave like a drum. Near one it
+       is reversed: a swell that stops dead, which is the sound of tape played backwards
+       and the reason granular rhythm sections do not just sound like chopping. Half is
+       symmetric, the neutral bell. */
+    var win = Math.max(0, Math.min(1, g.window === undefined ? 0.7 : g.window));
+    var shp = Math.max(0, Math.min(1, g.shape === undefined ? 0.2 : g.shape));
+    /* Floored at 2ms total: a window of zero still has to protect against the click, and
+       below about a millisecond a ramp is a step (A-3). */
+    var envTotal = Math.max(0.002, Math.min(grainSec, grainSec * (0.04 + win * 0.96)));
+    var fadeIn = Math.max(0.0008, envTotal * shp);
+    var fadeOut = Math.max(0.0008, envTotal * (1 - shp));
+    if (fadeIn + fadeOut > grainSec) {
+      var k = grainSec / (fadeIn + fadeOut);
+      fadeIn *= k; fadeOut *= k;
+    }
     var spread = Math.max(0, Math.min(1, g.spread === undefined ? 0.5 : g.spread)) * stepSecs;
     var scatter = Math.max(0, Math.min(1, g.scatter === undefined ? 0.25 : g.scatter));
     var dur = buf.duration;
@@ -5619,7 +5656,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var src;
       try {
         src = new Tone.ToneBufferSource({
-          url: buf, fadeIn: fade, fadeOut: fade, curve: "linear",
+          url: buf, fadeIn: fadeIn, fadeOut: fadeOut, curve: "linear",
           onended: function () { try { this.dispose(); } catch (e) { /* gone */ } }
         });
       } catch (e) { return; }   /* no ToneBufferSource in this build */
