@@ -3803,6 +3803,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
                           clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
     window.__fa.rhythm = { euclid: euclid, rotated: rotated, of: rhythmOf, slots: HIT_SLOTS };
+    window.__fa.zoneFire = zoneFire;   /* which zones speak, testable without walking one */
     window.__fa.morph.trace = traceDraw;   /* measurable without waiting on a frame */
     window.__fa.projectToRoute = projectToRoute;
 
@@ -4851,15 +4852,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        is not truncated into a click. */
     var at = Tone.now() + 0.008;
 
-    /* A soundscape is not a zone event. Crossing the boundary used to fire the whole
-       recording as a one-shot at full level — which is why a soundscape appeared to start
-       abruptly with no approach: the bed voice was fading in correctly underneath a copy
-       of the same recording that was not. The bed owns soundscapes; distance is their
-       envelope and there is nothing for a zone to add.
+    /* A point that has a sound of its own does not get a second one on top. A soundscape
+       is faded in by the bed as you approach, and a rhythm point is already playing its
+       four hits through its own sequencer — a synth chirp at the boundary is a third voice
+       nobody asked for, arriving exactly when the point starts speaking for itself.
 
-       A point set to four hits has no soundscape to duplicate, so its zone still speaks —
-       with the timbre its icon asks for, below. */
-    if (z.has_audio && z.mode !== "hits") { return; }
+       Note that a rhythm point does not set has_audio: its four files live under hits, so
+       the mode and has_hits are what identify it. Checking has_audio alone is what let it
+       through, and is why the chirp only ever happened on rhythm points.
+
+       Zone events remain for points with nothing attached, which is the case they were
+       written for: a bare marker that says something as you pass it. */
+    if (z.has_audio || z.has_hits || z.mode === "hits") { return; }
 
     var tim = ZONE_TIMBRE[z.icon] || ZONE_TIMBRE.tree;
     /* A zone sings inside the chord you are standing in, so an event never fights the
