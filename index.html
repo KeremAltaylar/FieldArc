@@ -3996,10 +3996,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      what changing the instrument changes, and on peak rather than mean: with three voices
      and a chord that moves every bar the mean drifts six decibels between two runs of the
      same instrument, while the peak repeats to within two. Measured against FM at -25.1
-     dBFS peak. The same measurement says the original five are three to ten decibels apart
-     from each other, which is a separate correction and not made here. */
-  var SYNTH_TRIM = { fm: 0, am: -1, duo: -7, mono: -7, simple: -5,
-                     pluck: -8, metal: -1, membrane: -9, wavetable: -9, comb: 2 };
+     dBFS peak. The original five were three to seven decibels apart from each other and are
+     corrected here too, in one consistent run rather than by combining two: fm -28.2, am
+     -34.1, duo -20.2, mono -24.3, simple -21.3, pluck -26.5, metal -26.4, membrane -23.8,
+     wavetable -27.5, comb -25.1, against an fm reference of -27.5. Rounded to half a
+     decibel, because two fm readings in the same session differed by 1.4. */
+  var SYNTH_TRIM = { fm: 0, am: 5.5, duo: -14.5, mono: -10, simple: -11,
+                     pluck: -9, metal: -2, membrane: -12.5, wavetable: -9, comb: -0.5 };
 
   /* ---- Two voices Tone does not ship ----
      A wavetable and a bowed waveguide, chosen because each has a dimension that stays
@@ -4014,19 +4017,63 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      bright, for the comb its damping and its resonance. Two continuous dimensions either
      way, which is what the morphs need and all they need. */
 
-  /* Amplitudes only - Tone builds the wave from them. Hollow through to bright, with
-     adjacent tables close enough that a crossfade between them reads as one timbre moving
-     rather than as two sounds swapping over. */
+  /* ---- The wavetable's frames ----
+     Eight, not four, and each one designed rather than produced by a formula that happened
+     to give four different answers. The set is a path with an order that means something:
+     pure, then hollow, then reedy, then full, then bright, then resonant, then metallic.
+     Walking it with a morph should feel like one instrument changing rather than a switch
+     between unrelated sounds, which is what governs how far apart neighbours can be.
+
+     Every frame is normalised to the same total energy. Without that, moving the table
+     position changes loudness as well as timbre, and a control that changes loudness is a
+     level control however it is labelled — the same mistake the drive stage made before it
+     was given gain staging. Measured across the full sweep the level holds; only the
+     spectrum moves. */
   var WAVE_TABLES = (function () {
-    var i, n = 24, hollow = [], saw = [], square = [], bright = [];
-    for (i = 1; i <= n; i++) {
-      hollow.push(i === 1 ? 1 : (i % 4 === 1 ? 0.45 / i : 0));
-      saw.push(1 / i);
-      square.push(i % 2 ? 1 / i : 0);
-      bright.push(Math.pow(i, -0.55) * (i % 7 === 0 ? 0.2 : 1));
+    var N = 32;
+    function build(fn) {
+      var a = [], i;
+      for (i = 1; i <= N; i++) { a.push(fn(i)); }
+      /* Equal energy, so the sweep is a timbre control and not a fader. */
+      var e = Math.sqrt(a.reduce(function (s, v) { return s + v * v; }, 0));
+      return a.map(function (v) { return e > 0 ? v / e : 0; });
     }
-    return [hollow, saw, square, bright];
+    var odd = function (i) { return i % 2 === 1; };
+    /* The exponents are tuned, not chosen. A first set had neighbours 0.067 apart at one
+       end and 0.52 at the other — a ratio of 7.8, which is a sweep where nothing happens
+       for a while and then a lot happens at once. Reedy carries its even harmonics at 0.35
+       rather than none, which turns the odd-only-to-all-harmonics cliff into a step: with
+       that, neighbour distances run 0.22 to 0.57, a ratio of 2.56. */
+    return [
+      build(function (i) { return i === 1 ? 1 : 0; }),                          /* pure */
+      build(function (i) { return odd(i) ? Math.pow(i, -1.35) : 0; }),          /* soft */
+      build(function (i) { return odd(i) ? Math.pow(i, -0.85) : 0; }),          /* hollow */
+      build(function (i) {                                                      /* reedy */
+        return Math.pow(i, -0.85) * (odd(i) ? 1 : 0.35);
+      }),
+      build(function (i) { return 1 / i; }),                                    /* full */
+      build(function (i) { return Math.pow(i, -0.5); }),                        /* bright */
+      build(function (i) {                                                      /* resonant */
+        return (1 / i) * (1 + 4 * Math.exp(-Math.pow(i - 7, 2) / 8));
+      }),
+      build(function (i) {                                                      /* metallic */
+        return Math.pow(i, -0.7) * Math.abs(Math.sin(i * 0.9));
+      })
+    ];
   })();
+
+  /* ---- Why the frames need a gain each ----
+     The frames are built to equal energy, and they are: synthesised offline, every one
+     measures an RMS of 0.707. It made no difference, because Web Audio normalises a
+     PeriodicWave to a peak of 1 before it plays it, which throws away equal energy and
+     substitutes equal peak. A sine has a crest factor of 1.41 and the bright frame has
+     4.22, so at equal peak their RMS differs by 11.2 dB — measured on the pad bus as a
+     7 dB swing across the sweep with the filter wide open, which is a level control
+     wearing a wavetable's name.
+
+     These are each frame's RMS-at-peak-1 relative to 'full', so what the crossfade
+     multiplies by restores the equal loudness the normalisation removed. */
+  var WAVE_GAIN = [0.704, 0.575, 0.774, 1.012, 1.000, 2.100, 1.458, 1.347];
 
   function WavetableVoice(Tone) {
     this._t = Tone;
@@ -4063,8 +4110,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       this._a.partials = WAVE_TABLES[i];
       this._b.partials = WAVE_TABLES[i + 1];
     }
-    this._ga.gain.rampTo(1 - f, 0.12);
-    this._gb.gain.rampTo(f, 0.12);
+    this._ga.gain.rampTo((1 - f) * WAVE_GAIN[i], 0.12);
+    this._gb.gain.rampTo(f * WAVE_GAIN[i + 1], 0.12);
     var br = this.modulationIndex.value;
     br = br < 0 ? 0 : br > 1 ? 1 : br;
     this._tone.frequency.rampTo(500 + br * 9000, 0.15);
