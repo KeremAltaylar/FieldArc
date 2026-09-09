@@ -3971,10 +3971,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      Swapping one is a node change, not a scheduling change: the Transport repeats are left
      alone and only the leaf is replaced, so A-16 is not in question. */
   var SYNTH_TYPES = ["fm", "am", "duo", "mono", "simple",
-                     "pluck", "metal", "membrane", "wavetable", "comb"];
+                     "pluck", "metal", "membrane", "wavetable", "comb", "formant"];
   var SYNTH_LABEL = { fm: "FM", am: "AM", duo: "duo", mono: "mono", simple: "simple",
                       pluck: "pluck", metal: "metal", membrane: "membrane",
-                      wavetable: "wavetable", comb: "comb" };
+                      wavetable: "wavetable", comb: "comb", formant: "formant" };
 
   /* Three of these strike and then decay rather than hold. The pad attacks and does not
      release until the chord moves, so a struck instrument there would ring out and leave
@@ -3986,7 +3986,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      voice hands to swapSynth are written for FM - a sustain of 0.55, a modulation envelope -
      and applying them here would flatten the thing that makes them different. Only the two
      timbre controls are let through, so the morphs still reach them. */
-  var SELF_VOICED = { pluck: 1, metal: 1, membrane: 1, wavetable: 1, comb: 1 };
+  var SELF_VOICED = { pluck: 1, metal: 1, membrane: 1, wavetable: 1, comb: 1, formant: 1 };
 
   /* Tone's synths are not level-matched to each other: swapping the pad from FM to mono
      took the master from -10.1dB to -4.6dB with nothing else changed. Choosing an
@@ -4002,7 +4002,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      wavetable -27.5, comb -25.1, against an fm reference of -27.5. Rounded to half a
      decibel, because two fm readings in the same session differed by 1.4. */
   var SYNTH_TRIM = { fm: 0, am: 5.5, duo: -14.5, mono: -10, simple: -11,
-                     pluck: -9, metal: -2, membrane: -12.5, wavetable: -9, comb: -0.5 };
+                     pluck: -9, metal: -2, membrane: -12.5, wavetable: -9, comb: -0.5,
+                     formant: -2 };
 
   /* ---- Two voices Tone does not ship ----
      A wavetable and a bowed waveguide, chosen because each has a dimension that stays
@@ -4202,6 +4203,162 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return this;
   };
 
+  /* ---- A formant voice ----
+     Five parallel bandpass resonators over a sawtooth, which is the classic source-filter
+     arrangement. Parallel rather than cascade for one specific reason: cascade needs fewer
+     parameters and guarantees a correct spectrum, but it cannot apply a per-formant
+     amplitude, and a per-formant amplitude is exactly what the published tables give.
+
+     The numbers are Csound's Appendix D, tenor register — not invented, and not a speech
+     corpus's F1/F2 means either, because those give centre frequencies with no bandwidths
+     or amplitudes and a resonator bank needs all three. Tenor because its amplitudes are
+     the evenest of the five registers: tenor "a" runs 0, -6, -7, -8, -22 dB where soprano
+     "a" runs 0, -6, -32, -20, -50 and effectively deletes its own third formant. Even
+     amplitudes are what make the movement audible, which is the only reason this voice is
+     here.
+
+     The vowels are ordered u, o, a, e, i, which is a traverse of the vowel triangle rather
+     than an arbitrary sequence: F2 climbs 600, 800, 1080, 1700, 1870 as the tongue comes
+     forward, while F1 rises to 650 at the open vowel and falls again. A morph walking that
+     path passes through configurations a vocal tract can actually make.
+
+     What makes this a formant voice and not a filtered sawtooth: the resonators do not
+     track pitch. The oscillator plays the note and the formants stay where they are. The
+     second control moves them deliberately, which reads as the size of the thing making
+     the sound rather than as a filter sweep. */
+  var FORMANTS = [
+    /* u */ { f: [350, 600, 2700, 2900, 3300],  a: [0, -20, -17, -14, -26], b: [40, 60, 100, 120, 120] },
+    /* o */ { f: [400, 800, 2600, 2800, 3000],  a: [0, -10, -12, -12, -26], b: [70, 80, 100, 130, 135] },
+    /* a */ { f: [650, 1080, 2650, 2900, 3250], a: [0, -6, -7, -8, -22],    b: [80, 90, 120, 130, 140] },
+    /* e */ { f: [400, 1700, 2600, 3200, 3580], a: [0, -14, -12, -14, -20], b: [70, 80, 100, 120, 120] },
+    /* i */ { f: [290, 1870, 2800, 3250, 3540], a: [0, -15, -18, -20, -30], b: [40, 90, 100, 120, 120] }
+  ];
+
+  function FormantVoice(Tone) {
+    this._t = Tone;
+    this.output = new Tone.Volume(0);
+    this.volume = this.output.volume;
+    /* A sawtooth has every harmonic, which is what a resonator bank needs to excite. The
+       tilt stands in for the glottal source's roll-off: a bare saw is -6 dB/octave and a
+       glottal pulse is nearer -12, and without it the upper formants scream. */
+    this._osc = new Tone.Oscillator({ frequency: 220, type: "sawtooth" });
+    this._tilt = new Tone.Filter({ type: "lowpass", frequency: 1400, rolloff: -12, Q: 0 });
+    this._env = new Tone.AmplitudeEnvelope({
+      attack: 0.08, decay: 0.4, sustain: 0.65, release: 2.2, releaseCurve: "exponential"
+    });
+    this._sum = new Tone.Gain(0.5);
+    this._bank = [];
+    for (var i = 0; i < 5; i++) {
+      var bp = new Tone.Filter({ type: "bandpass", frequency: FORMANTS[2].f[i], Q: 8 });
+      var g = new Tone.Gain(0);
+      bp.connect(g); g.connect(this._sum);
+      this._bank.push({ bp: bp, g: g });
+    }
+    this._osc.connect(this._tilt);
+    this._tilt.connect(this._env);
+    var self = this;
+    this._bank.forEach(function (n) { self._env.connect(n.bp); });
+    this._sum.connect(this.output);
+    this._osc.start();
+    this.harmonicity = new Tone.Signal(0.5);      /* vowel position, u..i */
+    this.modulationIndex = new Tone.Signal(0.5);  /* formant shift */
+    this._poll = setInterval(this._follow.bind(this), 120);
+    this._follow();
+  }
+  /* Interpolated in log frequency and linear dB, so a morph between two vowels moves the
+     way a tract moves rather than sliding linearly through frequencies that mean nothing
+     in between. */
+  /* ---- Why the bank has to normalise itself ----
+     A parallel resonator bank's output level depends on how much of the source's energy
+     happens to fall inside its passbands, and that changes with the vowel and with the
+     note. Measured before this existed: the u vowel came out at -53.2 dBFS and the i vowel
+     at -30.9, a 22 dB swing on a control that is supposed to change the vowel. Worse than
+     the wavetable's problem and the same kind of mistake.
+
+     A static per-vowel table would not fix it, because the pitch moves too. So the level is
+     estimated instead, from what the source actually supplies at each formant. A sawtooth's
+     harmonic n has amplitude 1/n, so its spectral envelope at frequency f is f0/f, and the
+     tilt filter is two poles, so it contributes 1/sqrt(1 + (f/fc)^4). A bandpass of centre
+     f, quality Q and gain g passes power proportional to g^2 * A(f)^2 * (f/Q). Summing that
+     over the five resonators gives an estimate of the bank's output power, and the summing
+     gain is set to its inverse square root.
+
+     Formants below the fundamental get nothing, which is correct and is the real reason a
+     vowel thins out when it is sung high: there is no harmonic there to resonate. */
+  FormantVoice.prototype._sourceAt = function (hz) {
+    var f0 = this._osc.frequency.value;
+    if (!(f0 > 0) || hz < f0) { return 0; }
+    var fc = this._tilt.frequency.value;
+    var tilt = 1 / Math.sqrt(1 + Math.pow(hz / Math.max(20, fc), 4));
+    return (f0 / hz) * tilt;
+  };
+
+  FormantVoice.prototype._follow = function () {
+    var v = this.harmonicity.value;
+    v = v < 0 ? 0 : v > 1 ? 1 : v;
+    var sh = this.modulationIndex.value;
+    sh = sh < 0 ? 0 : sh > 1 ? 1 : sh;
+    var shift = 0.7 + sh * 0.9;                   /* 0.7x to 1.6x the tract */
+    var span = FORMANTS.length - 1, x = v * span;
+    var i = Math.min(span - 1, Math.floor(x)), f = x - i;
+    var A = FORMANTS[i], B = FORMANTS[i + 1];
+    var power = 0;
+    for (var k = 0; k < 5; k++) {
+      var hz = Math.exp((1 - f) * Math.log(A.f[k]) + f * Math.log(B.f[k])) * shift;
+      /* The bandwidth is shifted with the frequency. A longer tract moves its formants
+         down and widens nothing in relative terms, so Q — centre over bandwidth — is a
+         property of the vowel, not of the shift. Scaling only the centre inflated Q from
+         27 to 31 at the default shift and would have reached 43 at the top of the range,
+         which turns the shift control into a secret resonance control. */
+      var bw = Math.exp((1 - f) * Math.log(A.b[k]) + f * Math.log(B.b[k])) * shift;
+      var db = (1 - f) * A.a[k] + f * B.a[k];
+      var n = this._bank[k];
+      var q = Math.max(1, hz / bw);
+      var g = Math.pow(10, db / 20);
+      n.bp.frequency.rampTo(Math.min(15000, hz), 0.12);
+      n.bp.Q.rampTo(q, 0.12);                      /* Q is centre over bandwidth */
+      n.g.gain.rampTo(g, 0.12);
+      var a = this._sourceAt(hz);
+      power += g * g * a * a * (hz / q);
+    }
+    /* Clamped, because a vowel whose formants all sit under the fundamental would otherwise
+       ask for an unbounded gain to amplify silence. */
+    var norm = power > 1e-12 ? 1.8 / Math.sqrt(power) : 0;
+    this._sum.gain.rampTo(Math.min(12, norm), 0.15);
+  };
+  FormantVoice.prototype.set = function (o) {
+    if (!o) { return this; }
+    if (o.harmonicity !== undefined) { this.harmonicity.value = o.harmonicity; }
+    if (o.modulationIndex !== undefined) { this.modulationIndex.value = o.modulationIndex; }
+    return this;
+  };
+  FormantVoice.prototype.connect = function (d) { this.output.connect(d); return this; };
+  FormantVoice.prototype._pitch = function (f, t) {
+    var at = t === undefined ? this._t.now() : t;
+    this._osc.frequency.setValueAtTime(f, at);
+    /* The tilt follows the note so the source keeps a consistent brightness across the
+       range; the formants deliberately do not. */
+    this._tilt.frequency.setValueAtTime(Math.min(4000, Math.max(500, f * 6)), at);
+  };
+  FormantVoice.prototype.triggerAttack = function (f, t, v) {
+    this._pitch(f, t); this._env.triggerAttack(t, v === undefined ? 1 : v); return this;
+  };
+  FormantVoice.prototype.triggerAttackRelease = function (f, d, t, v) {
+    this._pitch(f, t); this._env.triggerAttackRelease(d, t, v === undefined ? 1 : v);
+    return this;
+  };
+  FormantVoice.prototype.triggerRelease = function (t) {
+    this._env.triggerRelease(t); return this;
+  };
+  FormantVoice.prototype.dispose = function () {
+    clearInterval(this._poll);
+    var all = [this._osc, this._tilt, this._env, this._sum, this.output,
+               this.harmonicity, this.modulationIndex];
+    this._bank.forEach(function (n) { all.push(n.bp, n.g); });
+    all.forEach(function (n) { try { n.dispose(); } catch (e) { /* already gone */ } });
+    return this;
+  };
+
   function makeSynth(Tone, type) {
     if (type === "am") { return new Tone.AMSynth(); }
     if (type === "duo") { return new Tone.DuoSynth(); }
@@ -4229,6 +4386,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     if (type === "wavetable") { return new WavetableVoice(Tone); }
     if (type === "comb") { return new CombVoice(Tone); }
+    if (type === "formant") { return new FormantVoice(Tone); }
     return new Tone.FMSynth();
   }
 
@@ -4286,6 +4444,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     comb: {
       harm:  { label: "damping", min: 0, max: 1, step: 0.02, def: 0.4, path: "harmonicity" },
       index: { label: "resonance", min: 0, max: 1, step: 0.02, def: 0.5, path: "modulationIndex" }
+    },
+    formant: {
+      harm:  { label: "vowel", min: 0, max: 1, step: 0.02, def: 0.5, path: "harmonicity",
+               hint: "u o a e i" },
+      index: { label: "shift", min: 0, max: 1, step: 0.02, def: 0.5, path: "modulationIndex",
+               hint: "the size of the tract, 0.7x to 1.6x" }
     }
   };
 
@@ -4433,15 +4597,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* Three voices, each its own synth so voice leading can be reasoned about one line at
        a time: a bass that moves rarely, and a top voice where the generative activity
        lives. */
+    /* Built as the patch asks, not as FM. This used to hardcode an FMSynth while synthType
+       was initialised from the patch, so a route saved with any other instrument came back
+       as FM on the next load — and because applySynths only swaps when the two disagree,
+       and they agreed, it could never correct itself. The panel said pluck and an FMSynth
+       played. Going through swapSynth also means the level trim is applied at build time
+       rather than only on a later change. */
     function mk(env, gain, mod, menv) {
       var g = new Tone.Gain(gain).connect(padDry);
-      var sy = new Tone.FMSynth().connect(g);
-      sy.set({
+      var holder = {};
+      swapSynth(holder, "synth", g, patch.voice.synth, {
         harmonicity: patch.voice.harm, modulationIndex: patch.voice.index,
         oscillator: { type: "sine" }, modulation: { type: mod },
         envelope: env, modulationEnvelope: menv
       });
-      return { synth: sy, gain: g };
+      return { synth: holder.synth, gain: g };
     }
     /* The bass keeps a slow modulation envelope so its timbre opens after the attack rather
        than with it, which is what stops a held FM note sounding like an organ. */
@@ -4489,19 +4659,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     sectDrive.connect(sectWarp);
     sectWarp.connect(sectFilter);
     sectWarp.start();
-    var sectSynth = new Tone.FMSynth().connect(sectDry);
-    /* Measured 10dB under the harmony bus at equal velocity — FM simply puts out less for
-       the same trigger, and the line disappeared underneath the chords. Raising velocity and
-       gain alone put it 7dB over the chords, 0 left it 10dB under. Measured: 3 lands the
-       line about 7dB below the chord bed — followable as its own part, not covering it. */
-    sectSynth.volume.value = 3;
-    sectSynth.set({
-      harmonicity: 2.02, modulationIndex: 7.5,
+    var sectHolder = {};
+    swapSynth(sectHolder, "synth", sectDry, patch.sect.synth, {
+      harmonicity: patch.sect.harm, modulationIndex: patch.sect.index,
       oscillator: { type: "sine" }, modulation: { type: "triangle" },
       envelope: { attack: 0.012, decay: 0.35, sustain: 0.18, release: 1.1,
                   attackCurve: "linear", releaseCurve: "exponential" },
       modulationEnvelope: { attack: 0.04, decay: 0.5, sustain: 0.1, release: 0.8 }
     });
+    var sectSynth = sectHolder.synth;
+    /* Measured 10dB under the harmony bus at equal velocity — FM simply puts out less for
+       the same trigger, and the line disappeared underneath the chords. Raising velocity and
+       gain alone put it 7dB over the chords, 0 left it 10dB under. Measured: 3 lands the
+       line about 7dB below the chord bed — followable as its own part, not covering it. */
+    /* Measured 10dB under the harmony bus at equal velocity — FM simply puts out less for
+       the same trigger, and the line disappeared underneath the chords. Raising velocity and
+       gain alone put it 7dB over the chords, 0 left it 10dB under. Measured: 3 lands the
+       line about 7dB below the chord bed — followable as its own part, not covering it.
+       Added to whatever trim its instrument carries rather than replacing it. */
+    sectSynth.volume.value = sectSynth.volume.value + 3;
 
     /* ---- Voice three ----
        Between the other two and slower than either: the pad holds a chord, the second voice
@@ -6619,7 +6795,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function applySynths(patch) {
     var V = bed.voice;
     if (V.synthType !== patch.voice.synth) {
-      V.synthType = patch.voice.synth;
+      /* Recorded only once the swaps have actually happened. Setting it first meant that a
+         swap which threw left the type saying one thing and the graph holding another, and
+         the guard above then refused to try again — the voice was stuck on the old synth
+         with no way back short of a reload. Caught when a formant swap reported success
+         while an FMSynth was still playing. */
       ["bass", "top"].forEach(function (k) {
         swapSynth(V.synth[k], "synth", V.synth[k].gain, patch.voice.synth, {
           harmonicity: patch.voice.harm, modulationIndex: patch.voice.index,
@@ -6635,6 +6815,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             : { attack: 0.05, decay: 0.6, sustain: 0.25, release: 1.2 }
         });
       });
+      V.synthType = patch.voice.synth;
       harmony.held = false;
     }
     if (V.sect && V.sectType !== patch.sect.synth) {
