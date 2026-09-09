@@ -3965,19 +3965,214 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
      Swapping one is a node change, not a scheduling change: the Transport repeats are left
      alone and only the leaf is replaced, so A-16 is not in question. */
-  var SYNTH_TYPES = ["fm", "am", "duo", "mono", "simple"];
-  var SYNTH_LABEL = { fm: "FM", am: "AM", duo: "duo", mono: "mono", simple: "simple" };
+  var SYNTH_TYPES = ["fm", "am", "duo", "mono", "simple",
+                     "pluck", "metal", "membrane", "wavetable", "comb"];
+  var SYNTH_LABEL = { fm: "FM", am: "AM", duo: "duo", mono: "mono", simple: "simple",
+                      pluck: "pluck", metal: "metal", membrane: "membrane",
+                      wavetable: "wavetable", comb: "comb" };
+
+  /* Three of these strike and then decay rather than hold. The pad attacks and does not
+     release until the chord moves, so a struck instrument there would ring out and leave
+     silence for however long the chord lasts - A-15 again, reached by a different route.
+     They are re-struck once a bar instead, slow enough to read as a pulse. */
+  var PERCUSSIVE = { pluck: 1, metal: 1, membrane: 1 };
+
+  /* These five carry their own envelope and their own idea of what a note is. The settings a
+     voice hands to swapSynth are written for FM - a sustain of 0.55, a modulation envelope -
+     and applying them here would flatten the thing that makes them different. Only the two
+     timbre controls are let through, so the morphs still reach them. */
+  var SELF_VOICED = { pluck: 1, metal: 1, membrane: 1, wavetable: 1, comb: 1 };
 
   /* Tone's synths are not level-matched to each other: swapping the pad from FM to mono
      took the master from -10.1dB to -4.6dB with nothing else changed. Choosing an
-     instrument should change the sound and not the loudness, so each carries a trim. */
-  var SYNTH_TRIM = { fm: 0, am: -1, duo: -7, mono: -7, simple: -5 };
+     instrument should change the sound and not the loudness, so each carries a trim.
+
+     The five newer ones were trimmed on the pad bus rather than the master, which isolates
+     what changing the instrument changes, and on peak rather than mean: with three voices
+     and a chord that moves every bar the mean drifts six decibels between two runs of the
+     same instrument, while the peak repeats to within two. Measured against FM at -25.1
+     dBFS peak. The same measurement says the original five are three to ten decibels apart
+     from each other, which is a separate correction and not made here. */
+  var SYNTH_TRIM = { fm: 0, am: -1, duo: -7, mono: -7, simple: -5,
+                     pluck: -8, metal: -1, membrane: -9, wavetable: -9, comb: 2 };
+
+  /* ---- Two voices Tone does not ship ----
+     A wavetable and a bowed waveguide, chosen because each has a dimension that stays
+     musical when it is moved over minutes rather than milliseconds, which is the only kind
+     of movement a morph makes. They present the surface a Tone synth presents - connect,
+     volume, triggerAttack, triggerAttackRelease, triggerRelease, set, dispose - so nothing
+     that drives a voice needs to know which kind it is holding.
+
+     Both expose harmonicity and modulationIndex, because those are the two controls the
+     panel and the morph destinations already reach for. What they mean depends on the
+     instrument: for FM the ratio and the depth, for the wavetable which table and how
+     bright, for the comb its damping and its resonance. Two continuous dimensions either
+     way, which is what the morphs need and all they need. */
+
+  /* Amplitudes only - Tone builds the wave from them. Hollow through to bright, with
+     adjacent tables close enough that a crossfade between them reads as one timbre moving
+     rather than as two sounds swapping over. */
+  var WAVE_TABLES = (function () {
+    var i, n = 24, hollow = [], saw = [], square = [], bright = [];
+    for (i = 1; i <= n; i++) {
+      hollow.push(i === 1 ? 1 : (i % 4 === 1 ? 0.45 / i : 0));
+      saw.push(1 / i);
+      square.push(i % 2 ? 1 / i : 0);
+      bright.push(Math.pow(i, -0.55) * (i % 7 === 0 ? 0.2 : 1));
+    }
+    return [hollow, saw, square, bright];
+  })();
+
+  function WavetableVoice(Tone) {
+    this._t = Tone;
+    this.output = new Tone.Volume(0);
+    this.volume = this.output.volume;
+    this._env = new Tone.AmplitudeEnvelope({
+      attack: 0.06, decay: 0.4, sustain: 0.62, release: 2, releaseCurve: "exponential"
+    });
+    this._tone = new Tone.Filter({ type: "lowpass", frequency: 6000, Q: 0.6 });
+    this._a = new Tone.Oscillator({ frequency: 220, type: "sine" });
+    this._b = new Tone.Oscillator({ frequency: 220, type: "sine" });
+    this._ga = new Tone.Gain(1);
+    this._gb = new Tone.Gain(0);
+    this._a.connect(this._ga); this._b.connect(this._gb);
+    this._ga.connect(this._env); this._gb.connect(this._env);
+    this._env.connect(this._tone); this._tone.connect(this.output);
+    this._a.start(); this._b.start();
+    this._idx = -1;
+    this.harmonicity = new Tone.Signal(1);
+    this.modulationIndex = new Tone.Signal(4);
+    this._poll = setInterval(this._follow.bind(this), 120);
+    this._follow();
+  }
+  /* The two signals are read rather than connected to anything: a morph ramps them and this
+     follows. The table pair is rebuilt only when the position crosses into a new pair, which
+     is rare - setting partials every frame would cost far more than the crossfade does. */
+  WavetableVoice.prototype._follow = function () {
+    var pos = (this.harmonicity.value - 0.25) / 4.75;
+    pos = pos < 0 ? 0 : pos > 1 ? 1 : pos;
+    var span = WAVE_TABLES.length - 1, x = pos * span;
+    var i = Math.min(span - 1, Math.floor(x)), f = x - i;
+    if (i !== this._idx) {
+      this._idx = i;
+      this._a.partials = WAVE_TABLES[i];
+      this._b.partials = WAVE_TABLES[i + 1];
+    }
+    this._ga.gain.rampTo(1 - f, 0.12);
+    this._gb.gain.rampTo(f, 0.12);
+    this._tone.frequency.rampTo(500 + (this.modulationIndex.value / 16) * 9000, 0.15);
+  };
+  WavetableVoice.prototype.set = function (o) {
+    if (!o) { return this; }
+    if (o.harmonicity !== undefined) { this.harmonicity.value = o.harmonicity; }
+    if (o.modulationIndex !== undefined) { this.modulationIndex.value = o.modulationIndex; }
+    return this;
+  };
+  WavetableVoice.prototype.connect = function (d) { this.output.connect(d); return this; };
+  WavetableVoice.prototype._pitch = function (f, t) {
+    var at = t === undefined ? this._t.now() : t;
+    this._a.frequency.setValueAtTime(f, at);
+    this._b.frequency.setValueAtTime(f, at);
+  };
+  WavetableVoice.prototype.triggerAttack = function (f, t, v) {
+    this._pitch(f, t); this._env.triggerAttack(t, v === undefined ? 1 : v); return this;
+  };
+  WavetableVoice.prototype.triggerAttackRelease = function (f, d, t, v) {
+    this._pitch(f, t); this._env.triggerAttackRelease(d, t, v === undefined ? 1 : v);
+    return this;
+  };
+  WavetableVoice.prototype.triggerRelease = function (t) {
+    this._env.triggerRelease(t); return this;
+  };
+  WavetableVoice.prototype.dispose = function () {
+    clearInterval(this._poll);
+    [this._a, this._b, this._ga, this._gb, this._env, this._tone, this.output,
+     this.harmonicity, this.modulationIndex].forEach(function (n) {
+      try { n.dispose(); } catch (e) { /* already gone */ }
+    });
+    return this;
+  };
+
+  /* A tuned comb fed continuously rather than struck: the difference between plucking a
+     string and bowing one, and the reason it earns a place beside pluck rather than
+     duplicating it - it sustains, so it can hold a long tone while the damping moves
+     underneath it. */
+  function CombVoice(Tone) {
+    this._t = Tone;
+    this.output = new Tone.Volume(0);
+    this.volume = this.output.volume;
+    this._noise = new Tone.Noise({ type: "pink" });
+    this._exc = new Tone.Filter({ type: "bandpass", frequency: 900, Q: 0.9 });
+    this._env = new Tone.AmplitudeEnvelope({
+      attack: 0.14, decay: 0.5, sustain: 0.5, release: 1.8, releaseCurve: "exponential"
+    });
+    this._comb = new Tone.LowpassCombFilter({
+      delayTime: 0.005, resonance: 0.85, dampening: 3000
+    });
+    this._noise.connect(this._exc); this._exc.connect(this._env);
+    this._env.connect(this._comb); this._comb.connect(this.output);
+    this._noise.start();
+    this.harmonicity = new Tone.Signal(1);
+    this.modulationIndex = new Tone.Signal(4);
+    this._poll = setInterval(this._follow.bind(this), 120);
+    this._follow();
+  }
+  CombVoice.prototype._follow = function () {
+    var d = (this.harmonicity.value - 0.25) / 4.75;
+    d = d < 0 ? 0 : d > 1 ? 1 : d;
+    this._comb.dampening = 600 + d * 7000;
+    /* Never to one. A comb at unity feedback does not decay, it accumulates, and the last
+       thing here that behaved that way was the inner voice that had to be removed. */
+    this._comb.resonance.rampTo(0.55 + (this.modulationIndex.value / 16) * 0.42, 0.15);
+  };
+  CombVoice.prototype.set = WavetableVoice.prototype.set;
+  CombVoice.prototype.connect = WavetableVoice.prototype.connect;
+  CombVoice.prototype._pitch = function (f, t) {
+    var at = t === undefined ? this._t.now() : t;
+    var dt = 1 / Math.max(20, Math.min(4000, f));
+    try { this._comb.delayTime.setValueAtTime(dt, at); }
+    catch (e) { this._comb.delayTime.value = dt; }
+    this._exc.frequency.setValueAtTime(Math.min(9000, f * 3), at);
+  };
+  CombVoice.prototype.triggerAttack = WavetableVoice.prototype.triggerAttack;
+  CombVoice.prototype.triggerAttackRelease = WavetableVoice.prototype.triggerAttackRelease;
+  CombVoice.prototype.triggerRelease = WavetableVoice.prototype.triggerRelease;
+  CombVoice.prototype.dispose = function () {
+    clearInterval(this._poll);
+    [this._noise, this._exc, this._env, this._comb, this.output,
+     this.harmonicity, this.modulationIndex].forEach(function (n) {
+      try { n.dispose(); } catch (e) { /* already gone */ }
+    });
+    return this;
+  };
 
   function makeSynth(Tone, type) {
     if (type === "am") { return new Tone.AMSynth(); }
     if (type === "duo") { return new Tone.DuoSynth(); }
     if (type === "mono") { return new Tone.MonoSynth(); }
     if (type === "simple") { return new Tone.Synth(); }
+    if (type === "pluck") {
+      return new Tone.PluckSynth({ attackNoise: 1.2, dampening: 3200, resonance: 0.92 });
+    }
+    if (type === "metal") {
+      /* Its envelope is the whole instrument. With a short release this is a hi-hat; with a
+         long one it is a struck bell that keeps ringing, which is the only version of it
+         that belongs in a piece made of long tones. */
+      return new Tone.MetalSynth({
+        harmonicity: 4.1, modulationIndex: 18, resonance: 3500, octaves: 1.2,
+        envelope: { attack: 0.004, decay: 1.8, release: 2.6 }
+      });
+    }
+    if (type === "membrane") {
+      return new Tone.MembraneSynth({
+        pitchDecay: 0.12, octaves: 3.2,
+        oscillator: { type: "sine" },
+        envelope: { attack: 0.006, decay: 1, sustain: 0.02, release: 2,
+                    attackCurve: "exponential" }
+      });
+    }
+    if (type === "wavetable") { return new WavetableVoice(Tone); }
+    if (type === "comb") { return new CombVoice(Tone); }
     return new Tone.FMSynth();
   }
 
@@ -3986,7 +4181,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function swapSynth(holder, key, dest, type, settings) {
     var Tone = bed.Tone, old = holder[key];
     var sy = makeSynth(Tone, type);
-    try { sy.set(settings); } catch (e) { /* a type without those fields */ }
+    var use = settings;
+    if (SELF_VOICED[type] && settings) {
+      use = { harmonicity: settings.harmonicity, modulationIndex: settings.modulationIndex };
+    }
+    try { sy.set(use); } catch (e) { /* a type without those fields */ }
     sy.volume.value = (SYNTH_TRIM[type] === undefined ? 0 : SYNTH_TRIM[type]) +
                       (settings && settings.__trim ? settings.__trim : 0);
     sy.connect(dest);
@@ -4167,7 +4366,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        you stand still to reach the patch panel. Measured on a parked walker the pad
        triggered once, then nothing for twelve seconds, output at -100 dB. It sustains now
        and is re-voiced only when the chord actually moves. */
-    if (changed || !harmony.held) {
+    /* A held instrument is attacked once and left; a struck one is silent a few seconds
+       later, so it is struck again each bar. Either way the harmony keeps sounding while
+       you stand still, which is the thing that actually matters. */
+    if (changed || !harmony.held || PERCUSSIVE[patch.voice.synth]) {
       V.synth.bass.synth.triggerAttack(midiToFreq(b), time, 0.5);
       harmony.last.bass = b;
       harmony.held = true;
@@ -4974,16 +5176,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "sect.cutoff",  label: "2nd filter" },
     { k: "sect.index",   label: "2nd timbre" },
     { k: "voice.gain",   label: "pad level" },
-    { k: "voice.index",  label: "pad FM" },
-    { k: "voice.harm",   label: "pad ratio" },
+    { k: "voice.index",  label: "pad timbre" },
+    { k: "voice.harm",   label: "pad colour" },
     { k: "voice.drive",  label: "pad drive" },
     { k: "voice.warp",   label: "pad warp" },
-    { k: "sect.harm",    label: "2nd ratio" },
+    { k: "sect.harm",    label: "2nd colour" },
     { k: "sect.drive",   label: "2nd drive" },
     { k: "sect.warp",    label: "2nd warp" },
     { k: "v3.cutoff",    label: "3rd filter" },
-    { k: "v3.harm",      label: "3rd ratio" },
-    { k: "v3.index",     label: "3rd fm" },
+    { k: "v3.harm",      label: "3rd colour" },
+    { k: "v3.index",     label: "3rd timbre" },
     { k: "v3.drive",     label: "3rd drive" },
     { k: "v3.warp",      label: "3rd warp" }
   ];
@@ -5616,8 +5818,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "voice.density", label: "density", min: 0.05, max: 1, step: 0.05 },
     { k: "voice.bass", label: "bass", min: 0, max: 1, step: 0.05 },
     { k: "voice.top", label: "top", min: 0, max: 1, step: 0.05 },
-    { k: "voice.index", label: "fm depth", min: 0, max: 16, step: 0.5 },
-    { k: "voice.harm", label: "fm ratio", min: 0.25, max: 4, step: 0.25 },
+    { k: "voice.index", label: "timbre", min: 0, max: 16, step: 0.5,
+      hint: "FM and AM: modulation depth. Wavetable: brightness. Comb: resonance. Struck instruments ignore it." },
+    { k: "voice.harm", label: "colour", min: 0.25, max: 4, step: 0.25,
+      hint: "FM and AM: the ratio. Wavetable: which table. Comb: damping. Struck instruments ignore it." },
     { k: "voice.drive", label: "drive", min: 0, max: 1, step: 0.05 },
     { k: "voice.warp", label: "warp", min: 0, max: 1, step: 0.05 },
 
@@ -5631,7 +5835,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       fmt: function (v) { return DIV_LABEL[v] || v; },
       side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
     { k: "sect.chordPull", label: "pull to chord", min: 0, max: 1, step: 0.05 },
-    { k: "sect.harm", label: "its ratio", min: 0.25, max: 5, step: 0.25 },
+    { k: "sect.harm", label: "its colour", min: 0.25, max: 5, step: 0.25,
+      hint: "FM and AM: the ratio. Wavetable: which table. Comb: damping. Struck instruments ignore it." },
     { k: "sect.drive", label: "its drive", min: 0, max: 1, step: 0.05 },
     { k: "sect.warp", label: "its warp", min: 0, max: 1, step: 0.05 },
 
@@ -5652,8 +5857,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "v3.rhythm", label: "its rhythm", options: function () { return DIVISIONS; },
       fmt: function (v) { return DIV_LABEL[v] || v; },
       side: function (v, p) { return divSeconds(v, p.tempo).toFixed(2) + " s"; } },
-    { k: "v3.harm", label: "its ratio", min: 0.25, max: 5, step: 0.25 },
-    { k: "v3.index", label: "its fm", min: 0, max: 16, step: 0.5 },
+    { k: "v3.harm", label: "its colour", min: 0.25, max: 5, step: 0.25,
+      hint: "FM and AM: the ratio. Wavetable: which table. Comb: damping. Struck instruments ignore it." },
+    { k: "v3.index", label: "its timbre", min: 0, max: 16, step: 0.5,
+      hint: "FM and AM: modulation depth. Wavetable: brightness. Comb: resonance. Struck instruments ignore it." },
     { k: "v3.drive", label: "its drive", min: 0, max: 1, step: 0.05 },
     { k: "v3.warp", label: "its warp", min: 0, max: 1, step: 0.05 },
 
@@ -5787,6 +5994,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function buildRow(fl, patch, f) {
       var row = document.createElement("label");
       row.className = "pprow";
+      if (fl.hint) { row.title = fl.hint; }
       var name = document.createElement("span");
       name.textContent = fl.label;
       row.appendChild(name);
