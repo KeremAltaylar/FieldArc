@@ -3136,7 +3136,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "spread", label: "spread", min: 0, max: 1, step: 0.02 },
     { k: "scatter", label: "scatter", min: 0, max: 1, step: 0.02 },
     { k: "pitch", label: "pitch", min: -24, max: 24, step: 1, unit: " st" },
-    { k: "gain", label: "level", min: 0, max: 1, step: 0.05 }
+    { k: "gain", label: "level", min: 0, max: 1, step: 0.05 },
+    { k: "vary", label: "vary per hit", min: 0, max: 1, step: 0.02 }
   ];
 
   /* The grains panel. One Euclidean line at the top because that is the rhythm, then the
@@ -3196,7 +3197,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "from the recording. Offset is where in the file they come from; scatter is how far " +
       "each one wanders from there, so a burst reads across the recording rather than " +
       "repeating one slice. Spread is how far the burst is thrown across the step — at " +
-      "zero they land together as one transient, at one they fill the step.";
+      "zero they land together as one transient, at one they fill the step. Vary is how " +
+      "different each hit is from the last: at zero every pulse is the cloud you set, and " +
+      "upward it moves all of it — size, number, spread, where it bites, and the pitch by " +
+      "whole semitones.";
     col3.appendChild(note);
     var strip = document.createElement("div");
     strip.className = "rpat grainpat";
@@ -3225,6 +3229,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       g.count = 2 + Math.floor(Math.random() * 10);
       g.spread = +(Math.random() * 0.8).toFixed(2);
       g.scatter = +(Math.random() * 0.5).toFixed(2);
+      g.vary = +(Math.random() * 0.6).toFixed(2);
       save();
       renderRhythmPanel();
       toast("E(" + g.pulses + "," + st + ") \u00b7 " + g.count + " grains");
@@ -5404,7 +5409,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function defaultGrains() {
     return {
       pulses: 11, rotate: 0, offset: 0.15, grain: 90, count: 6,
-      spread: 0.5, scatter: 0.25, gain: 0.85, pitch: 0
+      spread: 0.5, scatter: 0.25, gain: 0.85, pitch: 0, vary: 0.35
     };
   }
 
@@ -5416,6 +5421,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!r.voices[k]) { r.voices[k] = defaultRhythm().voices[k]; }
     });
     if (!r.grains) { r.grains = defaultGrains(); }
+    /* Field by field, so a point saved before a control existed gains it rather than being
+       reset to defaults it never chose. */
+    var gd = defaultGrains();
+    Object.keys(gd).forEach(function (k) {
+      if (r.grains[k] === undefined) { r.grains[k] = gd[k]; }
+    });
     return r;
   }
 
@@ -5544,9 +5555,40 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      The burst is spread across the step rather than fired at once, because a stack of
      simultaneous grains is one loud transient — the spread is what turns the same numbers
      into a cloud. */
-  function fireGrains(R, g, time, stepSecs) {
+  /* ---- What varies from one pulse to the next ----
+     Scatter spreads the grains inside a single burst; this decides how far the whole burst
+     moves between one pulse and the next, so no two hits are the same cloud. The controls
+     stay the centre of the thing and vary says how far around that centre each hit lands.
+
+     At zero it returns the settings untouched, which is the same requirement A-8 puts on
+     an effect's mix: a control with no true null cannot be taken out of the signal, and
+     one that always randomises a little means the numbers on the faders are never what you
+     actually hear.
+
+     Grain size varies multiplicatively because an extra 50ms is nothing on a 400ms grain
+     and doubles a 50ms one. Pitch is rounded to whole semitones — continuous detune on
+     tonal material reads as broken rather than as variation. */
+  function variedGrains(g) {
+    var v = Math.max(0, Math.min(1, g.vary === undefined ? 0 : g.vary));
+    if (v <= 0) { return g; }
+    function r() { return (Math.random() - 0.5) * 2; }
+    function clamp(x, lo, hi) { return x < lo ? lo : (x > hi ? hi : x); }
+    return {
+      pulses: g.pulses, rotate: g.rotate,
+      offset:  clamp((g.offset === undefined ? 0.15 : g.offset) + r() * v * 0.5, 0, 1),
+      grain:   clamp((g.grain || 90) * Math.pow(2, r() * v * 1.4), 20, 500),
+      count:   Math.round(clamp((g.count || 6) * (1 + r() * v * 1.1), 1, 32)),
+      spread:  clamp((g.spread === undefined ? 0.5 : g.spread) + r() * v * 0.6, 0, 1),
+      scatter: clamp((g.scatter === undefined ? 0.25 : g.scatter) + r() * v * 0.5, 0, 1),
+      pitch:   (g.pitch || 0) + Math.round(r() * v * 7),
+      gain:    clamp((g.gain === undefined ? 0.85 : g.gain) * (1 + r() * v * 0.45), 0.02, 1)
+    };
+  }
+
+  function fireGrains(R, gSet, time, stepSecs) {
     var Tone = bed.Tone, buf = R.buffer;
     if (!buf || !buf.loaded || !buf.duration) { return; }
+    var g = variedGrains(gSet);
     var n = Math.max(1, Math.min(32, g.count | 0));
     var grainSec = Math.max(0.01, Math.min(2, (g.grain || 90) / 1000));
     var fade = Math.min(0.02, grainSec * 0.4);
