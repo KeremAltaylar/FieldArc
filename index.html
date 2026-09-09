@@ -904,6 +904,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
   padding-left: var(--s-1); padding-right: var(--s-1);
 }
+.grainwave {
+  display: block; width: 100%; height: 68px;
+  margin-bottom: var(--s-3);
+  background: color-mix(in oklch, var(--sunk) 60%, transparent);
+  border: 1px solid var(--bdr); border-radius: 2px;
+}
 .recmode button { border: 0; border-radius: 0; }
 .recmode button + button { border-left: 1px solid var(--bdr); }
 /* Two by two rather than four rows. Four hits is a small set and stacking them cost the
@@ -3167,6 +3173,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var g = r.grains || (r.grains = defaultGrains());
     var commitR = function () { save(); };
 
+    var wave = document.createElement("canvas");
+    wave.className = "grainwave";
+    wave.title = "The recording. The lit band is what roam can reach, the line is the " +
+      "offset, and the marks are grains as they play.";
+    body.appendChild(wave);
+
     var cols = document.createElement("div");
     cols.className = "ppcols";
     var col = document.createElement("div");
@@ -3249,6 +3261,90 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     mhead.appendChild(rnd);
     body.appendChild(mhead);
     markGrainPattern();
+    grainWaveStart();
+  }
+
+  /* ---- The recording, and where the grains are biting it ----
+     A granular sampler without this is a set of numbers and a noise. The waveform says what
+     is in the file, the band says which part of it the offset and roam can reach, and the
+     marks say where the grains actually went — drawn from what the sequencer really
+     scheduled rather than from what the faders say, so the picture cannot drift from the
+     sound (the same rule the morph traces follow).
+
+     The band wraps, because roam does. A roam that runs off the end of the file continues
+     at the beginning, so it is drawn as two pieces rather than one clamped one. */
+  function grainWaveDraw() {
+    var cv = document.querySelector("#rp-body .grainwave");
+    if (!cv) { return; }
+    var f = feature(selected);
+    if (!f) { return; }
+    var w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) { return; }
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (cv.width !== Math.round(w * dpr)) {
+      cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    }
+    var ctx = cv.getContext("2d");
+    if (!ctx) { return; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    var r = rhythmOf(f), g = r.grains || defaultGrains();
+    var peaks = (f.properties.audio || {}).peaks;
+
+    /* The reachable band first, underneath everything, so the waveform reads on top. */
+    var half = Math.max(0, Math.min(1, g.roam === undefined ? 0 : g.roam)) * 0.5;
+    var centre = Math.max(0, Math.min(1, g.offset === undefined ? 0.15 : g.offset));
+    ctx.fillStyle = "rgba(186,206,181,0.10)";
+    if (half >= 0.5) {
+      ctx.fillRect(0, 0, w, h);
+    } else {
+      var a = centre - half, b = centre + half;
+      var segs = [];
+      if (a < 0) { segs.push([0, b], [a + 1, 1]); }
+      else if (b > 1) { segs.push([a, 1], [0, b - 1]); }
+      else { segs.push([a, b]); }
+      segs.forEach(function (sg) { ctx.fillRect(sg[0] * w, 0, (sg[1] - sg[0]) * w, h); });
+    }
+
+    if (peaks && peaks.length) {
+      paintWave(ctx, peaks, w, h, "rgba(186,206,181,0.45)");
+    } else {
+      ctx.fillStyle = "rgba(186,206,181,0.25)";
+      ctx.fillRect(0, h / 2, w, 1);
+    }
+
+    /* The set offset, which is the centre the roam moves around. Drawn even at full roam,
+       where it no longer means anything, because hiding it would make the fader look
+       broken rather than overridden. */
+    ctx.fillStyle = half >= 0.5 ? "rgba(186,206,181,0.30)" : "rgba(214,236,206,0.85)";
+    ctx.fillRect(Math.round(centre * w), 0, 1, h);
+
+    /* What actually played. Newest brightest; a grain's own length is its width, so a
+       500ms grain of a four-second file reads as a wide mark and a 20ms one as a hair. */
+    var R = (bed && bed.rhythms) ? bed.rhythms[f.properties.id] : null;
+    if (!R || !R.recent) { return; }
+    var now = performance.now();
+    for (var i = 0; i < R.recent.length; i++) {
+      var hit = R.recent[i], age = now - hit.at;
+      if (age < 0 || age > 1400) { continue; }
+      var alpha = 0.9 * (1 - age / 1400);
+      ctx.fillStyle = "rgba(214,236,206," + alpha.toFixed(3) + ")";
+      ctx.fillRect(hit.pos * w, 0, Math.max(1, hit.len * w), h);
+    }
+  }
+
+  var gwRAF = null;
+  function grainWaveTick() {
+    if ($("#rhythmpanel").hidden || !document.querySelector("#rp-body .grainwave")) {
+      gwRAF = null; return;
+    }
+    gwRAF = requestAnimationFrame(grainWaveTick);
+    if (document.hidden) { return; }
+    grainWaveDraw();
+  }
+  function grainWaveStart() {
+    if (!gwRAF) { gwRAF = requestAnimationFrame(grainWaveTick); }
   }
 
   /* The line drawn as cells, the same way the four hits are — the numbers say what the
@@ -5510,7 +5606,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var R = bed.rhythms[z.id];
     if (R) { return R; }
     var Tone = bed.Tone;
-    R = bed.rhythms[z.id] = { ready: 0, players: {}, urls: {}, tick: 0, step: 0,
+    R = bed.rhythms[z.id] = { ready: 0, players: {}, urls: {}, tick: 0, step: 0, recent: [],
                               gain: new Tone.Gain(0).connect(bed.rfx ? bed.rfx.input
                                                                      : bed.master) };
     /* A grains point loads its one recording as a buffer rather than a player: a player
@@ -5666,7 +5762,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       /* Level falls slightly across the burst so it reads as one gesture with a shape
          rather than as n separate hits of equal weight. */
       var w = lvl * (1 - 0.35 * (i / Math.max(1, n)));
-      try { src.start(at, off, grainSec, w); } catch (e) { try { src.dispose(); } catch (e2) {} }
+      try {
+        src.start(at, off, grainSec, w);
+        /* Where it bit, as a fraction of the file, for the waveform to mark. Capped so a
+           long walk past a dense point cannot grow this without bound. */
+        R.recent.push({ at: performance.now() + (at - Tone.now()) * 1000,
+                        pos: off / dur, len: grainSec / dur });
+        if (R.recent.length > 96) { R.recent.splice(0, R.recent.length - 96); }
+      } catch (e) { try { src.dispose(); } catch (e2) {} }
     }
   }
 
