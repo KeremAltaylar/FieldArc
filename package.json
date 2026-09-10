@@ -1,0 +1,15 @@
+{
+  "name": "fieldarc",
+  "private": true,
+  "type": "module",
+  "description": "Tests and tools only. The deployed artifact is still a static file set — there is no build step.",
+  "scripts": {
+    "test": "node --test --env-file=.env.local \"tests/**/*.test.mjs\"",
+    "check": "node check-html.js index.html && node check-html.js diag.html",
+    "db:push": "npx --yes supabase@latest db push",
+    "migrate:archive": "node --env-file=.env.local tools/migrate-archive.mjs"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}

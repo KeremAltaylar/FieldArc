@@ -51,7 +51,7 @@
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `npm test` runs `node --test --env-file=.env.local tests/`. Env names `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`.
+- Produces: `npm test` runs `node --test --env-file=.env.local "tests/**/*.test.mjs"`. Env names `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`.
 
 - [ ] **Step 1: Kerem creates the Supabase project (manual, cannot be automated)**
 
@@ -85,7 +85,7 @@ Expected: prints a line naming `.gitignore`. If it prints nothing, stop — the 
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test --env-file=.env.local tests/",
+    "test": "node --test --env-file=.env.local \"tests/**/*.test.mjs\"",
     "check": "node check-html.js index.html && node check-html.js diag.html",
     "db:push": "npx --yes supabase@latest db push",
     "migrate:archive": "node --env-file=.env.local tools/migrate-archive.mjs"

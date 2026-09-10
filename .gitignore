@@ -7,3 +7,12 @@ forest.geojson
 
 # Local dev harness for checking phone layouts.
 mobile-test.html
+
+# Secrets: keys for the Supabase project. The .example file carries names only.
+.env.local
+
+# Tooling for tests only — the deployed app is still a static file set.
+node_modules/
+
+# A fresh export taken for the one-time migration.
+archive-export.geojson
