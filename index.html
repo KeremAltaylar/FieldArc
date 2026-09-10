@@ -1481,12 +1481,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      literal so it stays readable and so an editor still treats it as code; it is handed to
      the AudioWorklet as a Blob at run time. The browser ignores an unknown script type. -->
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 (function () {
   "use strict";
 
   var STORE = "fieldarc.v1";
   var PLACE_KEY = "fieldarc.place";
+  /* The anon key is public by design — it ships to every visitor and is what row-level
+     security is written against. The service key and the database URL never appear here. */
+  var FA_CONFIG = {
+    url: "https://ujdygmcpqsbyeysggypc.supabase.co",
+    anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqZHlnbWNwcXNieWV5c2dneXBjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNDE4NDIsImV4cCI6MjEwNDYxNzg0Mn0.SJlrNKQftKxdM0G6f18e6PsRCvdhIH8fco5tW3CktwM"
+  };
+
+  /* A first load with no signal has no library. That is a normal morning in a forest, so it
+     must not throw: everything the archive does locally works without a server. */
+  var sb = (typeof supabase === "undefined")
+    ? null
+    : supabase.createClient(FA_CONFIG.url, FA_CONFIG.anonKey,
+        { auth: { persistSession: true, autoRefreshToken: true } });
   var EXPORT_KEY = "fieldarc.export";
   var TRASH_KEY = "fieldarc.trash";
   var TRASH_DAYS = 30;
@@ -2064,6 +2078,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     map.on("zoomend", renderLabels);
   });
   window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
+  window.__fa.sb = sb;   /* null offline, a client otherwise — measurable either way */
   /* A thrown exception used to be silent: the button would simply not respond and there was
      no console to open, standing in a forest. Anything that escapes is shown once, named,
      with the line — it is the difference between "it does not work" and a bug report. */
