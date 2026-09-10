@@ -124,6 +124,27 @@ test("anon cannot use fuzz_point to recover a sensitive point's true coordinate"
   assert.equal(probe, null);
 });
 
+test("anon cannot write through the public view", async () => {
+  /* The view is auto-updatable and declares security_invoker = off, so a write through it
+     executes as the view's owner and never meets the row-level security added in 0005.
+     Supabase's default privileges granted anon ALL on it at creation and 0004 and 0006 only
+     ever ADDED `grant select`, so this was accepted until 0007: an UPDATE setting
+     kind='route' made the view stop fuzzing the row — the true coordinate came back at
+     0.00 m error with the `fuzzed` marker gone — and a DELETE removed the base row.
+     Asserted here rather than left to the migration because 0011 redefines the view, and a
+     `create or replace view` that someone later turns into a drop-and-recreate would hand
+     the default privileges back their opening. */
+  const { error: upErr } = await anon().from("public_features")
+    .update({ kind: "route" }).eq("id", SENS_ID);
+  assert.ok(upErr, "anon updated a row through the view");
+
+  const { error: delErr } = await anon().from("public_features").delete().eq("id", SENS_ID);
+  assert.ok(delErr, "anon deleted a row through the view");
+
+  const { data } = await db.from("features").select("kind").eq("id", SENS_ID).single();
+  assert.equal(data.kind, "point", "the base row survived unchanged");
+});
+
 test("anon cannot write a feature", async () => {
   const { error } = await anon().from("features").insert({
     place: "T", kind: "point", geometry: { type: "Point", coordinates: [0, 0] }, properties: {}
