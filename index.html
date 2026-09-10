@@ -1839,11 +1839,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         /* The seven sectors, faint under everything. The one you are in lifts. */
         { id: "sector-fill", type: "fill", source: "sectors",
           paint: { "fill-color": ["get", "colour"],
-                   "fill-opacity": ["case", ["==", ["get", "active"], 1], 0.16, 0.05] } },
+                   "fill-opacity": ["case", ["==", ["get", "active"], 1], 0.22, 0.10] } },
         { id: "sector-line", type: "line", source: "sectors",
           paint: { "line-color": ["get", "colour"],
-                   "line-width": ["case", ["==", ["get", "active"], 1], 1.6, 0.6],
-                   "line-opacity": 0.55 } },
+                   "line-width": ["case", ["==", ["get", "active"], 1], 2, 1],
+                   "line-opacity": 0.7 } },
 
         /* The progression drawn alongside the route rather than over it: the line stays the
            line, and the colour is an annotation you can read at a glance. Hue follows the
@@ -1860,10 +1860,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
         { id: "zone-fill", type: "fill", source: "zones",
           paint: { "fill-color": ["case", ["==", ["get", "inside"], 1], lamp, accent],
-                   "fill-opacity": ["case", ["==", ["get", "inside"], 1], 0.28, 0.10] } },
+                   "fill-opacity": ["case", ["==", ["get", "inside"], 1], 0.34, 0.16] } },
         { id: "zone-line", type: "line", source: "zones",
           paint: { "line-color": ["case", ["==", ["get", "inside"], 1], lamp, accent],
-                   "line-width": ["case", ["==", ["get", "inside"], 1], 2, 1],
+                   "line-width": ["case", ["==", ["get", "inside"], 1], 2.4, 1.4],
                    "line-opacity": 0.9 } },
 
         /* Your position, drawn with its uncertainty rather than as a confident dot —
@@ -1951,6 +1951,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } };
     };
     map.getSource("forest-outer").setData({ type: "FeatureCollection", features: [line(frame)] });
+    /* The sectors are cut out of this ring, so changing place re-cuts them. Held open (the
+       closing duplicate dropped) because the clipper treats every polygon as closed. */
+    sect.frame = (frame.length > 2 && frame[0][0] === frame[frame.length - 1][0] &&
+                  frame[0][1] === frame[frame.length - 1][1]) ? frame.slice(0, -1) : frame;
+    drawSectors();
 
 
     forestBounds = b;
@@ -2039,6 +2044,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     map.on("zoomend", renderLabels);
   });
   window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
+  /* The cut is geometry, so it can be checked without a route and without a screenshot:
+     build seeds, take the cells, test every vertex against the frame. */
+  window.__fa.sectors = { cell: voronoiCell, seeds: sectorGeometry,
+                          state: function () { return sect; } };
   var reported = false;
   map.on("error", function (e) {
     window.__fa.errors.push({ sourceId: e && e.sourceId, message: (e && e.error && e.error.message) || String(e) });
@@ -3922,7 +3931,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      The area, not the route, cut into wedges around its own centre. Walking a route crosses
      them on a completely different schedule from the sixteen chord segments, which is where
      the counterpoint comes from: two partitions of the same ground that do not line up. */
-  var sect = { idx: null, centre: null, radius: 0 };
+  var sect = { idx: null, centre: null, radius: 0, frame: null };
 
   /* Seeds placed along the route and pushed alternately to either side of it. Because the
      route bends, the cells that fall out of this are irregular and unequal — regions of the
@@ -3959,10 +3968,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function toPlanar(p) { return [p[0] * sect.kx, p[1]]; }
   function fromPlanar(p) { return [p[0] / sect.kx, p[1]]; }
 
-  /* Keep the half of the polygon nearer to a than to b: one Voronoi edge at a time. */
-  function clipToward(poly, a, b) {
-    var nx = b[0] - a[0], ny = b[1] - a[1];
-    var d = nx * (a[0] + b[0]) / 2 + ny * (a[1] + b[1]) / 2;
+  /* One half-plane, kept: nx*x + ny*y <= d. Sutherland-Hodgman, which allows a subject as
+     irregular as a forest boundary provided every clip region is convex — and every one here
+     is: four box edges and a stack of Voronoi bisectors. */
+  function clipHalf(poly, nx, ny, d) {
     var out = [];
     for (var k = 0; k < poly.length; k++) {
       var p = poly[k], q = poly[(k + 1) % poly.length];
@@ -3976,14 +3985,32 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return out;
   }
 
+  /* Keep the half of the polygon nearer to a than to b: one Voronoi edge at a time. */
+  function clipToward(poly, a, b) {
+    var nx = b[0] - a[0], ny = b[1] - a[1];
+    return clipHalf(poly, nx, ny, nx * (a[0] + b[0]) / 2 + ny * (a[1] + b[1]) / 2);
+  }
+
+  /* A wedge is cut out of the field itself, never out of open ground. The subject is the
+     boundary ring, then the route's box trims it — sectors are a region around the walk, not
+     the whole of a 102 km² place — then the bisectors divide what is left. So a division can
+     only ever fall inside the border you can see. With no place loaded the box stands alone,
+     which is what the display did everywhere before. */
   function voronoiCell(i) {
-    var bb = sect.bbox;
-    var poly = [[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]]].map(toPlanar);
+    var bb = sect.bbox, poly;
+    if (sect.frame && sect.frame.length > 2) {
+      poly = sect.frame.map(toPlanar);
+      poly = clipHalf(poly, -1, 0, -bb[0] * sect.kx);
+      poly = clipHalf(poly, 1, 0, bb[2] * sect.kx);
+      poly = clipHalf(poly, 0, -1, -bb[1]);
+      poly = clipHalf(poly, 0, 1, bb[3]);
+    } else {
+      poly = [[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]]].map(toPlanar);
+    }
     var a = toPlanar(sect.seeds[i]);
-    for (var j = 0; j < sect.seeds.length; j++) {
+    for (var j = 0; j < sect.seeds.length && poly.length; j++) {
       if (j === i) { continue; }
       poly = clipToward(poly, a, toPlanar(sect.seeds[j]));
-      if (!poly.length) { break; }
     }
     return poly.map(fromPlanar);
   }
