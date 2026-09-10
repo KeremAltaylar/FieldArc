@@ -209,7 +209,20 @@ it is one of the better arguments that something is happening. The patch *panel*
 
 ## The setter surface
 
-Everything the app does today, plus:
+Signing in navigates nowhere. It is the same URL, the same map and the same archive; the
+authoring surfaces appear on it, and disappear again on sign-out. Named explicitly, because
+"everything the app does today" is the kind of phrase a plan reads past:
+
+- **Archive tools** — Point and Route modes and their mode bar, Mark, attach-audio, name,
+  note and tags, the icon picker, `sensitive` and `published`, Delete.
+- **The patch** — key, tempo, the sixteen chords and the progression, sectors, the four
+  Euclidean hits and their generator, per-point sound (radius, gain, zone), grains and their
+  envelopes, the morph list and its destinations, and the instrument choice per voice.
+
+Both are setter-only and both appear together on sign-in. A listener never sees either, and
+never sees a read-only version of them: the patch runs for them, silently, as the piece.
+
+Plus, new in 2.0:
 
 - a sign-in (magic link) and a visible signed-in state;
 - a **pending count** and a Publish action;
