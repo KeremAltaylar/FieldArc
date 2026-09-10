@@ -338,6 +338,29 @@ h2 {
 }
 #list li { margin-bottom: var(--s-1); }
 
+/* ---- Audit log ---- */
+/* A log of timestamps is data, not prose: same family as .pmeta, not the body serif.
+   Insert-only means it only ever grows, so it is capped and scrolls rather than pushing
+   the rest of #storage off the panel. */
+#audit-list {
+  list-style: none;
+  padding-left: 0;
+  margin: var(--s-2) 0 0;
+  max-height: 10rem;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+#audit-list li {
+  margin-bottom: var(--s-1);
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--hairline);
+  padding-bottom: var(--s-1);
+}
+#audit-list li:last-child { border-bottom: none; }
+
 .row {
   width: 100%;
   display: flex;
