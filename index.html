@@ -1653,33 +1653,47 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      Which event name a version of supabase-js fires on session restore is not something this
      page controls or can rely on — the pinned "@2" on unpkg fires SIGNED_IN there too, not
      only on a real authentication. So the event name decides nothing here; the server-side
-     `last_sign_in_at` on the session's user does — it only changes on a genuine sign-in and
-     is identical across every restore of that same session. The last value logged is kept in
-     localStorage; a reload finds it unchanged and logs nothing, a real sign-in differs and
-     logs exactly once. The audit table is insert-only by design, so a duplicate here can
-     never be cleaned up — on any localStorage failure (private mode throws) this prefers
-     silently NOT logging over risking a row that can never be removed. */
-  function logSignIn(session) {
-    if (!sb || !session || !session.user) { return; }
-    var stamp = session.user.last_sign_in_at;
-    if (!stamp) { return; }
-    try {
-      if (localStorage.getItem(LASTAUTH_KEY) === stamp) { return; }
-    } catch (e) { return; }
-    sb.from("audit").insert({
-      setter_id: session.user.id, action: "sign_in", target_id: null,
-      detail: { at: new Date().toISOString() }
-    }).then(function (r) {
-      if (r.error) { return; }   /* a failed log must never block a sign-in */
-      try { localStorage.setItem(LASTAUTH_KEY, stamp); } catch (e) { /* best effort */ }
-    });
+     `last_sign_in_at` on the user record does — it only changes on a genuine sign-in and is
+     identical across every restore of that same session.
+
+     It must come from getUser(), not from the session/event payload: the user object handed
+     back by verifyOtp is built from BEFORE the sign-in it is completing, so it still carries
+     the PREVIOUS last_sign_in_at — comparing against that stores a stale stamp, and the very
+     next getSession() returns the refreshed value, reads as a change, and logs a second time.
+     getUser() asks the server for the current record at the moment this actually runs, so it
+     agrees with itself at sign-in time and at every reload after.
+
+     The last value logged is kept in localStorage; a reload finds it unchanged and logs
+     nothing, a real sign-in differs and logs exactly once. The audit table is insert-only by
+     design, so a duplicate here can never be cleaned up — on any failure (getUser() has no
+     network, localStorage throws in private mode) this prefers silently NOT logging over
+     risking a row that can never be removed. A setter signing in has a network by definition,
+     so this costs nothing on the path that matters. */
+  function logSignIn() {
+    if (!sb) { return; }
+    sb.auth.getUser().then(function (r) {
+      if (r.error || !r.data || !r.data.user) { return; }
+      var user = r.data.user;
+      var stamp = user.last_sign_in_at;
+      if (!stamp) { return; }
+      try {
+        if (localStorage.getItem(LASTAUTH_KEY) === stamp) { return; }
+      } catch (e) { return; }
+      sb.from("audit").insert({
+        setter_id: user.id, action: "sign_in", target_id: null,
+        detail: { at: new Date().toISOString() }
+      }).then(function (ins) {
+        if (ins.error) { return; }   /* a failed log must never block a sign-in */
+        try { localStorage.setItem(LASTAUTH_KEY, stamp); } catch (e) { /* best effort */ }
+      });
+    }).catch(function () { /* offline or unreachable — decline to log, never guess */ });
   }
 
   if (sb) {
     sb.auth.getSession().then(function (r) { applySession(r.data.session); });
     sb.auth.onAuthStateChange(function (e, session) {
       applySession(session);
-      if (e === "SIGNED_IN") { logSignIn(session); }
+      if (e === "SIGNED_IN") { logSignIn(); }
     });
   } else {
     renderSetter();
