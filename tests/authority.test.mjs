@@ -9,22 +9,39 @@ const PASSWORD = "probe-" + "x".repeat(16);
 const ID = "00000000-0000-4000-8000-0000000000b1";
 let userId = null;
 
+// A second fixture, published and sensitive, for the fuzz_point recovery oracle below.
+// A distinct id namespace (b-prefix) from fuzz.test.mjs's a-prefix so the two suites never
+// collide if they ever run concurrently against the same database.
+const SENS_ID = "00000000-0000-4000-8000-0000000000b2";
+const TRUE_LON = 28.9925, TRUE_LAT = 41.1855;
+const metresApart = (a, b) => {
+  const kx = Math.cos((TRUE_LAT * Math.PI) / 180);
+  return Math.hypot((a[0] - b[0]) * kx, a[1] - b[1]) * 111320;
+};
+
 before(async () => {
   const { data } = await db.auth.admin.createUser({
     email: EMAIL, password: PASSWORD, email_confirm: true
   });
   userId = data.user.id;
   await db.from("setters").insert({ id: userId, name: "probe" });
-  await db.from("features").delete().eq("id", ID);
-  await db.from("features").insert({
-    id: ID, place: "T", kind: "point",
-    geometry: { type: "Point", coordinates: [28.99, 41.18] },
-    properties: { published: false }
-  });
+  await db.from("features").delete().in("id", [ID, SENS_ID]);
+  await db.from("features").insert([
+    {
+      id: ID, place: "T", kind: "point",
+      geometry: { type: "Point", coordinates: [28.99, 41.18] },
+      properties: { published: false }
+    },
+    {
+      id: SENS_ID, place: "T", kind: "point",
+      geometry: { type: "Point", coordinates: [TRUE_LON, TRUE_LAT] },
+      properties: { published: true, sensitive: true, fuzz_m: 200 }
+    }
+  ]);
 });
 
 after(async () => {
-  await db.from("features").delete().eq("id", ID);
+  await db.from("features").delete().in("id", [ID, SENS_ID]);
   await db.from("audit").delete().eq("setter_id", userId);
   await db.from("setters").delete().eq("id", userId);
   if (userId) { await db.auth.admin.deleteUser(userId); }
@@ -44,10 +61,67 @@ test("anon cannot read the features table at all", async () => {
 });
 
 test("anon cannot read setters, recordings or audit", async () => {
-  for (const t of ["setters", "recordings", "audit"]) {
-    const { data, error } = await anon().from(t).select("*").limit(1);
-    assert.ok(error || (data ?? []).length === 0, `anon reached ${t}`);
+  // setters already has a row from before() — but recordings and audit start empty, and
+  // an empty result is what a correctly-denied anon *and* a wide-open, empty table both
+  // return. Seed one row into each so a leaked grant would actually surface as data.
+  const { data: rec, error: recSeedErr } = await db.from("recordings")
+    .insert({ feature_id: ID, storage_path: `probe/${ID}.wav`, mime: "audio/wav", bytes: 1 })
+    .select().single();
+  assert.equal(recSeedErr, null, recSeedErr?.message);
+  const { data: aud, error: audSeedErr } = await db.from("audit")
+    .insert({ setter_id: userId, action: "create", target_id: ID })
+    .select().single();
+  assert.equal(audSeedErr, null, audSeedErr?.message);
+
+  try {
+    for (const t of ["setters", "recordings", "audit"]) {
+      const { data, error } = await anon().from(t).select("*").limit(1);
+      assert.ok(error || (data ?? []).length === 0, `anon reached ${t}`);
+    }
+  } finally {
+    await db.from("recordings").delete().eq("id", rec.id);
+    await db.from("audit").delete().eq("id", aud.id);
   }
+});
+
+test("anon cannot call fuzz_point directly as an RPC", async () => {
+  // fuzz_point(x, id, r) = x + offset(id, salt, r) — the offset does not depend on x. A
+  // caller who can invoke it with an x of their choosing can subtract it out and recover
+  // the exact offset, then subtract that from a published fuzzed point to get the truth.
+  // The function must not be reachable by anon at all, regardless of what it computes.
+  const { data, error } = await anon().rpc("fuzz_point", {
+    g: { type: "Point", coordinates: [TRUE_LON, TRUE_LAT] },
+    fid: SENS_ID, radius_m: 200
+  });
+  assert.ok(error, "anon invoked fuzz_point");
+  assert.equal(data, null);
+});
+
+test("anon cannot call is_setter directly as an RPC", async () => {
+  const { data, error } = await anon().rpc("is_setter");
+  assert.ok(error, "anon invoked is_setter");
+  assert.equal(data, null);
+});
+
+test("anon cannot use fuzz_point to recover a sensitive point's true coordinate", async () => {
+  // The oracle: read the fuzzed position as anon would see it, then attempt the exact
+  // attack described above — probe fuzz_point at the fuzzed point's own latitude (so the
+  // cos(lat) term matches) to try to recover the offset and subtract back to the truth.
+  const { data: pub, error: readErr } = await anon().from("public_features")
+    .select("geometry").eq("id", SENS_ID).single();
+  assert.equal(readErr, null, readErr?.message);
+  const seen = pub.geometry.coordinates;
+
+  assert.ok(metresApart(seen, [TRUE_LON, TRUE_LAT]) > 1,
+    "the published point must not be the true point");
+  assert.ok(metresApart(seen, [TRUE_LON, TRUE_LAT]) <= 200,
+    "the published point must stay within its declared radius");
+
+  const { data: probe, error: probeErr } = await anon().rpc("fuzz_point", {
+    g: { type: "Point", coordinates: seen }, fid: SENS_ID, radius_m: 200
+  });
+  assert.ok(probeErr, "the recovery RPC must be refused, not merely unhelpful");
+  assert.equal(probe, null);
 });
 
 test("anon cannot write a feature", async () => {
