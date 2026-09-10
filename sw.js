@@ -10,6 +10,7 @@ var SHELL_FILES = [
   "./",
   "./index.html",
   "./places.geojson",
+  "./src/pending.mjs",
   "https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js",
   "https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css"
 ];

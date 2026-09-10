@@ -1491,6 +1491,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      the AudioWorklet as a Blob at run time. The browser ignores an unknown script type. -->
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<!-- Module scripts are deferred: FA_PENDING does not exist at the main script's parse time.
+     Nothing below may call it at parse time — only Publish (Task 4) calls it, on a click. -->
+<script type="module">
+  import { hashFeature, manifestOf, diffManifest } from "./src/pending.mjs";
+  window.FA_PENDING = { hashFeature, manifestOf, diffManifest };
+</script>
 <script>
 (function () {
   "use strict";
