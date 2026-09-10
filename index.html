@@ -6192,12 +6192,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return a + (b - a) * (f * f * (3 - 2 * f));
   }
 
+  /* Phase and seed are pulled out because the display needs them too: the membrane a
+     drift cell is drawn with is the same walk this value comes from, and pulse and ramp
+     take their events from the instant the phase wraps. */
+  function morphPhase(m, t) {
+    /* unwrapped — the shape decides whether to wrap */
+    return (t / Math.max(4, m.period || 60)) + (m.phase || 0);
+  }
+  function morphSeed(m) {
+    return (m.id || "m").charCodeAt(m.id ? m.id.length - 1 : 0) || 7;
+  }
   function morphValue(m, t) {
     if (!m.on) { return 0; }
-    var per = Math.max(4, m.period || 60);
-    var u = (t / per) + (m.phase || 0);   /* unwrapped — the shape decides whether to wrap */
-    var seed = (m.id || "m").charCodeAt(m.id ? m.id.length - 1 : 0) || 7;
-    var v = (m.bias || 0) + (m.depth === undefined ? 1 : m.depth) * morphShape(m.shape, u, seed);
+    var v = (m.bias || 0) + (m.depth === undefined ? 1 : m.depth) *
+            morphShape(m.shape, morphPhase(m, t), morphSeed(m));
     return v < 0 ? 0 : v > 1 ? 1 : v;
   }
 
@@ -6218,16 +6226,34 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* Everything aimed at one destination, averaged. Summing would let three morphs pin a
      destination at its ceiling and stay there, which is the opposite of a morph. */
   /* ---------- Cells ----------
-     One cell per morph. Radius is its current value, so the texture is visible thickening
-     before you hear it; hue is the chord root, reusing the colour already drawn along the
-     route so the visualisation and the progression agree. Cells drift toward each other and
-     fuse while their values are close, which is the only thing here that is genuinely a
-     life cycle: convergence you can see coming.
+     One cell per morph, and every morph is drawn the same way — before this, the morphs
+     aimed at the second voice were rim arcs and the rest were blobs in the middle, so the
+     two halves of one patch were drawn in incompatible languages.
+
+     Three channels carry identity, none of them text:
+
+       seat  — each morph owns a fixed sector of the rim and keeps it. Its body sits under
+               its own sector, so the gauge and the cell are one object read two ways.
+       hue   — which voice it drives. The three voices sit a fixed interval apart on the
+               same chord-root wheel the route is drawn with, so the layers stay told apart
+               while the whole display still moves with the harmony (C-15).
+       shape — the membrane. drift wobbles on the same value noise that generates it;
+               breath leans into its short rise; pulse holds taut then rings; ramp sweeps
+               like a clock hand and flashes on the snap; tide is two rates beating.
+
+     Value is read off the rim, where an arc against a fixed track can be compared between
+     morphs. Radius says the same thing in the field, where it is a mood rather than a
+     number — position is never a second readout of value, only of which seat this is.
+
+     No labels. The patch panel already names every destination in words, and three morphs
+     aimed at one destination printed the same word three times round the rim, which read
+     as a fault rather than as information.
 
      It draws and never decides. Nothing in the audio path reads a pixel, and the canvas is
      paused whenever it is hidden — it competes with the audio for a phone's CPU, and the
      audio wins. */
-  var cells = { on: false, raf: null, last: 0, dpr: 1, w: 0, h: 0, reduced: false };
+  var cells = { on: false, raf: null, last: 0, dpr: 1, w: 0, h: 0, reduced: false,
+                mem: {}, lastT: null };
 
   function cellsResize() {
     var c = $("#cells");
@@ -6240,6 +6266,57 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     c.height = Math.round(r.height * cells.dpr);
   }
 
+  /* Which voice a destination belongs to, and therefore which hue it takes. */
+  var VOICE_OFFSET = [0, 4, 9];
+  function cellVoice(dest) {
+    if (!dest) { return 0; }
+    if (dest.indexOf("sect.") === 0) { return 1; }
+    if (dest.indexOf("v3.") === 0) { return 2; }
+    return 0;
+  }
+  function cellHue(dest, pc) { return rootColour(pc + VOICE_OFFSET[cellVoice(dest)]); }
+
+  /* Per-morph render memory, so an event in the generator can be drawn as an event. */
+  function cellMem(id) {
+    return cells.mem[id] || (cells.mem[id] = { lastP: null, waves: [], flash: 0 });
+  }
+
+  /* Periodic value noise around a perimeter. The knot index wraps at K so the loop closes,
+     and it is the same hash the drift shape is generated from — so a wobbling edge is the
+     walk being applied, not a second unrelated noise laid on top of it. */
+  function pnoise(theta, seed, K, rot) {
+    var x = (theta / 6.283185307) + rot;
+    x = (x - Math.floor(x)) * K;
+    var i = Math.floor(x), f = x - i;
+    var a = hash01(((i % K) + K) % K, seed), b = hash01((((i + 1) % K) + K) % K, seed);
+    return a + (b - a) * (f * f * (3 - 2 * f));
+  }
+
+  /* The radius factor at one angle. pulse, ramp and tide stay taut — their character is an
+     event, drawn separately, and deforming them too would say the same thing twice. */
+  function membraneF(theta, m, t, dv) {
+    if (m.shape === "drift") {
+      return 1 + 0.30 * (pnoise(theta, morphSeed(m), 7, t / 240) - 0.5);
+    }
+    if (m.shape === "breath") {
+      var lean = Math.max(-1, Math.min(1, dv * 26));
+      return 1 + 0.24 * lean * Math.cos(theta + Math.PI / 2);
+    }
+    return 1;
+  }
+
+  function membranePath(g, x, y, r, m, t, dv) {
+    var N = 72;
+    g.beginPath();
+    for (var i = 0; i <= N; i++) {
+      var th = (i / N) * 6.2832;
+      var rr = r * membraneF(th, m, t, dv);
+      var px = x + Math.cos(th) * rr, py = y + Math.sin(th) * rr;
+      if (i === 0) { g.moveTo(px, py); } else { g.lineTo(px, py); }
+    }
+    g.closePath();
+  }
+
   function cellsDraw() {
     var c = $("#cells");
     if (!c || !cells.on) { return; }
@@ -6249,101 +6326,217 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     g.setTransform(cells.dpr, 0, 0, cells.dpr, 0, 0);
     g.clearRect(0, 0, cells.w, cells.h);
 
-    var list = morphList();
-    if (!list.length) { return; }
     var t = morphClock();
+    /* Elapsed in the morphs' own seconds, so a decay is the same length whatever the frame
+       rate is. Clamped because the clock changes source when Sound starts. */
+    var dt = (cells.lastT === null) ? 0 : Math.max(0, Math.min(1, t - cells.lastT));
+    cells.lastT = t;
+
+    var cx = cells.w / 2, cy = cells.h / 2, R = Math.min(cells.w, cells.h) / 2 - 1;
+    /* Neighbouring seats are exactly rSeat apart at any count, so a body may reach half
+       of it and no more: at 0.81 of it the six cells piled into one mass and gathering
+       stopped meaning anything, which is the one thing this display exists to show. */
+    var rGauge = R * 0.93, Rf = R * 0.82, rSeat = Rf * 0.52;
+
     var pc = (pacer && harmony.chord !== null) ? chordRoot(pacer.patch, harmony.chord)
            : (pacer ? pacer.patch.key : 0);
-    var hue = rootColour(pc);
-    var base = Math.min(cells.w, cells.h);
 
-    /* The second voice follows the sectors, not the route, so its morphs take the sector's
-       colour rather than the chord's — the display says which layer a morph belongs to
-       before you have read a single label. */
-    var sHue = hue;
-    if (pacer && pacer.patch.sectors && pacer.patch.sectors.length) {
-      var sc = pacer.patch.sectors[(sect.idx || 0) % pacer.patch.sectors.length];
-      if (sc) { sHue = rootColour(pacer.patch.key + sc.r); }
+    /* The chord, tinted into the disc itself. The progression stays visible without
+       competing with the bodies for hue. */
+    var groundHue = rootColour(pc);
+    var vg = g.createRadialGradient(cx, cy, 0, cx, cy, R);
+    vg.addColorStop(0, hexA(groundHue, 0.075));
+    vg.addColorStop(0.72, hexA(groundHue, 0.028));
+    vg.addColorStop(1, hexA(groundHue, 0));
+    g.fillStyle = vg;
+    g.beginPath(); g.arc(cx, cy, R, 0, 6.2832); g.fill();
+
+    var all = morphList(), list = [];
+    for (var z = 0; z < all.length; z++) { if (all[z].on) { list.push(all[z]); } }
+
+    /* Empty (C-5). A blank disc reads as broken; an empty track reads as idle. */
+    if (!list.length) {
+      g.lineWidth = 1;
+      g.strokeStyle = "rgba(190,205,192,0.13)";
+      g.beginPath(); g.arc(cx, cy, rGauge, 0, 6.2832); g.stroke();
+      g.setLineDash([2, 5]);
+      g.beginPath(); g.arc(cx, cy, rSeat, 0, 6.2832); g.stroke();
+      g.setLineDash([]);
+      /* 0.55 composited to 3.25:1 against a bright satellite tile through a 78%-opaque
+         disc — under the 4.5:1 floor, and this is the only text on the display. 0.85
+         measures 5.6:1 in the same worst case. */
+      g.fillStyle = "rgba(190,205,192,0.85)";
+      g.font = "400 12px 'Courier Prime', ui-monospace, monospace";
+      g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText("no morphs", cx, cy);
+      return;
     }
 
-    var pts = [], orbits = [];
-    for (var i = 0; i < list.length; i++) {
-      if (!list[i].on) { continue; }
-      var v = morphValue(list[i], t);
-      if (v === null) { continue; }
-      /* Anything aimed at the second voice is drawn as an open arc at the rim instead of
-         a body in the middle. Same data, a different kind of mark. */
-      if (list[i].dest && list[i].dest.indexOf("sect.") === 0) {
-        orbits.push({ v: v, k: orbits.length });
-        continue;
+    var n = list.length, span = 6.2832 / n, gap = Math.min(0.10, span * 0.14);
+    var pts = [], groups = {}, keys = [];
+
+    for (var i = 0; i < n; i++) {
+      var m = list[i];
+      var v = morphValue(m, t);
+      var dv = (v - morphValue(m, t - 0.6)) / 0.6;
+      var seat = -Math.PI / 2 + (i + 0.5) * span;
+      var p = {
+        m: m, v: v, dv: dv, i: i,
+        a0: -Math.PI / 2 + i * span + gap * 0.5,
+        a1: -Math.PI / 2 + (i + 1) * span - gap * 0.5,
+        hue: cellHue(m.dest, pc),
+        hx: cx + Math.cos(seat) * rSeat,
+        hy: cy + Math.sin(seat) * rSeat,
+        r: Rf * (0.075 + 0.185 * v)
+      };
+      p.x = p.hx; p.y = p.hy;
+      pts.push(p);
+      if (!groups[m.dest]) { groups[m.dest] = []; keys.push(m.dest); }
+      groups[m.dest].push(p);
+
+      /* A wrap in the unwrapped phase is a real edge in the generator, so pulse takes its
+         shockwave and ramp its snap from the same instant the audio does. */
+      var mem = cellMem(m.id);
+      var ph = morphPhase(m, t); ph = ph - Math.floor(ph);
+      if (mem.lastP !== null && ph < mem.lastP) {
+        if (m.shape === "ramp") { mem.flash = 1; }
+        if (m.shape === "pulse") { mem.waves.push({ born: t }); }
       }
-      var isField = false;
-      /* Each cell keeps to its own slow orbit, on a period unrelated to its morph, so
-         position never becomes a second readout of value. */
-      var orb = t / (73 + i * 41) + i * 0.618;
-      pts.push({
-        v: v, field: isField,
-        x: cells.w * (0.5 + 0.20 * Math.cos(orb * 6.283) * (0.6 + 0.4 * v)),
-        y: cells.h * (0.5 + 0.20 * Math.sin(orb * 6.283 * 0.77) * (0.6 + 0.4 * v)),
-        r: base * (0.055 + 0.20 * v)
-      });
+      mem.lastP = ph;
+      if (mem.flash > 0) { mem.flash = Math.max(0, mem.flash - dt / 1.2); }
+      if (mem.waves.length) {
+        mem.waves = mem.waves.filter(function (wv) { return t - wv.born < 3.2; });
+      }
     }
 
-    g.globalCompositeOperation = "lighter";
+    /* Gathering. Morphs pointed at the same destination migrate toward their mean — which
+       is the number morphFor actually hands that destination. Before this, any two cells
+       within 0.14 of each other fused, which said nothing about the patch. */
+    for (var k = 0; k < keys.length; k++) {
+      var grp = groups[keys[k]];
+      grp.agree = 0;
+      if (grp.length < 2) { continue; }
+      var sum = 0, gx = 0, gy = 0, q;
+      for (q = 0; q < grp.length; q++) { sum += grp[q].v; gx += grp[q].hx; gy += grp[q].hy; }
+      var mean = sum / grp.length;
+      gx /= grp.length; gy /= grp.length;
+      var spread = 0;
+      for (q = 0; q < grp.length; q++) {
+        spread = Math.max(spread, Math.abs(grp[q].v - mean));
+      }
+      grp.agree = Math.max(0, 1 - spread / 0.20);
+      grp.gx = gx; grp.gy = gy;
+      for (q = 0; q < grp.length; q++) {
+        grp[q].x = grp[q].hx + (gx - grp[q].hx) * grp.agree * 0.88;
+        grp[q].y = grp[q].hy + (gy - grp[q].hy) * grp.agree * 0.88;
+      }
+    }
 
-    /* Fusion: while two morphs hold near the same value, the space between their cells is
-       filled, and they read as one body until they drift apart again. */
-    for (var a = 0; a < pts.length; a++) {
-      for (var b = a + 1; b < pts.length; b++) {
-        var close = 1 - Math.min(1, Math.abs(pts[a].v - pts[b].v) / 0.14);
-        if (close <= 0) { continue; }
-        var steps = 6;
-        for (var k = 1; k < steps; k++) {
-          var f = k / steps;
-          cellBlob(g, pts[a].x + (pts[b].x - pts[a].x) * f,
-                      pts[a].y + (pts[b].y - pts[a].y) * f,
-                      (pts[a].r + (pts[b].r - pts[a].r) * f) * 0.55 * close,
-                      hue, 0.16 * close * Math.min(pts[a].v, pts[b].v));
+    /* --- bodies --- */
+    g.globalCompositeOperation = "lighter";
+    for (var k2 = 0; k2 < keys.length; k2++) {
+      var gr = groups[keys[k2]];
+      if (gr.length < 2 || !gr.agree) { continue; }
+      for (var a = 0; a < gr.length; a++) {
+        for (var b = a + 1; b < gr.length; b++) {
+          for (var s = 1; s < 6; s++) {
+            var f = s / 6;
+            cellBlob(g, gr[a].x + (gr[b].x - gr[a].x) * f,
+                        gr[a].y + (gr[b].y - gr[a].y) * f,
+                        (gr[a].r + (gr[b].r - gr[a].r) * f) * 0.60 * gr.agree,
+                        gr[a].hue, 0.17 * gr.agree * Math.min(gr[a].v, gr[b].v));
+          }
         }
       }
     }
     for (var j = 0; j < pts.length; j++) {
-      cellBlob(g, pts[j].x, pts[j].y, pts[j].r, hue, 0.16 + 0.46 * pts[j].v);
-    }
-    /* A membrane. Without an edge the cells are weather; with one they are bodies, and
-       you can see a value rather than only a mood. */
-    g.globalCompositeOperation = "source-over";
-    g.lineWidth = 1;
-    for (var q = 0; q < pts.length; q++) {
-      g.strokeStyle = hexA(hue, 0.30 + 0.45 * pts[q].v);
-      g.beginPath(); g.arc(pts[q].x, pts[q].y, pts[q].r, 0, 6.2832); g.stroke();
-      /* A second membrane marks a cell whose shape comes from a recording rather than
-         from arithmetic — the ones that only exist where the archive does. */
-      if (pts[q].field) {
-        g.strokeStyle = hexA(hue, 0.22 + 0.34 * pts[q].v);
-        g.beginPath(); g.arc(pts[q].x, pts[q].y, pts[q].r * 0.58, 0, 6.2832); g.stroke();
+      cellBlob(g, pts[j].x, pts[j].y, pts[j].r, pts[j].hue, 0.14 + 0.42 * pts[j].v);
+      if (pts[j].m.shape === "ramp") {
+        var fl = cellMem(pts[j].m.id).flash;
+        if (fl > 0) { cellBlob(g, pts[j].x, pts[j].y, pts[j].r * 1.5, pts[j].hue, 0.30 * fl); }
       }
     }
 
-    /* Rim orbits: the arc sweeps the morph's value, so it is read round the circle rather
-       than by area, and a travelling head marks where it has got to. Faint full circles
-       behind them keep the track visible when the value is near zero. */
-    var cx = cells.w / 2, cy = cells.h / 2, rim = Math.min(cells.w, cells.h) / 2;
-    for (var o = 0; o < orbits.length; o++) {
-      var rr = rim * (0.74 + 0.12 * orbits[o].k), ov = orbits[o].v;
-      g.lineWidth = 1;
-      g.strokeStyle = hexA(sHue, 0.13);
-      g.beginPath(); g.arc(cx, cy, rr, 0, 6.2832); g.stroke();
-      g.lineWidth = 2;
-      g.strokeStyle = hexA(sHue, 0.45 + 0.45 * ov);
-      g.beginPath();
-      g.arc(cx, cy, rr, -Math.PI / 2, -Math.PI / 2 + 6.2832 * ov);
+    /* --- membranes, and the events the taut ones carry instead --- */
+    g.globalCompositeOperation = "source-over";
+    for (var q2 = 0; q2 < pts.length; q2++) {
+      var e = pts[q2], sh = e.m.shape, mm = cellMem(e.m.id);
+      g.lineWidth = 1.25;
+      g.strokeStyle = hexA(e.hue, 0.34 + 0.46 * e.v);
+      membranePath(g, e.x, e.y, e.r, e.m, t, e.dv);
       g.stroke();
-      var ha = -Math.PI / 2 + 6.2832 * ov;
-      g.fillStyle = hexA(sHue, 0.85);
+
+      if (sh === "tide") {
+        var u = morphPhase(e.m, t);
+        var b1 = Math.sin(6.2832 * u), b2 = Math.sin(6.2832 * u * 1.6180339887);
+        g.lineWidth = 1;
+        g.strokeStyle = hexA(e.hue, 0.20 + 0.30 * e.v);
+        g.beginPath(); g.arc(e.x, e.y, e.r * (1 + 0.20 * b1), 0, 6.2832); g.stroke();
+        g.strokeStyle = hexA(e.hue, 0.16 + 0.26 * e.v);
+        g.beginPath();
+        g.arc(e.x, e.y, Math.max(1, e.r * (1 - 0.20 * b2)), 0, 6.2832);
+        g.stroke();
+      } else if (sh === "pulse") {
+        for (var wv = 0; wv < mm.waves.length; wv++) {
+          var age = (t - mm.waves[wv].born) / 3.2;
+          g.lineWidth = 1;
+          g.strokeStyle = hexA(e.hue, 0.34 * (1 - age));
+          g.beginPath(); g.arc(e.x, e.y, e.r + Rf * 0.30 * age, 0, 6.2832); g.stroke();
+        }
+      } else if (sh === "ramp") {
+        var pr = morphPhase(e.m, t); pr = pr - Math.floor(pr);
+        g.fillStyle = hexA(e.hue, 0.16 + 0.16 * e.v);
+        g.beginPath(); g.moveTo(e.x, e.y);
+        g.arc(e.x, e.y, e.r * 0.82, -Math.PI / 2, -Math.PI / 2 + 6.2832 * pr);
+        g.closePath(); g.fill();
+      } else if (sh === "breath" && e.dv > 0) {
+        cellBlob(g, e.x, e.y, e.r * 0.42, e.hue, 0.30);
+      }
+    }
+
+    /* --- while they agree, they are one body --- */
+    for (var k3 = 0; k3 < keys.length; k3++) {
+      var gh = groups[keys[k3]];
+      if (gh.length < 2 || gh.agree < 0.18) { continue; }
+      var far = 0;
+      for (var w = 0; w < gh.length; w++) {
+        far = Math.max(far, Math.sqrt((gh[w].x - gh.gx) * (gh[w].x - gh.gx) +
+                                      (gh[w].y - gh.gy) * (gh[w].y - gh.gy)) + gh[w].r);
+      }
+      g.setLineDash([1.5, 4]);
+      g.lineWidth = 1;
+      g.strokeStyle = hexA(gh[0].hue, 0.10 + 0.26 * gh.agree);
+      g.beginPath(); g.arc(gh.gx, gh.gy, far + 3, 0, 6.2832); g.stroke();
+      g.setLineDash([]);
+    }
+
+    /* --- the gauge: where a value is read rather than guessed --- */
+    g.lineCap = "butt";
+    for (var o = 0; o < pts.length; o++) {
+      var d = pts[o];
+      g.lineWidth = 1.5;
+      g.strokeStyle = hexA(d.hue, 0.13);
+      g.beginPath(); g.arc(cx, cy, rGauge, d.a0, d.a1); g.stroke();
+
+      var end = d.a0 + (d.a1 - d.a0) * d.v;
+      g.lineWidth = 3;
+      g.strokeStyle = hexA(d.hue, 0.42 + 0.48 * d.v);
+      g.beginPath(); g.arc(cx, cy, rGauge, d.a0, end); g.stroke();
+
+      g.fillStyle = hexA(d.hue, 0.92);
       g.beginPath();
-      g.arc(cx + Math.cos(ha) * rr, cy + Math.sin(ha) * rr, 2.4, 0, 6.2832);
+      g.arc(cx + Math.cos(end) * rGauge, cy + Math.sin(end) * rGauge, 2.2, 0, 6.2832);
       g.fill();
+
+      /* The fixed edge of this morph's territory — the thing that makes the seat legible
+         as a seat rather than as wherever the arc happens to have got to. */
+      var d0 = d.a0 - gap * 0.5;
+      g.lineWidth = 1;
+      g.strokeStyle = "rgba(190,205,192,0.16)";
+      g.beginPath();
+      g.moveTo(cx + Math.cos(d0) * (rGauge - 5), cy + Math.sin(d0) * (rGauge - 5));
+      g.lineTo(cx + Math.cos(d0) * (rGauge + 4), cy + Math.sin(d0) * (rGauge + 4));
+      g.stroke();
     }
   }
 
@@ -6385,6 +6578,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (cells.on) {
       cells.reduced = window.matchMedia &&
         window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      /* Stale events from the last time it was open would fire on the first frame. */
+      cells.mem = {}; cells.lastT = null;
       cellsResize();
       if (!cells.raf) { cells.raf = requestAnimationFrame(cellsTick); }
     } else if (cells.raf) {
