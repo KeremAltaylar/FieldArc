@@ -138,3 +138,12 @@ test("a sensitive route publishes as drawn", async () => {
     "routes are not fuzzed — decided 2026-09-10, a caution can come later");
   assert.equal(data.properties.fuzzed, undefined, "and it must not claim to be fuzzed");
 });
+
+test("anon needs no function privilege to read the archive", async () => {
+  const rows = await sql(
+    "select has_function_privilege('anon', p.oid, 'EXECUTE') as ok " +
+    "from pg_proc p join pg_namespace n on n.oid = p.pronamespace " +
+    "where n.nspname = 'private' and p.proname = 'fuzz_point'");
+  assert.equal(rows[0].ok, false,
+    "the view computes nothing at read time, so anon should need nothing");
+});
