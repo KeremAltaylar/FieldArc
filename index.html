@@ -1407,6 +1407,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <button type="button" id="publish-btn" disabled>Publish</button>
         <span id="pending-count" class="hint">nothing pending</span>
       </div>
+      <div id="audit">
+        <button type="button" id="audit-refresh" class="ghost">Recent activity</button>
+        <ul id="audit-list"></ul>
+      </div>
       <p class="hint" id="saved">Saved to this browser.</p>
     </div>
   </div>
@@ -1630,6 +1634,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#setter-out").hidden = !setter.signedIn;
     $("#setter-email").parentNode.hidden = setter.signedIn;
     renderPending();
+    renderAudit();
   }
 
   function applySession(session) {
@@ -1850,6 +1855,43 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   $("#publish-btn").addEventListener("click", publish);
+
+  /* The last fifty actions, newest first. Names are not joined in — `setters` is readable by
+     any setter, so the id is resolved locally against a small map rather than costing a join
+     on every refresh. An unknown id prints as itself rather than as blank: a record that
+     hides who did something is not a record. */
+  var setterNames = {};
+
+  function renderAudit() {
+    var ul = $("#audit-list");
+    ul.textContent = "";
+    if (!sb || !setter.signedIn) {
+      var li = document.createElement("li");
+      li.className = "hint";
+      li.textContent = "Sign in to see who changed what.";
+      ul.appendChild(li);
+      return;
+    }
+    sb.from("setters").select("id,name").then(function (r) {
+      (r.data || []).forEach(function (s) { setterNames[s.id] = s.name; });
+      return sb.from("audit").select("at,action,target_id,setter_id")
+               .order("at", { ascending: false }).limit(50);
+    }).then(function (r) {
+      ul.textContent = "";
+      if (r.error) { ul.textContent = "Could not load: " + r.error.message; return; }
+      if (!r.data.length) { ul.textContent = "Nothing recorded yet."; return; }
+      r.data.forEach(function (row) {
+        var li = document.createElement("li");
+        var when = new Date(row.at);
+        li.textContent = when.toLocaleString() + " · " +
+          (setterNames[row.setter_id] || row.setter_id || "unknown") + " · " + row.action +
+          (row.target_id ? " · " + String(row.target_id).slice(0, 8) : "");
+        ul.appendChild(li);
+      });
+    });
+  }
+
+  $("#audit-refresh").addEventListener("click", renderAudit);
 
   function uid() {
     return (crypto.randomUUID ? crypto.randomUUID()
