@@ -42,8 +42,11 @@ Agreed 2026-09-10 with Kerem. These are settled; a plan built on them should not
    no network, exactly as they do now. A pending queue drains when there is wifi.
 4. **Accounts are for setters only, by invite.** Public sign-up is disabled entirely.
    Listening is anonymous.
-5. **A walk has its own link, and there is a directory.** `/:place/:route` opens on that
-   walk; the root lists places.
+5. **The app is the front door.** Opening the site lands a listener directly in the map, on
+   a place — Validebağ Korusu, Belgrad Ormanı — chosen from the place picker that already
+   exists, with that place's routes and points drawn and selectable. There is no separate
+   landing page, directory page or admin app to build. A single walk can still be sent to
+   someone: `/:place/:route` deep-links into the same app with that route selected.
 6. **One artifact, two modes.** `index.html` stays the instrument and gains a Supabase
    client. Setter tools are gated behind a session. No rewrite, no split — the value of
    this project is 8,900 lines of working audio and map code, and this design does not
@@ -168,6 +171,16 @@ morning.
 
 ## The listener surface
 
+**Arrival.** They open the site and they are already in it: the map, on a place, with its
+routes and points drawn. No splash, no index, no "browse places" step — the place picker in
+the header is the directory, and it already remembers the last place chosen, so a returning
+listener lands where they left off. A deep link to one walk opens the same app on that
+place with that route selected, so a link sent in a message and a link opened from the
+picker arrive at the same screen by the same path.
+
+There is one app and one URL. Signing in does not go anywhere else — the setter tools
+appear in place, on the same map, over the same archive.
+
 Sees: the place picker, the map with all four basemaps and the Off/Frame boundary, routes
 drawn with their progression, zone circles, points with their icons, the info card for the
 selected feature, and the archive list. Selecting is all the map does for them.
@@ -246,8 +259,9 @@ Each one leaves the app working and is worth having on its own.
    untouched by this stage — that is its main risk and its main test.
 3. **The listener surface.** Mode gating, the two ways to hear, the GPS/Virtual switch
    promoted to a mode, the mode bar removed, Mark demoted to Locate.
-4. **Links and the directory.** `/:place/:route`, the root listing, and "take this place
-   offline" with its size statement and staleness check.
+4. **Deep links and taking a place offline.** `/:place/:route` resolving into the running
+   app, and "take this place offline" with its size statement and staleness check. No
+   directory to build — the place picker is it.
 
 Stage 1 before stage 2 is deliberate: the authority rules must be proved correct while the
 app can still be thrown away and reloaded from local storage, not after people depend on them.
