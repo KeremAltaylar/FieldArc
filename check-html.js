@@ -1,6 +1,12 @@
-const fs = require("fs");
+/* ESM, not CommonJS: package.json declares "type": "module", so `require` is not defined
+   here and this file threw ReferenceError on every run from the commit that added that
+   declaration until the one that fixed this line. `npm run check` is the repo's only guard
+   against the unterminated-start-tag defect that once ate `<div id="loading">` and killed
+   the map's load handler, so a checker that cannot start is worse than no checker — it
+   reports a failure that looks like the file's fault. */
+import { readFileSync } from "node:fs";
 const file = process.argv[2];
-const raw = fs.readFileSync(file, "utf8");
+const raw = readFileSync(file, "utf8");
 const html = raw.replace(/<!--[\s\S]*?-->/g, "");
 const js = [...html.matchAll(/<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]).join("\n");
 
