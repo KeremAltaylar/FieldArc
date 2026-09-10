@@ -1513,6 +1513,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   var EXPORT_KEY = "fieldarc.export";
   var TRASH_KEY = "fieldarc.trash";
   var TRASH_DAYS = 30;
+  var LASTAUTH_KEY = "fieldarc.lastauth";
   var LICENSE = "CC BY-SA 4.0";
   var DEFAULT_PLACE = "R8845862";      // Belgrad Ormanı
   var CENTER = [28.9800, 41.1850];   // Belgrad Ormanı
@@ -1647,13 +1648,31 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* The spec's audit records who signed in, not only who published. Written on the SIGNED_IN
      event rather than inside signIn(), because the session actually begins when the link is
-     followed — often on a different device from the one that asked for it. */
+     followed — often on a different device from the one that asked for it.
+
+     Which event name a version of supabase-js fires on session restore is not something this
+     page controls or can rely on — the pinned "@2" on unpkg fires SIGNED_IN there too, not
+     only on a real authentication. So the event name decides nothing here; the server-side
+     `last_sign_in_at` on the session's user does — it only changes on a genuine sign-in and
+     is identical across every restore of that same session. The last value logged is kept in
+     localStorage; a reload finds it unchanged and logs nothing, a real sign-in differs and
+     logs exactly once. The audit table is insert-only by design, so a duplicate here can
+     never be cleaned up — on any localStorage failure (private mode throws) this prefers
+     silently NOT logging over risking a row that can never be removed. */
   function logSignIn(session) {
     if (!sb || !session || !session.user) { return; }
+    var stamp = session.user.last_sign_in_at;
+    if (!stamp) { return; }
+    try {
+      if (localStorage.getItem(LASTAUTH_KEY) === stamp) { return; }
+    } catch (e) { return; }
     sb.from("audit").insert({
       setter_id: session.user.id, action: "sign_in", target_id: null,
       detail: { at: new Date().toISOString() }
-    }).then(function () { /* a failed log must never block a sign-in */ });
+    }).then(function (r) {
+      if (r.error) { return; }   /* a failed log must never block a sign-in */
+      try { localStorage.setItem(LASTAUTH_KEY, stamp); } catch (e) { /* best effort */ }
+    });
   }
 
   if (sb) {
