@@ -1464,6 +1464,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <button type="button" id="patch-play" aria-pressed="false">Sound</button>
       <button type="button" id="cells-btn" class="ghost" aria-pressed="false"
               title="Morph cells — one cell per morph, breathing on its own clock">Cells</button>
+      <button type="button" id="gps-btn" class="ghost" aria-pressed="false"
+              title="Let your own position drive the listener along this route">GPS</button>
       <span id="patch-info">—</span>
       <span id="patch-clip" title="Clip — read from the master signal, not from fader positions">clip</span>
     </div>
@@ -2350,7 +2352,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#marklive").hidden = state !== "recording";
   }
 
-  function geoFail(err) {
+  function geoMessage(err) {
     var msg = err.code === 1 ? "Location permission denied."
             : err.code === 2 ? "No position fix — no signal, or location is switched off."
             : err.code === 3 ? "Timed out waiting for a fix."
@@ -2358,10 +2360,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!window.isSecureContext) {
       msg += " Geolocation needs https:// or localhost — a plain LAN address will not work.";
     }
+    return msg;
+  }
+
+  /* Said in both places. #saved keeps the record; the toast is the one a phone can see, since
+     #saved sits below the fold of the peeked sheet. */
+  function geoSay(err) {
+    var msg = geoMessage(err);
     $("#saved").textContent = msg;
-    /* #saved lives at the bottom of the sheet, below the fold of the peek — on a phone it
-       is not on screen. A location failure in the field has to say so where you can see it. */
     toast(msg);
+    return msg;
+  }
+
+  /* Marking only. The walker has a failure path of its own — tearing down a trace it did not
+     start is how one feature quietly breaks another. */
+  function geoFail(err) {
+    geoSay(err);
     if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     track = null;
     setMarkState("idle");
@@ -4128,7 +4142,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
               (near.z.inside ? " · <em>inside</em>" : "") : "") +
       (sect.idx !== null ? " &nbsp; <b>sector</b> " + (sect.idx + 1) : "") +
       " &nbsp; <b>zones</b> " + pacer.zones.filter(function (z) { return z.inside; }).length +
-      "/" + pacer.zones.length;
+      "/" + pacer.zones.length +
+      (gps.on ? " &nbsp; <b>gps</b> " +
+        (gps.held ? "<em>holding · " + gps.held + "</em>" : "live") : "");
   }
 
   /* Entry and exit are deliberately asymmetric. Standing on a boundary otherwise retriggers
@@ -4153,6 +4169,73 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (changed) { drawZones(); }
   }
 
+  /* ---------- GPS as the walker ----------
+     The listener has always been a marker you drag, and a drag is projected onto the route
+     before it is used — which is exactly what a fix needs. So this is not a second way of
+     walking; it is a second source for the one pacerSet already had, and desk and forest
+     stay the same code path.
+
+     The route is a rail. A fix is projected onto the line and everything downstream — zones,
+     sectors, the progression — reads the projected point, so stepping off the path does not
+     change what you hear.
+
+     Two gates, and both are A-14 conditioning applied to the one input nobody controls.
+     Under canopy a fix can be 30m out, and on a rail a wild fix does not merely misplace
+     you: it throws the walker hundreds of metres ALONG the line and lurches through chords
+     and zones on the way. So a fix drives the walker only if it is accurate enough and lands
+     near enough to the route; otherwise the walker holds where it is and the readout says
+     which gate stopped it. Holding, never jumping and never falling silent — A-15. */
+  var GPS_ACC_MAX = 40;      /* metres of reported accuracy */
+  var GPS_LEASH = 120;       /* metres the fix may sit off the route */
+  var GPS_KEY = "fieldarc.gps";
+  var gps = { on: false, watch: null, held: null };
+
+  function gpsFix(pos) {
+    if (!pacer) { return; }
+    var acc = pos.coords.accuracy || 0;
+    showHere(pos);             /* you are drawn with your uncertainty either way */
+    if (acc > GPS_ACC_MAX) { gps.held = "±" + Math.round(acc) + "m"; pacerReadout(); return; }
+    var pr = projectToRoute(pacer.m, [+pos.coords.longitude.toFixed(6),
+                                      +pos.coords.latitude.toFixed(6)]);
+    if (pr.dist > GPS_LEASH) { gps.held = fmtLen(pr.dist) + " off"; pacerReadout(); return; }
+    gps.held = null;
+    pacerSet(pr.t);            /* the identical call the drag makes */
+  }
+
+  function gpsSet(on) {
+    if (on && !navigator.geolocation) { toast("This browser has no geolocation."); on = false; }
+    if (on && !pacer) { on = false; }
+    if (gps.watch !== null) { navigator.geolocation.clearWatch(gps.watch); gps.watch = null; }
+    gps.on = on;
+    gps.held = null;
+    $("#gps-btn").setAttribute("aria-pressed", String(on));
+    /* A trace being recorded owns the lock; releasing it here would end a walk in a pocket. */
+    if (on) { keepAwake(true); } else if (!track) { keepAwake(false); }
+    if (pacer) {
+      /* One source at a time. Dragging against a live fix loses: the next fix a second later
+         pulls t straight back, so the drag would read as broken rather than as override. */
+      pacer.marker.setDraggable(!on);
+      pacer.marker.getElement().title = on
+        ? "Your position is driving this — switch GPS off to drag it"
+        : "Drag along the route";
+    }
+    if (on) {
+      gps.watch = navigator.geolocation.watchPosition(gpsFix, function (err) {
+        geoSay(err);
+        gpsSet(false);         /* never leave a dead toggle pressed */
+      }, GEO);
+    }
+    pacerReadout();
+  }
+
+  $("#gps-btn").addEventListener("click", function () {
+    var want = this.getAttribute("aria-pressed") !== "true";
+    /* Only the button remembers. pacerStop switches GPS off too, and that must never be
+       mistaken for you deciding to walk with it off. */
+    try { localStorage.setItem(GPS_KEY, want ? "1" : "0"); } catch (e) { /* private mode */ }
+    gpsSet(want);
+  });
+
   function pacerSet(t) {
     pacer.t = Math.max(0, Math.min(1, t));
     pacer.pos = pointAlong(pacer.m, pacer.t);
@@ -4165,6 +4248,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function pacerStop() {
     if (!pacer) { return; }
+    gpsSet(false);             /* while the marker still exists to hand dragging back to */
     pacer.marker.remove();
     pacer = null;
     window.__fa.pacer = null;
@@ -4227,6 +4311,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     window.__fa.grains = { fire: fireGrains, def: defaultGrains };   /* testable without an upload */
     window.__fa.morph.trace = traceDraw;   /* measurable without waiting on a frame */
     window.__fa.projectToRoute = projectToRoute;
+    /* Measurable without walking: feed a fix and read where the walker went. */
+    window.__fa.gps = { set: gpsSet, fix: gpsFix, state: function () { return gps; },
+                        limits: { acc: GPS_ACC_MAX, leash: GPS_LEASH } };
+
+    /* You walked out with it on; you should not have to switch it on again at the trailhead. */
+    var wanted = null;
+    try { wanted = localStorage.getItem(GPS_KEY); } catch (e) { /* private mode */ }
+    if (wanted === "1") { gpsSet(true); }
 
     $("#pacerbar").hidden = false;
     $("#patchbar").hidden = false;
