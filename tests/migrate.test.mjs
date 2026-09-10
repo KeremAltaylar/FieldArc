@@ -15,6 +15,25 @@ test("deriving a row id from a different legacy id gives a different result", ()
   assert.notEqual(a, b);
 });
 
+test("a feature with no id is refused, by position", () => {
+  // deriveLegacyId("") is a perfectly good UUID and the same one every time, so two id-less
+  // features derived the same row id and collided onto one row — a run that reported
+  // success having kept one of them. There is nothing to preserve in an absent id, so this
+  // stops instead. The index is the only handle on a feature that has no id.
+  const noId = {
+    properties: { place: "R14372445", kind: "point" },
+    geometry: { type: "Point", coordinates: [28.9, 41.2] }
+  };
+  assert.throws(() => toRow(noId, 7), /at index 7/, "the error must locate the feature");
+  assert.throws(() => toRow(noId, 7), /has no id/);
+  assert.throws(() => toRow({ ...noId, properties: { ...noId.properties, id: "  " } }, 0),
+    /has no id/, "a blank id is an absent id");
+
+  // Two id-less features must not both be accepted — the collision this replaces.
+  assert.throws(() => toRow(noId, 0));
+  assert.throws(() => toRow(noId, 1));
+});
+
 test("toRow preserves a well-formed UUID id as-is, with no legacy_id", () => {
   const id = "1e587abf-2d2a-43a4-8de6-4dc4c601d96b";
   const row = toRow({

@@ -37,16 +37,32 @@ export function deriveLegacyId(name, namespace = LEGACY_ID_NAMESPACE) {
 }
 
 /* One archive feature -> one features row. Exported so tests can check id derivation
-   and legacy_id fidelity without needing a live database. */
-export function toRow(f) {
+   and legacy_id fidelity without needing a live database. `index` is the feature's
+   position in the FeatureCollection, used only to name it in an error — a rejected
+   feature has no usable id by definition, so the position is the only handle the
+   operator has for finding it in the file. */
+export function toRow(f, index) {
   const p = { ...f.properties };
   const rawId = p.id;
-  const isUuid = UUID.test(rawId ?? "");
-  const id = isUuid ? rawId : deriveLegacyId(rawId ?? "");
+  const at = index === undefined ? "" : ` at index ${index}`;
+  /* An id-less feature used to fall through to deriveLegacyId(""), so EVERY id-less
+     feature derived the same UUIDv5 from the same empty string and they all collided
+     onto one row — the run would report success having silently kept one of them.
+     A legacy id is worth preserving and is preserved (below); an absent id is nothing
+     to preserve, so this stops rather than inventing a handle. */
+  if (rawId === undefined || rawId === null || String(rawId).trim() === "") {
+    throw new Error(
+      `feature${at} has no id — an id-less feature cannot be migrated, because every ` +
+      `id-less feature would derive the same row id and collide onto one row. Give it ` +
+      `an id in the export and re-run.`
+    );
+  }
+  const isUuid = UUID.test(rawId);
+  const id = isUuid ? rawId : deriveLegacyId(rawId);
   const place = p.place;
   const kind = p.kind;
-  if (!place) { throw new Error(`feature ${rawId} has no place`); }
-  if (kind !== "point" && kind !== "route") { throw new Error(`feature ${rawId} has kind ${kind}`); }
+  if (!place) { throw new Error(`feature ${rawId}${at} has no place`); }
+  if (kind !== "point" && kind !== "route") { throw new Error(`feature ${rawId}${at} has kind ${kind}`); }
   // id, place and kind become columns; everything else stays in properties, unchanged.
   delete p.id; delete p.place; delete p.kind;
   if (!isUuid) { p.legacy_id = rawId; }
@@ -77,7 +93,7 @@ async function main() {
     );
   }
 
-  const rows = fc.features.map(toRow);
+  const rows = fc.features.map((f, i) => toRow(f, i));
 
   const { error, data } = await db.from("features").upsert(rows, { onConflict: "id" }).select("id");
   if (error) { throw new Error(error.message); }
