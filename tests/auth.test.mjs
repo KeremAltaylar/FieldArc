@@ -33,37 +33,50 @@ test("being authenticated is not the same as being a setter", async () => {
 
 /* Round 1 finding: the pinned supabase-js "@2" fires SIGNED_IN on session restore, not only
    on a real authentication, so switching on the event name double-logs a sign_in row on
-   every reload. The fix compares last_sign_in_at — a server-side stamp that only changes on
-   a genuine sign-in — against the last one seen, kept in localStorage.
+   every reload. Tried comparing last_sign_in_at against the last one seen, kept in
+   localStorage.
 
-   Round 2 finding: last_sign_in_at taken from the verifyOtp/session payload is itself stale —
-   it reflects the record from BEFORE the sign-in it is completing, so the first reload's
-   getSession() sees a refreshed value, reads it as a change, and logs a second time. The fix
-   reads the stamp from sb.auth.getUser() at the moment it decides, not from the event/session
-   payload, so it agrees with itself at sign-in time and at every reload after.
+   Round 2 finding: last_sign_in_at taken from the verifyOtp/session payload is stale by
+   construction — it reflects the record from BEFORE the sign-in it is completing. Tried
+   reading it from sb.auth.getUser() instead, at decision time.
+
+   Round 3 finding: getUser() measured no better — the server's write to last_sign_in_at is
+   not visible to the very next read from EITHER source; it settles a moment later, which is
+   why reload 1 (not the sign-in itself) was the one logging twice. last_sign_in_at cannot
+   answer this question at the instant it's asked, from any source. The fix instead decodes
+   the `session_id` claim out of the access token's own JWT payload (session.access_token,
+   split on ".", index 1, base64url -> base64, atob, JSON.parse) — present the instant the
+   session exists, constant across reloads and token refreshes of the same session, different
+   on every genuine sign-in, and requires no network round trip at all.
 
    These tests pin logSignIn()'s body down specifically — a refactor back to trusting the
-   event name, or back to reading last_sign_in_at off the session/event payload instead of
-   asking getUser() for the current record, fails here without needing a live reload. */
-const logSignInBody = html.match(/function logSignIn\(\)\s*\{[\s\S]*?\n  \}\r?\n/);
+   event name, or back to reading last_sign_in_at from any source instead of decoding
+   session_id from the access token, fails here without needing a live reload. */
+const logSignInBody = html.match(/function logSignIn\(session\)\s*\{[\s\S]*?\n  \}\r?\n/);
 
-test("logSignIn() exists as its own function, called with no session argument", () => {
-  assert.ok(logSignInBody, "logSignIn() not found — the sign-in log path was restructured");
+test("logSignIn(session) exists and is scoped to the JWT decode this round introduced", () => {
+  assert.ok(logSignInBody, "logSignIn(session) not found — the sign-in log path was restructured");
 });
 
-test("the sign-in decision asks the server for the current user, not the event payload, before logging", () => {
-  assert.match(logSignInBody[0], /sb\.auth\.getUser\(\)/,
-    "last_sign_in_at must come from getUser() at decision time — the verifyOtp/session payload carries the value from BEFORE the sign-in it is completing");
-  assert.match(logSignInBody[0], /last_sign_in_at/);
+test("the sign-in decision decodes session_id from the access token's JWT, not last_sign_in_at from any source", () => {
+  assert.match(logSignInBody[0], /session\.access_token/, "the JWT is read off the session argument");
+  assert.match(logSignInBody[0], /\.split\("\."\)\[1\]/, "the payload segment of the JWT (index 1) is decoded");
+  assert.match(logSignInBody[0], /replace\(\/-\/g,\s*"\+"\)/, "base64url is converted to base64 before decoding");
+  assert.match(logSignInBody[0], /atob\(/);
+  assert.match(logSignInBody[0], /claims\.session_id|\.session_id/, "session_id is the claim compared, not last_sign_in_at");
+  assert.doesNotMatch(logSignInBody[0], /last_sign_in_at/,
+    "last_sign_in_at was measured unreliable at decision time in rounds 1 and 2 — it must not return here");
+  assert.doesNotMatch(logSignInBody[0], /sb\.auth\.getUser\(\)/,
+    "getUser() cost a round trip and did not answer the question — round 3 drops it entirely");
 });
 
-test("a getUser() failure (offline, unreachable) declines to log rather than guessing", () => {
-  assert.match(logSignInBody[0], /r\.error/, "checks the getUser() result for an error before trusting it");
-  assert.match(logSignInBody[0], /\.catch\(/, "getUser() is a network call and can reject outright, not just resolve with .error");
+test("a malformed or missing token declines to log rather than throwing", () => {
+  assert.match(logSignInBody[0], /try\s*\{[\s\S]*?atob/, "the decode is inside a try block");
+  assert.match(logSignInBody[0], /catch\s*\(e\)\s*\{\s*return;\s*\}/, "a decode failure returns rather than propagating");
 });
 
-test("the last logged sign-in is remembered locally so a reload does not re-log it", () => {
-  assert.match(html, /fieldarc\.lastauth/, "a dedicated key, alongside the app's other fieldarc.* keys");
-  assert.match(logSignInBody[0], /localStorage\.getItem\(LASTAUTH_KEY\)/, "reads the stored stamp before deciding to log");
-  assert.match(logSignInBody[0], /localStorage\.setItem\(LASTAUTH_KEY/, "records the stamp once the log succeeds");
+test("the last logged session_id is remembered locally so a reload does not re-log it", () => {
+  assert.match(html, /fieldarc\.lastauth/, "a dedicated key, alongside the app's other fieldarc.* keys — same key as prior rounds");
+  assert.match(logSignInBody[0], /localStorage\.getItem\(LASTAUTH_KEY\)/, "reads the stored session_id before deciding to log");
+  assert.match(logSignInBody[0], /localStorage\.setItem\(LASTAUTH_KEY/, "records the session_id once the log succeeds");
 });
