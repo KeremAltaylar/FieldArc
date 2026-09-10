@@ -75,8 +75,31 @@ test("a malformed or missing token declines to log rather than throwing", () => 
   assert.match(logSignInBody[0], /catch\s*\(e\)\s*\{\s*return;\s*\}/, "a decode failure returns rather than propagating");
 });
 
+/* Round 4 finding: even with session_id as the key, storing it only inside the insert's
+   .then left a window — a reload, navigation, or close during that in-flight network round
+   trip means the store never happens, so the next load sees no stored key and logs again.
+   That turns a lost round trip into a permanent duplicate, the opposite of the stated
+   preference (a gap beats a duplicate in a table nothing can remove a row from). The fix
+   moves the store to before the insert is issued, so the same lost round trip now produces a
+   missing row instead. This test asserts the ORDER, not just that both calls exist — a
+   reorder back to storing inside the insert's .then is the exact regression this round
+   fixed, and it must fail this test even though setItem still appears somewhere in the body. */
 test("the last logged session_id is remembered locally so a reload does not re-log it", () => {
   assert.match(html, /fieldarc\.lastauth/, "a dedicated key, alongside the app's other fieldarc.* keys — same key as prior rounds");
   assert.match(logSignInBody[0], /localStorage\.getItem\(LASTAUTH_KEY\)/, "reads the stored session_id before deciding to log");
   assert.match(logSignInBody[0], /localStorage\.setItem\(LASTAUTH_KEY/, "records the session_id once the log succeeds");
+});
+
+test("the session_id is stored BEFORE the audit insert is issued, not after it resolves", () => {
+  const setItemAt = logSignInBody[0].search(/localStorage\.setItem\(LASTAUTH_KEY/);
+  const insertAt = logSignInBody[0].search(/sb\.from\("audit"\)\.insert\(/);
+  assert.notEqual(setItemAt, -1, "setItem(LASTAUTH_KEY, ...) not found");
+  assert.notEqual(insertAt, -1, 'sb.from("audit").insert(...) not found');
+  assert.ok(setItemAt < insertAt,
+    "storing after the insert's .then leaves a window where a reload during the network " +
+    "round trip loses the store and the next load logs a permanent duplicate — the key must " +
+    "be stored before the insert is issued, so a lost round trip produces a missing row " +
+    "instead of a duplicate one");
+  assert.doesNotMatch(logSignInBody[0], /\.then\(function \(ins\)[\s\S]*?setItem/,
+    "setItem must not be inside the insert's .then callback");
 });

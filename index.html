@@ -1672,7 +1672,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      nothing, a real sign-in differs and logs exactly once. The audit table is insert-only by
      design, so a duplicate here can never be cleaned up — a malformed token, or any
      localStorage failure (private mode throws), is treated as "do not log" rather than risk a
-     row that can never be removed. */
+     row that can never be removed.
+
+     The store happens BEFORE the insert is issued, not after — this looks backwards, so: the
+     insert is a network round trip to eu-west-1, and if the page reloads, navigates, or is
+     closed while that round trip is in flight, anything written only in its `.then` never
+     happens. Storing after the insert means that window turns a lost round trip into a
+     DUPLICATE row (the next load finds no stored key and logs again) — the exact failure this
+     function exists to prevent. Storing first turns the same lost round trip into a MISSING
+     row instead: worse for completeness, but a gap is recoverable-by-absence where a
+     duplicate in an insert-only table is permanent. That trade has been the stated
+     preference since round 1; this ordering is what actually delivers it. */
   function logSignIn(session) {
     if (!sb || !session || !session.user || !session.access_token) { return; }
     var claims;
@@ -1684,13 +1694,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!sid) { return; }
     try {
       if (localStorage.getItem(LASTAUTH_KEY) === sid) { return; }
-    } catch (e) { return; }
+      localStorage.setItem(LASTAUTH_KEY, sid);
+    } catch (e) { return; }   /* unstoreable means every future load would duplicate — worse */
     sb.from("audit").insert({
       setter_id: session.user.id, action: "sign_in", target_id: null,
       detail: { at: new Date().toISOString() }
     }).then(function (ins) {
       if (ins.error) { return; }   /* a failed log must never block a sign-in */
-      try { localStorage.setItem(LASTAUTH_KEY, sid); } catch (e) { /* best effort */ }
     });
   }
 
