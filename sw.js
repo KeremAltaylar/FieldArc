@@ -3,7 +3,12 @@
    the same as no map. Everything else is network-first so updates still arrive when online,
    falling back to cache when they do not. */
 
-var SHELL = "fieldarc-shell-v1";
+/* v2: the catch-all below used to intercept every non-tile, non-asset GET with no origin
+   check, which meant it silently cached cross-origin API responses (Supabase auth/REST)
+   once Task 1 gave the page something to call. Renaming evicts any cache that already
+   holds one of those entries, since activate deletes every cache whose name is not
+   current. TILES is untouched: those entries are expensive, permanent, and not implicated. */
+var SHELL = "fieldarc-shell-v2";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [
@@ -71,6 +76,16 @@ self.addEventListener("fetch", function (e) {
     );
     return;
   }
+
+  /* IS_TILE and IS_ASSET above are the only cross-origin hosts this worker deliberately
+     caches. Everything else must be same-origin, or it is left alone: no respondWith,
+     so the browser performs the request normally. Before this check existed, the
+     catch-all below silently intercepted and cached cross-origin API calls too — the
+     Supabase auth/REST endpoints supabase-js talks to — which could serve a signed-out
+     user a stale cached GET /auth/v1/user, or hand supabase-js this app's own HTML
+     (status 200) as the offline fallback for a failed API call, which it then tries to
+     parse as JSON. */
+  if (new URL(url, self.location.origin).origin !== self.location.origin) { return; }
 
   /* Same origin: fresh when possible, cached when not. */
   e.respondWith(
