@@ -66,13 +66,36 @@ test("the upload is chained ahead of the feature upsert", () => {
   assert.match(pub, /reduce\(/, "uploads are sequenced, not fired in parallel");
 });
 
-test("only features carrying audio are uploaded for", () => {
+/* This test used to assert `rows.filter(... r.properties.has_audio)` — i.e. it pinned the
+   defect. A rhythm point's four hits are stored under id + "#" + slot and described by
+   properties.hits; they set audio_mode "hits" and never has_audio (has_hits is computed at
+   zone-build time, it is not a stored flag). Filtering on has_audio therefore uploaded
+   nothing at all for such a point while publish reported "Published 1" and the row named
+   four files the bucket did not hold. Both kinds of blob must now be queued. */
+test("both a take and a rhythm point's hits are uploaded for", () => {
   /* End marker is the click wiring, which is the first thing after publish(). Do NOT use
      $("#publish-btn") — it appears inside renderPending(), which is defined earlier, so the
      slice would run backwards and silently produce an empty string that matches nothing. */
+  const start = html.indexOf("function publish()");
+  const end = html.indexOf('addEventListener("click", publish)');
+  assert.ok(start !== -1 && end > start, "the publish() slice is bounded and forwards");
+  const pub = html.slice(start, end);
+  assert.doesNotMatch(pub, /rows\.filter\(function \(r\) \{ return r\.properties\.has_audio; \}\)/,
+    "has_audio alone skips every rhythm point's hits");
+  assert.match(pub, /r\.properties\.has_audio/, "a soundscape take is still uploaded");
+  assert.match(pub, /HIT_SLOTS\.forEach/, "each hit slot is queued for upload");
+  assert.match(pub, /r\.id \+ "#" \+ slot/, "hits are read from their own IndexedDB key");
+  assert.match(pub, /storage_path = path/, "every uploaded blob records where it went");
+});
+
+/* A "#" is a fragment delimiter in a URL: a storage object named "<id>#low.wav" truncates at
+   the hash in any signed link stage 3 builds. The IndexedDB key keeps its "#"; the object
+   path must not. */
+test("a hit's storage path carries no fragment delimiter", () => {
   const pub = html.slice(html.indexOf("function publish()"),
                          html.indexOf('addEventListener("click", publish)'));
-  assert.match(pub, /rows\.filter\(function \(r\) \{ return r\.properties\.has_audio; \}\)/);
+  assert.match(pub, /r\.id \+ "\/hits\/" \+ slot \+ "\." \+ ext\(blob\)/,
+    "hits go under <id>/hits/<slot>.<ext>, not under a path containing #");
 });
 
 /* A feature can claim has_audio with no blob behind it: IndexedDB evicted it, site data got
@@ -85,7 +108,7 @@ test("only features carrying audio are uploaded for", () => {
    exercised through the browser publish path from Node, so it asserts on the source: the
    missing-blob branch is a rejection, not a `return null`. */
 test("a feature claiming audio with no blob behind it aborts the publish instead of upserting anyway", () => {
-  const fnAt = html.indexOf("function uploadAudio(id)");
+  const fnAt = html.indexOf("function uploadAudio(key, pathFor, missing)");
   assert.ok(fnAt > 0, "uploadAudio exists");
   const fn = html.slice(fnAt, html.indexOf("\n    }\n", fnAt));
   assert.doesNotMatch(fn, /if \(!blob\) \{ return null; \}/,

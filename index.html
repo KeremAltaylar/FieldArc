@@ -338,6 +338,75 @@ h2 {
 }
 #list li { margin-bottom: var(--s-1); }
 
+/* ---- Setter, and what is waiting to be published ----
+   Both blocks shipped on browser defaults: a serif status line at body size, an email field
+   with a system border and a 13px system font inside it, and the pending count — the one
+   number that says whether a morning's work has left the device — set as ordinary prose.
+   That is the same defect the audit log had, sitting in the two blocks no round looked at.
+   Everything here is tokens: the readouts are mono like every other readout in the app
+   (.pmeta is the precedent), spacing is the --s- ladder, and no colour, size or rhythm
+   appears that is not already in the file. */
+
+/* A section already carries its h2. The setter block is a part of Storage rather than a
+   sibling of it, so it takes an h3 — the outline stays truthful for a screen reader instead
+   of claiming two peers where there is a heading and its subordinate.
+
+   Same eyebrow treatment as every other heading in the panel, and no rule above it. A
+   hairline would group it more strongly, but it would be the only one of its kind in the file
+   and it would cost height: the ledger records #storage ending at 729.2px in a 729px
+   viewport, which is exactly the margin that fix round 3 fought to win back. Separation here
+   is whitespace, which is what the rest of the panel uses. */
+.section h3 {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-weight: 400;
+  letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase;
+  color: var(--faint);
+  margin: var(--s-2) 0 var(--s-2);
+}
+
+#setter { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s-2); }
+#setter-who {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.45;
+  color: var(--faint);
+}
+/* The address is an identifier, not prose, and it is the one thing on this line worth
+   reading twice — mono, a shade brighter, and allowed to break rather than widen the panel. */
+#setter-who .who {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+#setter .field { width: 100%; margin: 0; }
+
+/* s-2 above, not s-3: the whole block has to come out no taller than the undesigned one it
+   replaces, or it re-opens the clipping that took #storage past the bottom of the panel. The
+   space it gains back is the 12px margin the status line and the email field used to carry. */
+#publishbar {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  margin-top: var(--s-2);
+}
+#publish-btn { flex: none; }
+/* A live count beside a button reads like every other readout here: mono at --t-xs, tabular
+   so a changing number does not shuffle the words after it, faint while there is nothing to
+   say. */
+#pending-count {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--track-meta);
+  color: var(--faint);
+}
+/* Work waiting is worth more ink than nothing waiting. This is the line whose entire job is
+   that a morning never sits unnoticed on a device. */
+#pending-count.waiting { color: var(--accent); }
+
 /* ---- Audit log ---- */
 /* A log of timestamps is data, not prose: same family as .pmeta, not the body serif.
    #storage is already flush against the bottom of the panel, which does not scroll on
@@ -508,7 +577,9 @@ h2 {
   color: var(--faint);
   margin-bottom: var(--s-1);
 }
-input[type="text"], textarea {
+/* The email field was left out of this rule and was the only input in the app still wearing
+   the browser's own border and system font. */
+input[type="text"], input[type="email"], textarea {
   width: 100%;
   font: inherit;
   font-size: var(--t-sm);
@@ -519,7 +590,7 @@ input[type="text"], textarea {
   padding: var(--s-2);
   resize: vertical;
 }
-input[type="text"]:focus-visible, textarea:focus-visible {
+input[type="text"]:focus-visible, input[type="email"]:focus-visible, textarea:focus-visible {
   outline: 2px solid var(--lamp);
   outline-offset: 1px;
 }
@@ -1442,9 +1513,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <button type="button" class="ghost" id="undo" hidden>Undo delete</button>
       <input type="file" id="import" multiple
              accept=".geojson,.json,.gpx,audio/*,.wav,.bwf,.aif,.aiff,.caf,.w64,.wv,application/geo+json" hidden>
-      <h2 class="eyebrow">Setter</h2>
+      <!-- h3, not a second h2: this section already has one ("Storage"), and the setter block
+           is a part of it rather than a sibling of it. -->
+      <h3>Setter</h3>
       <div id="setter">
-        <p id="setter-who" class="hint">Not signed in — this device keeps its own archive.</p>
+        <p id="setter-who">Not signed in — this device keeps its own archive.</p>
         <label class="field" for="setter-email"><span>email</span>
           <input type="email" id="setter-email" placeholder="you@example.com"
                  autocomplete="email" inputmode="email"></label>
@@ -1453,7 +1526,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       </div>
       <div id="publishbar">
         <button type="button" id="publish-btn" disabled>Publish</button>
-        <span id="pending-count" class="hint">nothing pending</span>
+        <span id="pending-count">nothing pending</span>
       </div>
       <div id="audit">
         <button type="button" id="audit-refresh" class="ghost"
@@ -1549,10 +1622,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <!-- Module scripts are deferred: FA_PENDING does not exist at the main script's parse time.
-     Nothing below may call it at parse time — only Publish (Task 4) calls it, on a click. -->
+     Nothing below may call it at parse time — only Publish (Task 4) calls it, on a click.
+
+     Except that one thing did, and it was the offline case. With no library, `sb` is null and
+     the classic script calls renderSetter() synchronously right then — before this module has
+     run. pendingDiff() finds no FA_PENDING, returns an empty diff, and the panel reads
+     "nothing pending" over twelve unpublished points with no signal to correct it: nothing
+     called renderPending() again until a commit(). The spec's words for this feature are
+     "shows the count, so nothing is ever silently stuck".
+
+     So the module tells the page it has arrived. The refresh hook is published by the classic
+     script, which has finished running by the time any deferred module executes, and the call
+     is guarded because a browser that fails to load this module must still not throw. -->
 <script type="module">
   import { hashFeature, manifestOf, diffManifest } from "./src/pending.mjs";
   window.FA_PENDING = { hashFeature, manifestOf, diffManifest };
+  if (window.__fa && window.__fa.publish) { window.__fa.publish.refresh(); }
 </script>
 <script>
 (function () {
@@ -1653,6 +1738,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
+  /* The pending count refreshes here, at the one place every mutation already funnels
+     through, and NOT in commit(). The irony is worth recording: src/pending.mjs exists
+     precisely so that no mutation site has to remember anything — the manifest is computed
+     from the archive rather than tracked by a dirty flag. Hanging the refresh off commit()
+     rebuilt that same trap one layer up, at the display: commit() is only one of the callers,
+     and the twelve bare save() calls (commitPatch, the note and tag fields, the sound, rhythm
+     and grain controls) are the largest body of setter work in the app. Every one of them
+     left the panel saying "nothing pending" with Publish greyed out over a queue that was
+     genuinely full. renderPending() is a pure read of state that already exists, so calling
+     it from the funnel costs nothing and cannot be forgotten. */
   function save() {
     try {
       localStorage.setItem(STORE, JSON.stringify(fc));
@@ -1663,6 +1758,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       $("#saved").textContent = "Could not save locally — export to keep this.";
       $("#saved").className = "hint warn";
     }
+    renderPending();
   }
 
   /* ---------- Setter session ----------
@@ -1675,9 +1771,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function setterState() { return { signedIn: setter.signedIn, email: setter.email, id: setter.id }; }
 
   function renderSetter() {
-    $("#setter-who").textContent = setter.signedIn
-      ? "Signed in as " + setter.email
-      : "Not signed in — this device keeps its own archive.";
+    var who = $("#setter-who");
+    who.textContent = "";
+    if (setter.signedIn) {
+      /* Built rather than concatenated so the address can be mono: it is an identifier, and
+         every other identifier in this app is set in the mono face. */
+      who.appendChild(document.createTextNode("Signed in as "));
+      var addr = document.createElement("span");
+      addr.className = "who";
+      addr.textContent = setter.email;
+      who.appendChild(addr);
+    } else {
+      who.textContent = "Not signed in — this device keeps its own archive.";
+    }
     $("#setter-email").hidden = setter.signedIn;
     $("#setter-send").hidden = setter.signedIn;
     $("#setter-out").hidden = !setter.signedIn;
@@ -1795,8 +1901,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     try { return JSON.parse(localStorage.getItem(MANIFEST_KEY)) || {}; }
     catch (e) { return {}; }
   }
+  /* A failed write here used to be swallowed, and the swallow was the worst possible outcome:
+     the publish itself succeeded, so the toast said "Published 12", while the record of what
+     was published never persisted. The count therefore never dropped, and the setter would
+     publish the same twelve every time, forever, with nothing on screen suggesting anything
+     was wrong. save() already surfaces its own storage failure; this one is louder, because
+     what it reports is a success that has not been remembered. It also returns whether the
+     write held, because there is one toast element and the "Published 12" line fires a
+     moment later — without that, the warning would be overwritten before it could be read. */
   function saveManifest(m) {
-    try { localStorage.setItem(MANIFEST_KEY, JSON.stringify(m)); } catch (e) { /* full */ }
+    try {
+      localStorage.setItem(MANIFEST_KEY, JSON.stringify(m));
+      return true;
+    } catch (e) {
+      toast("Published — but this device could not record that it did, so the same changes " +
+            "may still look pending. Free some space, or export and reload.");
+      return false;
+    }
   }
 
   function pendingDiff() {
@@ -1814,6 +1935,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var n = pendingCount();
     $("#pending-count").textContent = n === 0 ? "nothing pending"
       : n + (n === 1 ? " change to publish" : " changes to publish");
+    $("#pending-count").classList.toggle("waiting", n > 0);
     $("#publish-btn").disabled = !setter.signedIn || n === 0;
   }
 
@@ -1825,33 +1947,88 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var byId = {};
     fc.features.forEach(function (f) { byId[f.properties.id] = f; });
 
-    var rows = d.added.concat(d.changed).map(function (id) {
+    /* `added` and `changed` are kept apart here rather than concatenated blindly, because two
+       columns must be written differently for each:
+
+       created_by is stamped only on an ADDED feature. PostgREST's upsert sends every supplied
+       key on the conflict path too, so stamping it on a change transfers authorship: setter B
+       fixes a typo in setter A's point and the archive now says B set it. Worse, a device with
+       cleared localStorage has an empty manifest, reads the entire archive as `added`, and
+       reassigns all of it on the next publish. The column exists so two setters can tell their
+       work apart, which is exactly what writing it on every push destroys. Omitted entirely for
+       a change, so the server keeps whatever it already holds.
+
+       deleted_at is cleared on BOTH. The mirror of the same rule: a column the upsert does not
+       name is left alone, so mark -> publish -> delete -> publish -> undo -> publish put the
+       device back to zero pending while the server row stayed soft-deleted, and public_features
+       excluded it forever with nothing on the device able to say so. Publishing a feature is
+       the statement that it is here now; naming the column is what makes an undo reach the
+       server. */
+    function rowFor(id, isNew) {
       var f = byId[id], p = {};
       Object.keys(f.properties).forEach(function (k) { p[k] = f.properties[k]; });
       delete p.id; delete p.place; delete p.kind;
-      return { id: id, place: f.properties.place, kind: f.properties.kind,
-               geometry: f.geometry, properties: p, created_by: setter.id };
-    });
+      /* Cloned one level deeper: the upload pass writes a storage_path into each hit, and
+         with the slot objects shared by reference that write would land in the live feature
+         and change its hash mid-publish. */
+      if (p.hits) {
+        var h = {};
+        Object.keys(p.hits).forEach(function (k) {
+          h[k] = (p.hits[k] && typeof p.hits[k] === "object")
+            ? Object.assign({}, p.hits[k]) : p.hits[k];
+        });
+        p.hits = h;
+      }
+      var row = { id: id, place: f.properties.place, kind: f.properties.kind,
+                  geometry: f.geometry, properties: p, deleted_at: null };
+      if (isNew) { row.created_by = setter.id; }
+      return row;
+    }
+
+    /* Two batches, not one array, and this was measured rather than assumed — the guess was
+       wrong in the dangerous direction. PostgREST derives an upsert's column list from the
+       UNION of the keys across the whole payload, and any object missing one of those keys is
+       written as NULL for it. It does not refuse the mixed body; it accepts it silently. So a
+       changed row sent alongside a new row would not merely fail to preserve created_by, it
+       would ERASE it — strictly worse than the defect this is fixing. Rows whose column list
+       differs must therefore travel as separate requests. Proved against the live database in
+       tests/publish.test.mjs ("a mixed batch nulls…"). */
+    var newRows = d.added.map(function (id) { return rowFor(id, true); });
+    var changedRows = d.changed.map(function (id) { return rowFor(id, false); });
+    var rows = newRows.concat(changedRows);
 
     $("#publish-btn").disabled = true;
     $("#pending-count").textContent = "publishing…";
 
     /* Audio is the slow half, so it goes first and one file at a time: a walk's worth of
        recordings will not finish in one go on a phone, and a feature row that claims audio the
-       server does not have is worse than a queue that is still draining. */
-    function uploadAudio(id) {
-      return getAudio(id).then(function (blob) {
+       server does not have is worse than a queue that is still draining.
+
+       A point holds one kind of audio or the other, and they are stored under different keys.
+       A soundscape or a grain source is a single blob under the feature id, flagged has_audio.
+       A rhythm point's four hits are separate blobs under id + "#" + slot, described by
+       properties.hits, and they set audio_mode "hits" — never has_audio. (has_hits is computed
+       from properties.hits when zones are built; it is not a stored flag, so there is nothing
+       else on the row to filter on.) Uploading only what has_audio names therefore uploaded
+       NOTHING for a rhythm point, while publish reported success and the row went up naming
+       four files the bucket did not contain: the same "claims audio it cannot produce" failure
+       the missing-blob rejection closed for the other path, arriving through the slot keys.
+
+       The "#" belongs to the IndexedDB key and must not reach a storage path — it is a
+       fragment delimiter in a URL and would truncate every signed link stage 3 builds. Hits go
+       under <id>/hits/<slot>.<ext> instead, and each records its own path on its own slot,
+       because four files under one row cannot be found by guessing. */
+    function ext(blob) { return blob.type === "audio/wav" ? "wav" : "webm"; }
+
+    function uploadAudio(key, pathFor, missing) {
+      return getAudio(key).then(function (blob) {
         /* A row that claims audio and cannot produce it must not be published. Reject rather
            than resolve null so this chain aborts, the outer .catch runs, the manifest is not
            written, and the row stays pending instead of reaching the server without its file —
            IndexedDB can evict a blob, site data can be cleared, an import can carry the flag
            without the audio, and any of those must block the publish, not slip past it. */
-        if (!blob) {
-          return Promise.reject(new Error(
-            "feature " + id + " says it has a recording, but this device no longer has the " +
-            "audio for it — re-attach the recording or clear its “has audio” flag, then publish again"));
-        }
-        var path = id + "/" + (blob.type === "audio/wav" ? "take.wav" : "take.webm");
+        if (!blob) { return Promise.reject(new Error(missing)); }
+        var path = pathFor(blob);
         return sb.storage.from("recordings")
           .upload(path, blob, { upsert: true, contentType: blob.type })
           .then(function (r) { return r.error ? Promise.reject(new Error(r.error.message)) : path; });
@@ -1860,22 +2037,49 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     /* Sequential on purpose. Six parallel uploads on a phone at the edge of signal is how a
        publish half-finishes; one at a time is slower and finishes. A row is only upserted
-       after its file is up, so the server never holds a feature claiming audio it does not
+       after its files are up, so the server never holds a feature claiming audio it does not
        have — the queue simply stays pending instead. */
-    var withAudio = rows.filter(function (r) { return r.properties.has_audio; });
-    var audio = withAudio.reduce(function (chain, r) {
-      return chain.then(function () {
-        return uploadAudio(r.id).then(function (path) {
-          r.properties.storage_path = path;
+    var uploads = [];
+    rows.forEach(function (r) {
+      if (r.properties.has_audio) {
+        uploads.push(function () {
+          return uploadAudio(r.id,
+            function (blob) { return r.id + "/take." + ext(blob); },
+            "feature " + r.id + " says it has a recording, but this device no longer has the " +
+            "audio for it — re-attach the recording or clear its “has audio” flag, then publish again"
+          ).then(function (path) { r.properties.storage_path = path; });
+        });
+      }
+      HIT_SLOTS.forEach(function (slot) {
+        if (!(r.properties.hits && r.properties.hits[slot])) { return; }
+        uploads.push(function () {
+          return uploadAudio(r.id + "#" + slot,
+            function (blob) { return r.id + "/hits/" + slot + "." + ext(blob); },
+            "feature " + r.id + " lists a “" + slot + "” hit, but this device no longer has the " +
+            "audio for it — re-attach that hit or remove the slot, then publish again"
+          ).then(function (path) {
+            var s = r.properties.hits[slot];
+            if (!s || typeof s !== "object") { s = r.properties.hits[slot] = {}; }
+            s.storage_path = path;
+          });
         });
       });
-    }, Promise.resolve());
-
-    var work = audio.then(function () {
-      return rows.length
-        ? sb.from("features").upsert(rows, { onConflict: "id" })
-        : { error: null };
     });
+    var audio = uploads.reduce(function (chain, job) { return chain.then(job); }, Promise.resolve());
+
+    /* Two requests rather than one, for the reason given where the batches are built. Each
+       throws on its own error so a half-written publish stops at the first failure with the
+       manifest unwritten and everything still pending. */
+    function upsertBatch(batch) {
+      if (!batch.length) { return Promise.resolve({ error: null }); }
+      return sb.from("features").upsert(batch, { onConflict: "id" }).then(function (r) {
+        if (r.error) { throw new Error(r.error.message); }
+        return r;
+      });
+    }
+
+    var work = audio.then(function () { return upsertBatch(newRows); })
+      .then(function () { return upsertBatch(changedRows); });
 
     return work.then(function (r) {
       if (r.error) { throw new Error(r.error.message); }
@@ -1890,9 +2094,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         detail: { added: d.added.length, changed: d.changed.length, removed: d.removed.length }
       });
     }).then(function () {
-      saveManifest(window.FA_PENDING.manifestOf(fc.features));
+      var recorded = saveManifest(window.FA_PENDING.manifestOf(fc.features));
       renderPending();
-      toast("Published " + rows.length + " · removed " + d.removed.length);
+      /* Only when the manifest actually persisted: saveManifest has already said something
+         more useful otherwise, and this line would erase it. */
+      if (recorded) { toast("Published " + rows.length + " · removed " + d.removed.length); }
       return { pushed: rows.length, removed: d.removed.length, failed: 0 };
     }).catch(function (e) {
       /* The queue survives: the manifest is only written on success, so a failed publish
@@ -2474,7 +2680,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
   window.__fa.sb = sb;   /* null offline, a client otherwise — measurable either way */
   window.__fa.setter = setterState;
-  window.__fa.publish = { count: pendingCount, run: publish, diff: pendingDiff };
+  /* `refresh` is not only a debug hook: the deferred module that defines FA_PENDING calls it
+     once it exists, because the offline path renders the panel before that module has run. */
+  window.__fa.publish = { count: pendingCount, run: publish, diff: pendingDiff,
+                          refresh: renderPending };
   /* A thrown exception used to be silent: the button would simply not respond and there was
      no console to open, standing in a forest. Anything that escapes is shown once, named,
      with the line — it is the difference between "it does not work" and a bug report. */
@@ -2567,11 +2776,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function commit() {
     map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
-    save();
+    save();                 /* which refreshes the pending count — see save() */
     renderList();
     renderStats();
     renderLabels();
-    renderPending();
   }
 
   /* ---------- Interaction ---------- */
