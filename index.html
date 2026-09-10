@@ -1948,6 +1948,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         li.appendChild(time); li.appendChild(who); li.appendChild(what);
         ul.appendChild(li);
       });
+    }).catch(function () {
+      /* Supabase resolves most failures to { error }, handled above — but a genuine
+         network rejection (DNS, dropped connection, aborted request) rejects the
+         promise instead, and the list was already cleared at function entry. Left
+         uncaught, that reads as "nothing was ever recorded" to a setter who cannot
+         tell an empty log from an unreachable one, which is the one conclusion this
+         message must rule out: their publishes are not lost, the server is just not
+         reachable right now. */
+      ul.textContent = "";
+      var li = document.createElement("li");
+      li.className = "hint";
+      li.textContent = "Could not reach the server — this does not mean nothing was " +
+        "recorded. Try Recent activity again once you have signal.";
+      ul.appendChild(li);
     });
   }
 
