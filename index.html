@@ -354,12 +354,23 @@ h2 {
   color: var(--faint);
 }
 #audit-list li {
+  display: flex;
+  align-items: baseline;
   margin-bottom: var(--s-1);
-  overflow-wrap: anywhere;
   border-bottom: 1px solid var(--hairline);
   padding-bottom: var(--s-1);
 }
 #audit-list li:last-child { border-bottom: none; }
+/* Timestamp and action are pinned, full width, never truncated — they are what a scan
+   is for. The name between them is the only part allowed to give way. */
+.audit-time, .audit-what { flex: none; white-space: nowrap; }
+.audit-who {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .row {
   width: 100%;
@@ -1905,10 +1916,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!r.data.length) { ul.textContent = "Nothing recorded yet."; return; }
       r.data.forEach(function (row) {
         var li = document.createElement("li");
-        var when = new Date(row.at);
-        li.textContent = when.toLocaleString() + " · " +
-          (setterNames[row.setter_id] || row.setter_id || "unknown") + " · " + row.action +
+        /* Three flex children, not one text node: "who" is the only field allowed to
+           truncate. The action is what a reader scans for, so it — and the timestamp —
+           stay pinned and whole even when a long setter name would otherwise force a
+           second line or an unlucky end-of-string ellipsis to eat it. */
+        var time = document.createElement("span");
+        time.className = "audit-time";
+        time.textContent = fmtWhen(row.at);
+        var who = document.createElement("span");
+        who.className = "audit-who";
+        who.textContent = " · " + (setterNames[row.setter_id] || row.setter_id || "unknown");
+        var what = document.createElement("span");
+        what.className = "audit-what";
+        what.textContent = " · " + row.action +
           (row.target_id ? " · " + String(row.target_id).slice(0, 8) : "");
+        li.appendChild(time); li.appendChild(who); li.appendChild(what);
         ul.appendChild(li);
       });
     });
