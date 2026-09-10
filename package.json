@@ -6,10 +6,12 @@
   "scripts": {
     "test": "node --test --env-file=.env.local \"tests/**/*.test.mjs\"",
     "check": "node check-html.js index.html && node check-html.js diag.html",
-    "db:push": "npx --yes supabase@latest db push",
-    "migrate:archive": "node --env-file=.env.local tools/migrate-archive.mjs"
+    "migrate:archive": "node --env-file=.env.local tools/migrate-archive.mjs",
+    "db:apply": "node --env-file=.env.local tools/sql.mjs",
+    "db:query": "node --env-file=.env.local tools/sql.mjs --query"
   },
   "devDependencies": {
-    "@supabase/supabase-js": "^2.45.0"
+    "@supabase/supabase-js": "^2.45.0",
+    "pg": "^8.23.0"
   }
 }

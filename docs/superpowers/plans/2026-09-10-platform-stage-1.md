@@ -6,7 +6,7 @@
 
 **Architecture:** A hosted Supabase project. Schema and policies live in this repo as SQL migrations pushed with the Supabase CLI. Features are stored in the shape the app already speaks — GeoJSON geometry, a `properties` jsonb carrying the patch — so migration is a copy rather than a re-modelling. Anonymous readers never touch the `features` table; they select from a view that filters to published rows and replaces a sensitive point's geometry with a stable, salted offset computed inside the database. Nothing in `index.html` changes in this stage.
 
-**Tech Stack:** Supabase (Postgres 15, PostgREST, Auth), Supabase CLI via `npx`, Node 24 (`node:test`, `--env-file`), `@supabase/supabase-js` v2 as a dev dependency only.
+**Tech Stack:** Supabase (Postgres 17.6, PostgREST, Auth), Node 24 with `pg` (`node:test`, `--env-file`), `@supabase/supabase-js` v2 as a dev dependency only.
 
 **Spec:** `docs/superpowers/specs/2026-09-10-platform-design.md`
 
@@ -87,7 +87,8 @@ Expected: prints a line naming `.gitignore`. If it prints nothing, stop — the 
   "scripts": {
     "test": "node --test --env-file=.env.local \"tests/**/*.test.mjs\"",
     "check": "node check-html.js index.html && node check-html.js diag.html",
-    "db:push": "npx --yes supabase@latest db push",
+    "db:apply": "node --env-file=.env.local tools/sql.mjs",
+    "db:query": "node --env-file=.env.local tools/sql.mjs --query",
     "migrate:archive": "node --env-file=.env.local tools/migrate-archive.mjs"
   },
   "devDependencies": {
@@ -259,7 +260,7 @@ create trigger features_touch before update on public.features
 - [ ] **Step 4: Push and run the tests**
 
 ```bash
-npm run db:push
+npm run db:apply
 npm test
 ```
 
@@ -365,7 +366,7 @@ create index if not exists audit_at_idx on public.audit (at desc);
 - [ ] **Step 4: Push and run the tests**
 
 ```bash
-npm run db:push
+npm run db:apply
 npm test
 ```
 
@@ -596,7 +597,7 @@ grant select on public.public_features to anon, authenticated;
 - [ ] **Step 6: Push and run the tests**
 
 ```bash
-npm run db:push
+npm run db:apply
 npm test
 ```
 
@@ -781,7 +782,7 @@ create policy audit_read on public.audit
 - [ ] **Step 4: Push and run the whole suite**
 
 ```bash
-npm run db:push
+npm run db:apply
 npm test
 ```
 
