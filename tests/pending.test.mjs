@@ -43,3 +43,29 @@ test("an empty previous manifest makes everything added, not changed", () => {
   assert.deepEqual(d.added, ["a"]);
   assert.deepEqual(d.changed, []);
 });
+
+test("coordinate order is data, not noise — reordering changes the hash (point)", () => {
+  const one = {
+    type: "Feature", properties: { id: "a", kind: "point" },
+    geometry: { type: "Point", coordinates: [29, 41] }
+  };
+  const two = {
+    type: "Feature", properties: { id: "a", kind: "point" },
+    geometry: { type: "Point", coordinates: [41, 29] }
+  };
+  assert.notEqual(hashFeature(one), hashFeature(two),
+    "a point's coordinates are ordered data, not a set; canonical() must not sort arrays");
+});
+
+test("coordinate order is data, not noise — reordering changes the hash (route)", () => {
+  const one = {
+    type: "Feature", properties: { id: "a", kind: "route" },
+    geometry: { type: "LineString", coordinates: [[29, 41], [30, 42]] }
+  };
+  const two = {
+    type: "Feature", properties: { id: "a", kind: "route" },
+    geometry: { type: "LineString", coordinates: [[30, 42], [29, 41]] }
+  };
+  assert.notEqual(hashFeature(one), hashFeature(two),
+    "a reversed route is a different walk; canonical() must not sort the coordinate pairs");
+});
