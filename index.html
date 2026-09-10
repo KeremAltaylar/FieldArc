@@ -340,14 +340,24 @@ h2 {
 
 /* ---- Audit log ---- */
 /* A log of timestamps is data, not prose: same family as .pmeta, not the body serif.
-   Insert-only means it only ever grows, so it is capped and scrolls rather than pushing
-   the rest of #storage off the panel. */
+   #storage is already flush against the bottom of the panel, which does not scroll on
+   desktop — a section that only ever grows cannot live inline there without pushing
+   "Never exported…" off the bottom edge and out of reach. It surfaces as a popover
+   instead, the same pattern as #place-menu, opened by the button that already exists
+   and default-closed so it costs #storage nothing when shut. */
+#audit { position: relative; }
 #audit-list {
-  list-style: none;
-  padding-left: 0;
-  margin: var(--s-2) 0 0;
-  max-height: 10rem;
+  position: absolute; top: calc(100% + var(--s-2)); left: 0; z-index: 20;
+  width: 25rem; max-width: 82vw;
+  padding: var(--s-3);
+  background: var(--ground);
+  border: 1px solid var(--bdr);
+  border-radius: 3px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+  max-height: 21rem;
   overflow-y: auto;
+  list-style: none;
+  margin: 0;
   font-family: var(--font-mono);
   font-size: var(--t-xs);
   font-variant-numeric: tabular-nums;
@@ -1442,8 +1452,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <span id="pending-count" class="hint">nothing pending</span>
       </div>
       <div id="audit">
-        <button type="button" id="audit-refresh" class="ghost">Recent activity</button>
-        <ul id="audit-list"></ul>
+        <button type="button" id="audit-refresh" class="ghost"
+                aria-haspopup="true" aria-expanded="false">Recent activity</button>
+        <ul id="audit-list" hidden></ul>
       </div>
       <p class="hint" id="saved">Saved to this browser.</p>
     </div>
@@ -1936,7 +1947,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   }
 
-  $("#audit-refresh").addEventListener("click", renderAudit);
+  /* A popover, not an inline list: #storage is already flush against the bottom of a
+     panel that does not scroll on desktop, so a section that only ever grows cannot
+     live there without pushing later content out of reach. Default closed costs
+     #storage nothing; opening fetches, closing never leaves the button in a state it
+     cannot get back out of. */
+  function openAudit() {
+    $("#audit-list").hidden = false;
+    $("#audit-refresh").setAttribute("aria-expanded", "true");
+    renderAudit();
+  }
+  function closeAudit() {
+    $("#audit-list").hidden = true;
+    $("#audit-refresh").setAttribute("aria-expanded", "false");
+  }
+  $("#audit-refresh").addEventListener("click", function () {
+    if ($("#audit-list").hidden) { openAudit(); } else { closeAudit(); }
+  });
+  document.addEventListener("click", function (e) {
+    if (!$("#audit-list").hidden && !e.target.closest("#audit")) { closeAudit(); }
+  });
 
   function uid() {
     return (crypto.randomUUID ? crypto.randomUUID()
