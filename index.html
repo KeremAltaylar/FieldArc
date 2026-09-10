@@ -1394,6 +1394,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <button type="button" class="ghost" id="undo" hidden>Undo delete</button>
       <input type="file" id="import" multiple
              accept=".geojson,.json,.gpx,audio/*,.wav,.bwf,.aif,.aiff,.caf,.w64,.wv,application/geo+json" hidden>
+      <h2 class="eyebrow">Setter</h2>
+      <div id="setter">
+        <p id="setter-who" class="hint">Not signed in — this device keeps its own archive.</p>
+        <label class="field" for="setter-email"><span>email</span>
+          <input type="email" id="setter-email" placeholder="you@example.com"
+                 autocomplete="email" inputmode="email"></label>
+        <button type="button" id="setter-send">Send link</button>
+        <button type="button" id="setter-out" hidden>Sign out</button>
+      </div>
       <p class="hint" id="saved">Saved to this browser.</p>
     </div>
   </div>
@@ -1591,6 +1600,76 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       $("#saved").className = "hint warn";
     }
   }
+
+  /* ---------- Setter session ----------
+     Magic link only. There is no password to leak, no sign-up page to secure, and no
+     account for a listener to abandon — the invited setters are a closed list in the
+     database. Signing in changes nothing about how the archive works locally; it only
+     decides whether Publish has anywhere to push. */
+  var setter = { signedIn: false, email: null, id: null };
+
+  function setterState() { return { signedIn: setter.signedIn, email: setter.email, id: setter.id }; }
+
+  function renderSetter() {
+    $("#setter-who").textContent = setter.signedIn
+      ? "Signed in as " + setter.email
+      : "Not signed in — this device keeps its own archive.";
+    $("#setter-email").hidden = setter.signedIn;
+    $("#setter-send").hidden = setter.signedIn;
+    $("#setter-out").hidden = !setter.signedIn;
+    $("#setter-email").parentNode.hidden = setter.signedIn;
+  }
+
+  function applySession(session) {
+    setter.signedIn = !!(session && session.user);
+    setter.email = session && session.user ? session.user.email : null;
+    setter.id = session && session.user ? session.user.id : null;
+    renderSetter();
+  }
+
+  function signIn(email) {
+    if (!sb) { toast("No connection — sign in when you are back on wifi."); return; }
+    if (!email) { toast("Enter the email you were invited with."); return; }
+    sb.auth.signInWithOtp({
+      email: email,
+      /* Back to this page, not to the origin: FieldArc lives at /FieldArc/ on Pages, and a
+         bare origin would land the setter on a 404 holding a valid token. */
+      options: { emailRedirectTo: location.origin + location.pathname }
+    }).then(function (r) {
+      toast(r.error ? "Could not send: " + r.error.message : "Link sent — check your email.");
+    });
+  }
+
+  function signOut() {
+    if (!sb) { return; }
+    sb.auth.signOut().then(function () { applySession(null); toast("Signed out."); });
+  }
+
+  /* The spec's audit records who signed in, not only who published. Written on the SIGNED_IN
+     event rather than inside signIn(), because the session actually begins when the link is
+     followed — often on a different device from the one that asked for it. */
+  function logSignIn(session) {
+    if (!sb || !session || !session.user) { return; }
+    sb.from("audit").insert({
+      setter_id: session.user.id, action: "sign_in", target_id: null,
+      detail: { at: new Date().toISOString() }
+    }).then(function () { /* a failed log must never block a sign-in */ });
+  }
+
+  if (sb) {
+    sb.auth.getSession().then(function (r) { applySession(r.data.session); });
+    sb.auth.onAuthStateChange(function (e, session) {
+      applySession(session);
+      if (e === "SIGNED_IN") { logSignIn(session); }
+    });
+  } else {
+    renderSetter();
+  }
+
+  $("#setter-send").addEventListener("click", function () {
+    signIn($("#setter-email").value.trim());
+  });
+  $("#setter-out").addEventListener("click", signOut);
 
   function uid() {
     return (crypto.randomUUID ? crypto.randomUUID()
@@ -2079,6 +2158,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   });
   window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
   window.__fa.sb = sb;   /* null offline, a client otherwise — measurable either way */
+  window.__fa.setter = setterState;
   /* A thrown exception used to be silent: the button would simply not respond and there was
      no console to open, standing in a forest. Anything that escapes is shown once, named,
      with the line — it is the difference between "it does not work" and a bug report. */
