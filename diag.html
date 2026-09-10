@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FieldArc — diagnostics</title>
+<link href="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css" rel="stylesheet">
+
+<script>
+/* Same test-only shim the app carries: a background tab never fires requestAnimationFrame,
+   and MapLibre defers style ingestion to it, so an automated check sees a map that never
+   loads. Opt-in via ?rafshim, inert without it — a phone never needs it. */
+if (location.search.indexOf("rafshim") !== -1) {
+  window.requestAnimationFrame = function (cb) { return setTimeout(function () { cb(performance.now()); }, 16); };
+  window.cancelAnimationFrame = function (id) { clearTimeout(id); };
+}
+</script>
+
+<style>
+/* Same ladder as the app, so this reads as part of it and not as a stray test file. */
+:root {
+  --sunk: oklch(18% 0.012 162);
+  --ground: oklch(24% 0.014 162);
+  --panel: oklch(28% 0.015 162);
+  --raised: oklch(33% 0.016 162);
+  --ink: oklch(92.5% 0.006 150);
+  --dim: oklch(78% 0.011 150);
+  --faint: oklch(71% 0.013 150);
+  --accent: oklch(83% 0.040 138);
+  --lamp: oklch(88% 0.085 140);
+  --bad: oklch(72% 0.150 25);
+  --bdr: color-mix(in oklch, var(--accent) 16%, transparent);
+  --s-1: 0.25rem; --s-2: 0.5rem; --s-3: 0.75rem; --s-4: 1rem;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: var(--s-3);
+  background: var(--sunk); color: var(--ink);
+  font-family: "Courier Prime", ui-monospace, monospace;
+  font-size: 13px; line-height: 1.5;
+}
+h1 { font-size: 15px; letter-spacing: 0.2em; text-transform: uppercase; margin: 0 0 var(--s-3); }
+h2 {
+  font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--faint); margin: var(--s-4) 0 var(--s-2);
+  border-bottom: 1px solid var(--bdr); padding-bottom: var(--s-1);
+}
+.row { display: flex; gap: var(--s-2); justify-content: space-between; word-break: break-all; }
+.row b { font-weight: 400; color: var(--faint); flex: none; }
+.ok { color: var(--lamp); }
+.bad { color: var(--bad); }
+button {
+  font: inherit; text-transform: uppercase; letter-spacing: 0.18em;
+  color: var(--sunk); background: var(--accent);
+  border: 1px solid var(--accent); border-radius: 2px;
+  padding: var(--s-3) var(--s-4); margin: var(--s-2) var(--s-2) var(--s-2) 0;
+  min-height: 48px;                       /* M-4: thumb-sized, this is tapped on a phone */
+  cursor: pointer;
+}
+pre {
+  margin: var(--s-2) 0; padding: var(--s-2);
+  background: var(--ground); border: 1px solid var(--bdr); border-radius: 2px;
+  white-space: pre-wrap; word-break: break-all; max-height: 40vh; overflow: auto;
+}
+#pad {
+  height: 8rem; display: grid; place-items: center;
+  background: var(--panel); border: 1px dashed var(--bdr); border-radius: 3px;
+  color: var(--dim); text-align: center; user-select: none;
+}
+/* The Mark button rebuilt exactly: same size, same shape, same absolute placement inside a
+   relative box, so a tap that misses here misses for the same reason it misses in the app. */
+#markbox { position: relative; height: 11rem; background: var(--ground);
+           border: 1px solid var(--bdr); border-radius: 3px; }
+#markbar { position: absolute; right: var(--s-4); bottom: var(--s-4); z-index: 3; }
+#mark {
+  width: 5.25rem; height: 5.25rem; border-radius: 50%;
+  padding: 0; margin: 0; font-size: 11px;
+  border: 2px solid var(--sunk); box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+}
+#map { height: 14rem; border: 1px solid var(--bdr); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>FieldArc diagnostics</h1>
+
+<h2>Environment</h2>
+<div id="env"></div>
+
+<h2>1 · Does a tap reach the page at all</h2>
+<div id="pad">tap here</div>
+<pre id="padlog">no events yet</pre>
+
+<h2>2 · Does it reach a Mark-shaped button</h2>
+<div id="markbox"><div id="markbar"><button type="button" id="mark">Mark</button></div></div>
+<div id="marktop">checking…</div>
+<pre id="marklog">no taps yet</pre>
+
+<h2>3 · Geolocation</h2>
+<button type="button" id="geo-hi">High accuracy (app settings)</button>
+<button type="button" id="geo-lo">Low accuracy, 60s</button>
+<pre id="geolog">not run</pre>
+
+<h2>4 · Does a tap reach MapLibre</h2>
+<div id="map"></div>
+<pre id="maplog">not loaded</pre>
+
+<h2>5 · Errors</h2>
+<pre id="errlog">none</pre>
+
+<script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+<script>
+(function () {
+  "use strict";
+  function $(s) { return document.querySelector(s); }
+  function line(label, value, good) {
+    var d = document.createElement("div");
+    d.className = "row";
+    var b = document.createElement("b"); b.textContent = label;
+    var v = document.createElement("span");
+    v.textContent = String(value);
+    if (good === true) { v.className = "ok"; }
+    if (good === false) { v.className = "bad"; }
+    d.appendChild(b); d.appendChild(v);
+    $("#env").appendChild(d);
+  }
+
+  /* ---- 5. errors first, so anything below that throws is still reported ---- */
+  var errs = [];
+  function pushErr(what) {
+    errs.push(what);
+    $("#errlog").textContent = errs.join("\n");
+    $("#errlog").className = "bad";
+  }
+  window.addEventListener("error", function (e) {
+    pushErr("error: " + e.message + " @ " + (e.filename || "?") + ":" + e.lineno);
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    pushErr("rejection: " + ((e.reason && e.reason.message) || e.reason));
+  });
+
+  /* ---- environment ---- */
+  line("protocol", location.protocol, location.protocol === "https:");
+  line("secure context", window.isSecureContext, window.isSecureContext === true);
+  line("geolocation", "geolocation" in navigator, "geolocation" in navigator);
+  line("viewport", window.innerWidth + " x " + window.innerHeight);
+  line("dpr", window.devicePixelRatio);
+  line("mobile query", matchMedia("(max-width: 900px), (max-height: 620px)").matches,
+       matchMedia("(max-width: 900px), (max-height: 620px)").matches);
+  line("standalone", (navigator.standalone === true) ||
+       matchMedia("(display-mode: standalone)").matches);
+  line("touch points", navigator.maxTouchPoints);
+  line("PointerEvent", "PointerEvent" in window);
+  line("service worker", "serviceWorker" in navigator &&
+       !!navigator.serviceWorker.controller ? "controlling" : "none");
+  line("wakeLock", "wakeLock" in navigator);
+  line("maplibre", typeof maplibregl === "undefined" ? "MISSING" : maplibregl.getVersion
+       ? maplibregl.getVersion() : "loaded",
+       typeof maplibregl !== "undefined");
+  line("dvh support", CSS.supports("height", "88dvh"));
+  line("ua", navigator.userAgent);
+
+  if (navigator.permissions && navigator.permissions.query) {
+    navigator.permissions.query({ name: "geolocation" }).then(function (p) {
+      line("permission state", p.state, p.state === "granted");
+    }).catch(function (e) {
+      line("permission state", "query failed (" + e.name + ") — normal on Safari");
+    });
+  } else {
+    line("permission state", "Permissions API absent — normal on Safari");
+  }
+
+  /* ---- 1. raw events on a plain div ---- */
+  var padSeen = [];
+  ["pointerdown", "touchstart", "mousedown", "click"].forEach(function (type) {
+    $("#pad").addEventListener(type, function (e) {
+      padSeen.unshift(type + " · target=" + (e.target.id || e.target.tagName));
+      padSeen = padSeen.slice(0, 10);
+      $("#padlog").textContent = padSeen.join("\n");
+      $("#padlog").className = "ok";
+    }, { passive: true });
+  });
+
+  /* ---- 2. the Mark button, rebuilt ---- */
+  var markSeen = [];
+  ["pointerdown", "touchstart", "click"].forEach(function (type) {
+    $("#mark").addEventListener(type, function (e) {
+      markSeen.unshift(type);
+      markSeen = markSeen.slice(0, 10);
+      $("#marklog").textContent = markSeen.join("\n");
+      $("#marklog").className = "ok";
+    }, { passive: true });
+  });
+  /* What is actually on top at the button's centre — if this names anything but the button,
+     something is covering it, and that is the whole bug. elementFromPoint takes viewport
+     coordinates and returns null for anything scrolled out of view, so it is re-run as the
+     page moves rather than once on load. */
+  function hitTestMark() {
+    var out = $("#marktop"), r = $("#mark").getBoundingClientRect();
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    if (cy < 0 || cy > window.innerHeight || cx < 0 || cx > window.innerWidth) {
+      out.textContent = "scroll the button into view";
+      out.className = "";
+      return;
+    }
+    var top = document.elementFromPoint(cx, cy);
+    var name = top ? (top.id || top.className || top.tagName) : "nothing";
+    out.textContent = "topmost at its centre: " + name;
+    out.className = top && top.id === "mark" ? "ok" : "bad";
+  }
+  window.addEventListener("scroll", hitTestMark, { passive: true });
+  window.addEventListener("resize", hitTestMark);
+  setTimeout(hitTestMark, 300);
+
+  /* ---- 3. geolocation, both ways ---- */
+  function runGeo(opts, name) {
+    var log = $("#geolog");
+    log.className = "";
+    log.textContent = name + ": asking…";
+    if (!navigator.geolocation) { log.textContent = name + ": navigator.geolocation is MISSING"; log.className = "bad"; return; }
+    var t0 = Date.now();
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      log.className = "ok";
+      log.textContent = name + ": FIX in " + (Date.now() - t0) + "ms\n" +
+        "lat " + pos.coords.latitude.toFixed(6) + "  lon " + pos.coords.longitude.toFixed(6) + "\n" +
+        "accuracy ±" + Math.round(pos.coords.accuracy) + "m";
+    }, function (err) {
+      log.className = "bad";
+      log.textContent = name + ": FAILED after " + (Date.now() - t0) + "ms\n" +
+        "code " + err.code + " (" + (err.code === 1 ? "PERMISSION_DENIED" :
+          err.code === 2 ? "POSITION_UNAVAILABLE" : "TIMEOUT") + ")\n" +
+        (err.message || "(no message)");
+    }, opts);
+  }
+  $("#geo-hi").addEventListener("click", function () {
+    runGeo({ enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }, "high");
+  });
+  $("#geo-lo").addEventListener("click", function () {
+    runGeo({ enableHighAccuracy: false, timeout: 60000, maximumAge: 0 }, "low");
+  });
+
+  /* ---- 4. MapLibre's own touch handling ---- */
+  if (typeof maplibregl === "undefined") {
+    $("#maplog").textContent = "maplibre-gl.js did not load — that alone would break the app";
+    $("#maplog").className = "bad";
+    return;
+  }
+  var m = new maplibregl.Map({
+    container: "map",
+    style: { version: 8, sources: {}, layers: [
+      { id: "bg", type: "background", paint: { "background-color": "#1a211c" } } ] },
+    center: [28.98, 41.18], zoom: 11, attributionControl: false
+  });
+  var mapSeen = [];
+  m.on("load", function () { $("#maplog").textContent = "map loaded — tap it"; });
+  m.on("click", function (e) {
+    mapSeen.unshift("click " + e.lngLat.lng.toFixed(4) + ", " + e.lngLat.lat.toFixed(4));
+    mapSeen = mapSeen.slice(0, 8);
+    $("#maplog").textContent = mapSeen.join("\n");
+    $("#maplog").className = "ok";
+  });
+  m.on("error", function (e) {
+    pushErr("map: " + ((e && e.error && e.error.message) || "unknown"));
+  });
+}());
+</script>
+</body>
+</html>

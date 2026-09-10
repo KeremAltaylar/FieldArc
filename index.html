@@ -2062,6 +2062,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     map.on("zoomend", renderLabels);
   });
   window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
+  /* A thrown exception used to be silent: the button would simply not respond and there was
+     no console to open, standing in a forest. Anything that escapes is shown once, named,
+     with the line — it is the difference between "it does not work" and a bug report. */
+  window.addEventListener("error", function (e) {
+    window.__fa.errors.push({ sourceId: null, message: e.message + " @ " + (e.lineno || "?") });
+    toast("Error: " + e.message);
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var m = (e.reason && e.reason.message) || String(e.reason);
+    window.__fa.errors.push({ sourceId: null, message: "rejection: " + m });
+    toast("Error: " + m);
+  });
   /* The cut is geometry, so it can be checked without a route and without a screenshot:
      build seeds, take the cells, test every vertex against the frame. */
   window.__fa.sectors = { cell: voronoiCell, seeds: sectorGeometry,
@@ -2347,6 +2359,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       msg += " Geolocation needs https:// or localhost — a plain LAN address will not work.";
     }
     $("#saved").textContent = msg;
+    /* #saved lives at the bottom of the sheet, below the fold of the peek — on a phone it
+       is not on screen. A location failure in the field has to say so where you can see it. */
+    toast(msg);
     if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     track = null;
     setMarkState("idle");
@@ -2460,7 +2475,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   $("#mark").addEventListener("click", function () {
-    if (!navigator.geolocation) { $("#saved").textContent = "This browser has no geolocation."; return; }
+    if (!navigator.geolocation) {
+      $("#saved").textContent = "This browser has no geolocation.";
+      toast("This browser has no geolocation.");
+      return;
+    }
     if (track) { stopTrack(); return; }
     if (mode === "route") { startTrack(); return; }
     if (mode === "point") { markPoint(); return; }
