@@ -1782,9 +1782,37 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#publish-btn").disabled = true;
     $("#pending-count").textContent = "publishing…";
 
-    var work = rows.length
-      ? sb.from("features").upsert(rows, { onConflict: "id" })
-      : Promise.resolve({ error: null });
+    /* Audio is the slow half, so it goes first and one file at a time: a walk's worth of
+       recordings will not finish in one go on a phone, and a feature row that claims audio the
+       server does not have is worse than a queue that is still draining. */
+    function uploadAudio(id) {
+      return getAudio(id).then(function (blob) {
+        if (!blob) { return null; }
+        var path = id + "/" + (blob.type === "audio/wav" ? "take.wav" : "take.webm");
+        return sb.storage.from("recordings")
+          .upload(path, blob, { upsert: true, contentType: blob.type })
+          .then(function (r) { return r.error ? Promise.reject(new Error(r.error.message)) : path; });
+      });
+    }
+
+    /* Sequential on purpose. Six parallel uploads on a phone at the edge of signal is how a
+       publish half-finishes; one at a time is slower and finishes. A row is only upserted
+       after its file is up, so the server never holds a feature claiming audio it does not
+       have — the queue simply stays pending instead. */
+    var withAudio = rows.filter(function (r) { return r.properties.has_audio; });
+    var audio = withAudio.reduce(function (chain, r) {
+      return chain.then(function () {
+        return uploadAudio(r.id).then(function (path) {
+          if (path) { r.properties.storage_path = path; }
+        });
+      });
+    }, Promise.resolve());
+
+    var work = audio.then(function () {
+      return rows.length
+        ? sb.from("features").upsert(rows, { onConflict: "id" })
+        : { error: null };
+    });
 
     return work.then(function (r) {
       if (r.error) { throw new Error(r.error.message); }
