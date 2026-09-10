@@ -1202,6 +1202,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     display: none;
     position: absolute; top: calc(100% + var(--s-1)); right: var(--s-3); z-index: 25;
     flex-direction: column; gap: var(--s-2);
+    max-width: calc(100vw - var(--s-3) * 2);
     padding: var(--s-3);
     background: var(--ground);
     border: 1px solid var(--bdr);
@@ -1209,7 +1210,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
   }
   #controls.open { display: flex; }
-  .basemaps, .overlays { margin: 0; }
+  /* Four basemaps are 321px in one row, and the popover is pinned to the right edge, so on a
+     narrow phone it would clip rather than shrink. Wrapping is what keeps it on screen. */
+  .basemaps, .overlays { margin: 0; flex-wrap: wrap; }
 
   #map { grid-row: 2; grid-column: 1; }
   #readout { display: none; }          /* a cursor readout means nothing on a touch screen */
@@ -1269,6 +1272,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <button type="button" data-base="osm"  aria-pressed="false">Map</button>
       <button type="button" data-base="topo" aria-pressed="false">Topo</button>
       <button type="button" data-base="sat"  aria-pressed="true">Satellite</button>
+      <button type="button" data-base="virtual" aria-pressed="false"
+              title="The archive alone, on a dark ground — no basemap">Virtual</button>
     </div>
     <div class="overlays" role="group" aria-label="Forest boundary">
       <button type="button" data-forest="off"   aria-pressed="false" title="No boundary">Off</button>
@@ -1724,11 +1729,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     };
   });
   /* The forest boundary is reference data, not archive data — it never enters `fc`,
-     never appears in the list, and is not selectable. */
-  sources.forest = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+     never appears in the list, and is not selectable. Its attribution rides on the source
+     rather than on the basemap, because Virtual has no basemap to carry it and the boundary
+     is still OSM's work. */
+  var BOUNDARY_ATTR = "Boundaries © OpenStreetMap contributors, ODbL 1.0";
+  sources.forest = { type: "geojson", attribution: BOUNDARY_ATTR,
+                     data: { type: "FeatureCollection", features: [] } };
   /* `forest-outer` is the main body's ring, smoothed — 90.9% of Belgrad's 102 km², so it is
      the frame without being arbitrary. */
-  sources["forest-outer"] = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
+  sources["forest-outer"] = { type: "geojson", attribution: BOUNDARY_ATTR,
+                              data: { type: "FeatureCollection", features: [] } };
   sources.features = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.draft = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
   sources.here = { type: "geojson", data: { type: "FeatureCollection", features: [] } };
@@ -1776,6 +1786,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       version: 8,
       sources: sources,
       layers: [
+        /* Virtual: the archive with the world taken away. Not a dark tile style — no tiles at
+           all, so it is the one basemap that works with no signal and no cache, and the only
+           one where what you see is entirely what the walk put there. --sunk, the same ground
+           the body sits on, so the map reads as depth under the panels rather than as a hole
+           cut in them. It is a real layer, which is what lets the switcher stay one line. */
+        { id: "base-virtual", type: "background", layout: { visibility: "none" },
+          paint: { "background-color": dark } },
+
         /* Satellite is the default: the forest reads as canopy rather than as a flat green
            fill, which is what you are actually navigating by. */
         { id: "base-osm",  type: "raster", source: "base-osm",  layout: { visibility: "none" } },
@@ -8880,13 +8898,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n)];
   }
 
-  /* Only the basemap you are actually looking at — caching all three would triple the
-     download for layers you may never open in the field. */
-  function tileURLs(bbox, zmin, zmax) {
+  function activeBase() {
     var active = "osm";
     document.querySelectorAll("[data-base]").forEach(function (b) {
       if (b.getAttribute("aria-pressed") === "true") { active = b.dataset.base; }
     });
+    return active;
+  }
+
+  /* Only the basemap you are actually looking at — caching all four would triple the
+     download for layers you may never open in the field, and Virtual is not in RASTER
+     because it has no tiles to cache in the first place. */
+  function tileURLs(bbox, zmin, zmax) {
+    var active = activeBase();
+    if (!RASTER[active]) { return []; }
     var tpl = RASTER[active].tiles[0], urls = [];
     for (var z = zmin; z <= zmax; z++) {
       var a = tileXY(bbox[0], bbox[3], z), b = tileXY(bbox[2], bbox[1], z);
@@ -8901,6 +8926,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   $("#offline").addEventListener("click", function () {
     if (!place || !window.caches) { toast("Offline storage unavailable"); return; }
+    /* C-5: the empty case says why rather than reporting 0 tiles stored. */
+    if (!RASTER[activeBase()]) { toast("Virtual draws no tiles — nothing to store"); return; }
     var btn = this, bb = place.properties.bbox;
     var zmin = 11, zmax = 15, urls = tileURLs(bb, zmin, zmax);
     while (urls.length > 900 && zmax > zmin) { zmax--; urls = tileURLs(bb, zmin, zmax); }
