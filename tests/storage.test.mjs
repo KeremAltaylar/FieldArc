@@ -2,7 +2,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@supabase/supabase-js";
 import { readFileSync } from "node:fs";
-import { anon, service } from "./clients.mjs";
+import { anon, service, sql } from "./clients.mjs";
 
 const db = service();
 const html = readFileSync("index.html", "utf8");
@@ -73,4 +73,36 @@ test("only features carrying audio are uploaded for", () => {
   const pub = html.slice(html.indexOf("function publish()"),
                          html.indexOf('addEventListener("click", publish)'));
   assert.match(pub, /rows\.filter\(function \(r\) \{ return r\.properties\.has_audio; \}\)/);
+});
+
+/* A feature can claim has_audio with no blob behind it: IndexedDB evicted it, site data got
+   cleared, or the feature was imported from a GeoJSON export that never carried audio. The
+   caller only sets storage_path when uploadAudio resolves with one, so a resolved null used to
+   slip such a row through to the upsert with has_audio: true and nothing in the bucket — the
+   exact "advertises a document the archive cannot produce" failure the upload-before-upsert
+   ordering exists to prevent, arriving through the back door. uploadAudio must reject instead,
+   so the reduce chain aborts, publish's .catch runs, and the row stays pending. This can't be
+   exercised through the browser publish path from Node, so it asserts on the source: the
+   missing-blob branch is a rejection, not a `return null`. */
+test("a feature claiming audio with no blob behind it aborts the publish instead of upserting anyway", () => {
+  const fnAt = html.indexOf("function uploadAudio(id)");
+  assert.ok(fnAt > 0, "uploadAudio exists");
+  const fn = html.slice(fnAt, html.indexOf("\n    }\n", fnAt));
+  assert.doesNotMatch(fn, /if \(!blob\) \{ return null; \}/,
+    "a missing blob must not resolve null — that is how a false has_audio row reached the server");
+  assert.match(fn, /if \(!blob\) \{[\s\S]*?Promise\.reject\(/,
+    "a missing blob must reject, aborting the audio chain rather than continuing without a path");
+});
+
+/* DELETE is deliberately uncovered on storage.objects for this bucket — see 0012's comment.
+   Deletes in this project are soft everywhere: a feature is marked deleted_at, never removed,
+   and a recording outliving its feature row is the safe direction. This asserts the absence
+   holds, so a future "tidy up" that adds a delete policy has to argue with a failing test
+   instead of just not noticing this comment. */
+test("no delete policy exists for storage.objects on the recordings bucket", async () => {
+  const rows = await sql(`
+    select policyname from pg_policies
+    where schemaname = 'storage' and tablename = 'objects' and cmd = 'DELETE'`);
+  assert.deepEqual(rows, [],
+    "a DELETE policy would make .remove() actually delete — RLS-denied deletes must stay denied");
 });

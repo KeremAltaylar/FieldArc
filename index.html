@@ -1787,7 +1787,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        server does not have is worse than a queue that is still draining. */
     function uploadAudio(id) {
       return getAudio(id).then(function (blob) {
-        if (!blob) { return null; }
+        /* A row that claims audio and cannot produce it must not be published. Reject rather
+           than resolve null so this chain aborts, the outer .catch runs, the manifest is not
+           written, and the row stays pending instead of reaching the server without its file —
+           IndexedDB can evict a blob, site data can be cleared, an import can carry the flag
+           without the audio, and any of those must block the publish, not slip past it. */
+        if (!blob) {
+          return Promise.reject(new Error(
+            "feature " + id + " says it has a recording, but this device no longer has the " +
+            "audio for it — re-attach the recording or clear its “has audio” flag, then publish again"));
+        }
         var path = id + "/" + (blob.type === "audio/wav" ? "take.wav" : "take.webm");
         return sb.storage.from("recordings")
           .upload(path, blob, { upsert: true, contentType: blob.type })
@@ -1803,7 +1812,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var audio = withAudio.reduce(function (chain, r) {
       return chain.then(function () {
         return uploadAudio(r.id).then(function (path) {
-          if (path) { r.properties.storage_path = path; }
+          r.properties.storage_path = path;
         });
       });
     }, Promise.resolve());
