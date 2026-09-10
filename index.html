@@ -1403,6 +1403,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <button type="button" id="setter-send">Send link</button>
         <button type="button" id="setter-out" hidden>Sign out</button>
       </div>
+      <div id="publishbar">
+        <button type="button" id="publish-btn" disabled>Publish</button>
+        <span id="pending-count" class="hint">nothing pending</span>
+      </div>
       <p class="hint" id="saved">Saved to this browser.</p>
     </div>
   </div>
@@ -1625,6 +1629,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#setter-send").hidden = setter.signedIn;
     $("#setter-out").hidden = !setter.signedIn;
     $("#setter-email").parentNode.hidden = setter.signedIn;
+    renderPending();
   }
 
   function applySession(session) {
@@ -1724,6 +1729,90 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     signIn($("#setter-email").value.trim());
   });
   $("#setter-out").addEventListener("click", signOut);
+
+  /* ---------- Publish ----------
+     The device is authoritative for anything not yet pushed; the server is authoritative for
+     anything published. Which is which is decided by a manifest of content hashes written at
+     the last successful publish — see src/pending.mjs for why it is computed rather than
+     tracked. Nothing here runs without a session, and nothing here blocks capture. */
+  var MANIFEST_KEY = "fieldarc.manifest";
+
+  function loadManifest() {
+    try { return JSON.parse(localStorage.getItem(MANIFEST_KEY)) || {}; }
+    catch (e) { return {}; }
+  }
+  function saveManifest(m) {
+    try { localStorage.setItem(MANIFEST_KEY, JSON.stringify(m)); } catch (e) { /* full */ }
+  }
+
+  function pendingDiff() {
+    if (!window.FA_PENDING) { return { added: [], changed: [], removed: [] }; }
+    return window.FA_PENDING.diffManifest(loadManifest(),
+                                          window.FA_PENDING.manifestOf(fc.features));
+  }
+
+  function pendingCount() {
+    var d = pendingDiff();
+    return d.added.length + d.changed.length + d.removed.length;
+  }
+
+  function renderPending() {
+    var n = pendingCount();
+    $("#pending-count").textContent = n === 0 ? "nothing pending"
+      : n + (n === 1 ? " change to publish" : " changes to publish");
+    $("#publish-btn").disabled = !setter.signedIn || n === 0;
+  }
+
+  function publish() {
+    if (!sb || !setter.signedIn) {
+      toast("Sign in to publish."); return Promise.resolve({ pushed: 0, removed: 0, failed: 0 });
+    }
+    var d = pendingDiff();
+    var byId = {};
+    fc.features.forEach(function (f) { byId[f.properties.id] = f; });
+
+    var rows = d.added.concat(d.changed).map(function (id) {
+      var f = byId[id], p = {};
+      Object.keys(f.properties).forEach(function (k) { p[k] = f.properties[k]; });
+      delete p.id; delete p.place; delete p.kind;
+      return { id: id, place: f.properties.place, kind: f.properties.kind,
+               geometry: f.geometry, properties: p, created_by: setter.id };
+    });
+
+    $("#publish-btn").disabled = true;
+    $("#pending-count").textContent = "publishing…";
+
+    var work = rows.length
+      ? sb.from("features").upsert(rows, { onConflict: "id" })
+      : Promise.resolve({ error: null });
+
+    return work.then(function (r) {
+      if (r.error) { throw new Error(r.error.message); }
+      if (!d.removed.length) { return { error: null }; }
+      /* Soft, reusing the trash the app already keeps: a sync must not erase a morning. */
+      return sb.from("features")
+        .update({ deleted_at: new Date().toISOString() }).in("id", d.removed);
+    }).then(function (r) {
+      if (r && r.error) { throw new Error(r.error.message); }
+      return sb.from("audit").insert({
+        setter_id: setter.id, action: "publish", target_id: null,
+        detail: { added: d.added.length, changed: d.changed.length, removed: d.removed.length }
+      });
+    }).then(function () {
+      saveManifest(window.FA_PENDING.manifestOf(fc.features));
+      renderPending();
+      toast("Published " + rows.length + " · removed " + d.removed.length);
+      return { pushed: rows.length, removed: d.removed.length, failed: 0 };
+    }).catch(function (e) {
+      /* The queue survives: the manifest is only written on success, so a failed publish
+         leaves everything pending rather than silently marking it done. */
+      renderPending();
+      toast("Publish failed — still pending. " + e.message);
+      return { pushed: 0, removed: 0, failed: rows.length + d.removed.length };
+    });
+  }
+
+  $("#publish-btn").addEventListener("click", publish);
 
   function uid() {
     return (crypto.randomUUID ? crypto.randomUUID()
@@ -2213,6 +2302,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
   window.__fa.sb = sb;   /* null offline, a client otherwise — measurable either way */
   window.__fa.setter = setterState;
+  window.__fa.publish = { count: pendingCount, run: publish, diff: pendingDiff };
   /* A thrown exception used to be silent: the button would simply not respond and there was
      no console to open, standing in a forest. Anything that escapes is shown once, named,
      with the line — it is the difference between "it does not work" and a bug report. */
@@ -2309,6 +2399,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderList();
     renderStats();
     renderLabels();
+    renderPending();
   }
 
   /* ---------- Interaction ---------- */
