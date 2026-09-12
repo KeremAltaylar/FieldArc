@@ -98,7 +98,10 @@ test("renderDetail reasserts setter-only visibility after its kind/audio-state l
   const loadPlayerIdx = src.indexOf("loadPlayer(f);");
   const audioModeIdx = src.indexOf("renderAudioMode(f);");
   const gTypeIdx = src.indexOf('$("#g-type").hidden = f.properties.kind');
-  const guardIdx = src.indexOf("if (!setter.signedIn) {");
+  /* setterTools(), not setter.signedIn: see the predicate's own comment — on a cold offline
+     load gating declines to guess at sign-in, and this block reading the raw boolean would
+     strip a setter's card controls the moment they selected anything. */
+  const guardIdx = src.indexOf("if (!setterTools()) {");
   assert.ok(loadPlayerIdx !== -1 && audioModeIdx !== -1 && gTypeIdx !== -1 && guardIdx !== -1,
     "all four landmarks (loadPlayer, renderAudioMode, the #g-type kind line, and the " +
     "reassertion guard) must be present in renderDetail()");
@@ -171,9 +174,9 @@ test("a listener is never built a hit grid", () => {
   const fnAt = html.indexOf("function renderAudioMode(f)");
   assert.ok(fnAt > 0, "renderAudioMode must be found");
   const fn = html.slice(fnAt, html.indexOf("\n  var pendingHit", fnAt));
-  assert.match(fn, /grid\.hidden = !\(isPoint && mode === "hits"\) \|\| !setter\.signedIn;/,
-    "#hitgrid must only ever be unhidden for a signed-in setter");
-  const guardAt = fn.indexOf("!setter.signedIn");
+  assert.match(fn, /grid\.hidden = !\(isPoint && mode === "hits"\) \|\| !setterTools\(\);/,
+    "#hitgrid must only ever be unhidden for a device allowed to author");
+  const guardAt = fn.indexOf("!setterTools()");
   const buildAt = fn.indexOf("if (grid.hidden) { grid.textContent = \"\"; return; }");
   assert.ok(guardAt !== -1 && buildAt > guardAt,
     "the guard must precede the early return, so a listener's rows are never constructed");
@@ -213,6 +216,24 @@ test("a cold offline load does not gate a device that has been a setter's", () =
     "the decision must be made before renderSetter() calls applyModeGating()");
   assert.doesNotMatch(offline, /setter\.signedIn = true/,
     "no fake signed-in state: Publish must stay disabled and nothing may reach for a server");
+
+  /* The decline is worthless if the gates that live outside applyModeGating() still read the
+     raw boolean — renderDetail()'s reassertion, renderAudioMode()'s hit grid, setMode()'s icon
+     picker, renderTrash()'s Undo and the keyboard handler all run on a cold offline load, and
+     each one reading setter.signedIn would take back in the field what the decline preserved. */
+  assert.match(html, /function setterTools\(\) \{ return setter\.signedIn \|\| gatingDeclined; \}/,
+    "one predicate must answer 'may this device author?' for every gate");
+  for (const fn of ["function renderDetail()", "function renderAudioMode(f)",
+                    "function setMode(next)", "function renderTrash()"]) {
+    const at = html.indexOf(fn);
+    assert.ok(at > 0, "function not found: " + fn);
+    /* Comments are prose and name the boolean they replaced on purpose — strip them before
+       asserting on the code. */
+    const body = html.slice(at, html.indexOf("\n  }", at)).replace(/\/\*[\s\S]*?\*\//g, "");
+    assert.match(body, /setterTools\(\)/, fn + " must gate through setterTools()");
+    assert.doesNotMatch(body, /setter\.signedIn/,
+      fn + " must not read the raw boolean — it is wrong on a cold offline load");
+  }
 });
 
 /* The bug this closes: pendingDiff() hashed every feature in fc, merged remote ones included.
@@ -277,6 +298,39 @@ test("a fuzzed view copy is refused by publish rather than upserted", () => {
     "the marker is properties.fuzzed, which only the view ever writes");
   assert.match(pub.slice(guardAt, rowsAt), /return Promise\.resolve\(\{ pushed: 0/,
     "the publish must abort, not silently skip the row and report success");
+});
+
+/* The bug this closes: gating hid the mode bar and the Delete button and left the keyboard wide
+   open. A signed-out visitor pressing 2 or 3 went straight into Point or Route mode and could
+   draw on the map — with setMode() re-showing the icon picker on the way — and Delete removed
+   whatever was selected, renderTrash() then putting the Undo button back into Storage to prove
+   it. Visibility-only gating is what let that cascade; the entry point is closed first, and the
+   two downstream .hidden writes are guarded behind it. */
+test("the keyboard cannot author for a listener, and neither can its fallout", () => {
+  const at = html.indexOf("document.addEventListener(\"keydown\"", html.indexOf("function removeSelected"));
+  const handlerAt = html.lastIndexOf("var AUTHOR_KEYS", at);
+  assert.ok(handlerAt > 0 && handlerAt < at, "the authoring-key set must sit with its handler");
+  const handler = html.slice(handlerAt, html.indexOf("\n  });", at));
+  for (const key of ['"2"', '"3"', '"Delete"', '"Enter"', '"Backspace"']) {
+    assert.ok(handler.includes(key + ": 1"), key + " must be in the authoring-key set");
+  }
+  assert.match(handler, /if \(AUTHOR_KEYS\[e\.key\] && !setterTools\(\)\) \{ return; \}/,
+    "the guard must be an early return, before any branch runs");
+  const guardAt = handler.indexOf("AUTHOR_KEYS[e.key] && !setterTools()");
+  assert.ok(guardAt < handler.indexOf('e.key === "Escape"'),
+    "it must precede the branches, not sit among them");
+  assert.ok(!handler.includes('AUTHOR_KEYS["1"]') && !handler.includes('"1": 1'),
+    "1 (Select mode) and Escape (deselect) author nothing and stay open to everyone");
+
+  const setModeBody = html.slice(html.indexOf("function setMode(next)"),
+                                 html.indexOf("\n  }", html.indexOf("function setMode(next)")));
+  assert.match(setModeBody, /\$\("#mode-icons"\)\.hidden = next !== "point" \|\| !setterTools\(\);/,
+    "#mode-icons may hide unconditionally but must only unhide for a device allowed to author");
+
+  const trashBody = html.slice(html.indexOf("function renderTrash()"),
+                               html.indexOf("\n  }", html.indexOf("function renderTrash()")));
+  assert.match(trashBody, /\$\("#undo"\)\.hidden = !n \|\| !setterTools\(\);/,
+    "#undo may hide unconditionally but must only unhide for a device allowed to author");
 });
 
 test("GPS is promoted out of the ghost-button row for a listener", () => {

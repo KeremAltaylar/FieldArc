@@ -1882,6 +1882,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      than guess at; the reasoning is recorded at the call site, where it is needed. */
   var gatingDeclined = false;
 
+  /* The question every setter-only control actually asks: may this device author? Normally
+     that is just setter.signedIn. The exception is the no-library offline load, where sign-in
+     is unknowable and gating has declined to guess — there a device with prior evidence of a
+     setter session keeps its tools, and that has to hold for every gate, not only the ones
+     applyModeGating() writes. applyModeGating() returns early in that state, but the gates
+     that live inside renderDetail(), renderAudioMode(), setMode() and the keyboard handler run
+     regardless, and each of them reading setter.signedIn directly would have taken back in the
+     field exactly what the declined gating just preserved.
+     setter.signedIn is still the right question wherever the answer means "has a server
+     session": Publish, the sign-in block's own copy, the audit insert. */
+  function setterTools() { return setter.signedIn || gatingDeclined; }
+
   function applyModeGating() {
     if (gatingDeclined) { return; }
     /* Every control a setter has that a listener should not. Two elements are deliberately
@@ -2926,7 +2938,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       b.setAttribute("aria-pressed", String(b.dataset.mode === next));
     });
     mapEl.className = "mode-" + next;
-    $("#mode-icons").hidden = next !== "point";
+    /* Unhiding needs the authoring check; hiding never does. setMode("point") from the keyboard
+       used to re-show the icon picker for a listener even with the mode bar gone — the keyboard
+       is closed now, and this line means a future way in would be cosmetic rather than usable. */
+    $("#mode-icons").hidden = next !== "point" || !setterTools();
     renderModeIcons();
     sizePeek();
     if (map && map.getCanvas) { map.getCanvas().style.cursor = ""; }  // drop any inline cursor left by select-mode hover
@@ -3060,8 +3075,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     setSelected(fc.features[fc.features.length - 1].properties.id);
   }
 
+  /* The mode bar and the Delete button are hidden for a listener; the keyboard was not. Pressing
+     2 or 3 put a signed-out visitor straight into Point or Route mode — drawing on the map, with
+     the icon picker re-shown by setMode() on the way — and Delete removed whatever was selected,
+     with the Undo button then re-appearing in Storage to prove it. Closed here, at the entry
+     point, because an action that cannot be triggered needs no cosmetic cleanup behind it; the
+     two downstream .hidden writes are guarded as well, but as the belt, not the braces.
+     Escape (deselect) and 1 (Select mode) stay open to everyone: neither authors anything.
+     Enter and Backspace only act in Route mode, which a listener can no longer reach — listed
+     anyway, so the set does not depend on that staying true. */
+  var AUTHOR_KEYS = { "2": 1, "3": 1, "Delete": 1, "Enter": 1, "Backspace": 1 };
+
   document.addEventListener("keydown", function (e) {
     if (/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) { return; }
+    if (AUTHOR_KEYS[e.key] && !setterTools()) { return; }
     if (e.key === "Escape") { draft = []; updateDraft(); setSelected(null); }
     else if (e.key === "Enter" && mode === "route") { finishRoute(); }
     else if (e.key === "Backspace" && mode === "route" && draft.length) { e.preventDefault(); draft.pop(); updateDraft(); }
@@ -3090,7 +3117,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
   function renderTrash() {
     var n = trash().length;
-    $("#undo").hidden = !n;
+    /* Same rule as #mode-icons: only unhiding is conditional. A keyboard-triggered delete used
+       to put Undo back into Storage for a listener, advertising an edit they should not be able
+       to make. Undo stays setter-only even when the trash is not empty — reverting your own edit
+       is only meaningful for someone who can make one. */
+    $("#undo").hidden = !n || !setterTools();
     $("#undo").textContent = "Undo delete (" + n + ")";
   }
   function restoreLast() {
@@ -3926,7 +3957,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* Unhiding needs the sign-in check; hiding never does. Without this a listener selecting a
        published "hits" point got four rows of delete/attach buttons, and the early return below
        means the guard also stops those rows from being BUILT rather than merely hidden. */
-    grid.hidden = !(isPoint && mode === "hits") || !setter.signedIn;
+    grid.hidden = !(isPoint && mode === "hits") || !setterTools();
     /* Grains needs the same single recording a soundscape does, so the attach button stays;
        only the four-hit grid is specific to hits. */
     $("#rec-add").hidden = !isPoint ? $("#rec-add").hidden : (mode === "hits");
@@ -9610,8 +9641,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        selected feature every time selection changes, silently undoing whatever
        applyModeGating() hid for a listener. Reassert here rather than calling
        applyModeGating() itself: applyModeGating()'s own reconciliation branch calls
-       renderDetail() when show is true, so calling back into it here would recurse. */
-    if (!setter.signedIn) {
+       renderDetail() when show is true, so calling back into it here would recurse.
+       setterTools(), not setter.signedIn: on a cold offline load gating has declined to guess
+       at sign-in, and this block would otherwise strip a setter's card controls the moment they
+       selected anything — the regression the decline exists to prevent. */
+    if (!setterTools()) {
       $("#g-type").hidden = true;
       $("#f-patch").hidden = true;
       $("#f-rhythm").hidden = true;
