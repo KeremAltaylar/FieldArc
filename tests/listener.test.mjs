@@ -28,7 +28,7 @@ test("applyModeGating hides exactly the setter-only elements, and never the sign
                          html.indexOf("function applyModeGating(") + 2000);
   const mustHide = [".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
     ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
-    "#offline", "#undo", "#publishbar", "#markbar"];
+    "#offline", "#undo", "#publishbar", "#markbar", "#audit"];
   mustHide.forEach((sel) => {
     assert.ok(src.includes(JSON.stringify(sel)) || src.includes("'" + sel + "'"),
       sel + " is not in the gated list");

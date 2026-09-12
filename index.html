@@ -1858,7 +1858,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        and the GPS/Virtual toggle already covers "use my own position" for a route in progress. */
     var SETTER_ONLY = [".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
-      "#storage > .actions", "#offline", "#undo", "#publishbar", "#markbar"];
+      "#storage > .actions", "#offline", "#undo", "#publishbar", "#markbar", "#audit"];
     var show = setter.signedIn;
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
