@@ -405,6 +405,27 @@ test("Mark stays for a listener and reads Locate", () => {
     "the fall-through branch centres the map and creates nothing — the listener's whole need");
 });
 
+/* The bug this closes: two pieces of copy named controls the reader does not have. #empty told a
+   listener to "Choose Point or Route and click the map" with neither button on screen, and
+   setMode("select") — which runs at init — wrote a #hint pointing at "Mark", a button that for a
+   listener is either hidden (before this wave) or called Locate (after it). */
+test("no copy names a control the reader does not have", () => {
+  const gate = html.slice(html.indexOf("function applyModeGating("),
+                          html.indexOf("function applySession("));
+  assert.match(gate, /\$\("#empty"\)\.innerHTML = show/,
+    "the empty state must be written where the surface is decided");
+  assert.match(gate, /Nothing published here yet\./,
+    "a listener's empty state must not mention an authoring action");
+  const listenerCopy = gate.slice(gate.indexOf(": \"Nothing published here yet"));
+  assert.doesNotMatch(listenerCopy, /<b>Point<\/b>|<b>Route<\/b>|click the map/,
+    "…and must not name Point, Route, or clicking the map to create something");
+
+  const setModeBody = html.slice(html.indexOf("function setMode(next)"),
+                                 html.indexOf("\n  }", html.indexOf("function setMode(next)")));
+  assert.match(setModeBody, /"Click a feature to inspect it\. <b>" \+ markLabel\(\)\.text \+ "<\/b> centres on your position\."/,
+    "the Select-mode hint must name the button by its current label, not by the setter's word");
+});
+
 test("GPS is promoted out of the ghost-button row for a listener", () => {
   const idx = html.indexOf('id="gps-btn"');
   const tag = html.slice(html.lastIndexOf("<button", idx), idx + 30);

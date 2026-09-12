@@ -1933,6 +1933,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        would relabel a mid-trace "Finish" out from under a setter, and would be undone anyway the
        first time a listener's own Locate completed and reset the button to idle. */
     setMarkState($("#mark").dataset.state || "idle");
+    /* The archive pane's empty state told a listener to "Choose Point or Route and click the
+       map" — two buttons they do not have, describing an act that is not theirs. Written here
+       because this is the one place that knows which surface is on screen; the setter wording is
+       the markup's, repeated so a sign-out and a sign-in both land on the right one.
+       #hint, the other piece of stale copy, is handled in setMode(): it names the Mark button,
+       whose own name now depends on the same question. */
+    $("#empty").innerHTML = show
+      ? "Nothing recorded yet. Choose <b>Point</b> or <b>Route</b> and click the map — " +
+        "each feature is stored as GeoJSON, exactly as the archive will store it."
+      : "Nothing published here yet. Try another place from the picker.";
     /* The blanket unhide above force-shows elements whose real visibility depends on the
        currently selected feature (#g-type/#card-icons/#f-patch on its kind, .recmode/#rec-add/
        #f-rhythm on its audio state) or on the drawing mode (#mode-icons) — none of which the
@@ -2969,7 +2979,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#hint").innerHTML =
       next === "point" ? "Click the map to drop a point, or press <b>Mark</b> to pin your GPS position."
       : next === "route" ? "Click to add vertices — <kbd>Enter</kbd> or double-click finishes, <kbd>Backspace</kbd> undoes. Or press <b>Mark</b> to record a live trace, and again to finish."
-      : "Click a feature to inspect it. <b>Mark</b> centres on your position.";
+      /* The button's own name, not a hardcoded one: a listener's reads "Locate", and a hint
+         that pointed at "Mark" named a control nobody could see. The other two branches are
+         unreachable for a listener (only the mode bar and the gated keyboard shortcuts set
+         those modes), so they say "Mark" plainly. */
+      : "Click a feature to inspect it. <b>" + markLabel().text + "</b> centres on your position.";
   }
 
   /* `reveal` is true only when you asked to inspect something — tapping a feature or a list
