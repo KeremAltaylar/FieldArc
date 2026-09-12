@@ -1713,6 +1713,42 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   }
 
+  /* Merge, not replace: a setter's own device already holds every id the server would
+     offer, so this is a no-op for them past the first id. A fresh browser holds none, so
+     every row lands. Either way, something already present locally — published or still a
+     draft — is never overwritten by the server's copy of itself. */
+  function mergeRemote(rows) {
+    var have = {};
+    fc.features.forEach(function (f) { have[f.properties.id] = true; });
+    rows.forEach(function (row) {
+      if (have[row.id]) { return; }
+      fc.features.push(rowToFeature(row));
+      have[row.id] = true;
+    });
+  }
+
+  /* A row from public_features is shaped like the view: id, place, kind, geometry,
+     properties, created_at — flat, not nested the way a GeoJSON Feature is. rowFor() (the
+     publish path) strips id/place/kind out of properties before sending; this is that,
+     reversed, so a merged feature reads exactly like a locally authored one to every
+     function that already expects fc.features to hold GeoJSON Features. */
+  function rowToFeature(row) {
+    var p = Object.assign({}, row.properties,
+      { id: row.id, place: row.place, kind: row.kind, _remote: true });
+    return { type: "Feature", properties: p, geometry: row.geometry };
+  }
+
+  function fetchPublished(placeId) {
+    if (!sb || !placeId) { return Promise.resolve(); }
+    return sb.from("public_features").select("*").eq("place", placeId)
+      .then(function (r) {
+        if (r.error || !r.data) { return; }
+        mergeRemote(r.data);
+        map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+        renderList();
+      });
+  }
+
   /* The corpus lives in one browser and can vanish with a cleared cache, so the panel
      always says how far it has drifted from the last export. */
   function exportState() {
@@ -1750,7 +1786,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      it from the funnel costs nothing and cannot be forgotten. */
   function save() {
     try {
-      localStorage.setItem(STORE, JSON.stringify(fc));
+      var toStore = { type: fc.type,
+        features: fc.features.filter(function (f) { return !f.properties._remote; }) };
+      localStorage.setItem(STORE, JSON.stringify(toStore));
       var st = exportState();
       st.changes = (st.changes || 0) + 1;
       setExportState(st);
@@ -1967,7 +2005,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     function rowFor(id, isNew) {
       var f = byId[id], p = {};
       Object.keys(f.properties).forEach(function (k) { p[k] = f.properties[k]; });
-      delete p.id; delete p.place; delete p.kind;
+      delete p.id; delete p.place; delete p.kind; delete p._remote;
       /* Cloned one level deeper: the upload pass writes a storage_path into each hit, and
          with the slot objects shared by reference that write would land in the live feature
          and change its hash mid-publish. */
@@ -2601,6 +2639,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     setSelected(null);
     closePlaceMenu();
     commit();
+    fetchPublished(place ? place.properties.id : DEFAULT_PLACE);
   }
 
   function renderPlaceList() {
@@ -2679,6 +2718,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   });
   window.__fa = { map: map, errors: [] };   // debug hook — inspect state from the console
   window.__fa.sb = sb;   /* null offline, a client otherwise — measurable either way */
+  window.__fa.fetchPublished = fetchPublished;
+  window.__fa.mergeRemote = mergeRemote;
   window.__fa.setter = setterState;
   /* `refresh` is not only a debug hook: the deferred module that defines FA_PENDING calls it
      once it exists, because the offline path renders the panel before that module has run. */
