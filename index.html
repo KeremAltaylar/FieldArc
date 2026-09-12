@@ -4023,6 +4023,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       btn.textContent = hits[slot] ? "×" : "add";
       btn.title = hits[slot] ? "Remove this hit" : "Attach a hit";
       btn.addEventListener("click", function () {
+        if (!setterTools()) { return; }     /* defence in depth — see the note at #f-delete */
         if (hits[slot]) {
           claimEdit(f);
           delAudio(f.properties.id + "#" + slot);
@@ -4042,6 +4043,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   $("#hit-file").addEventListener("change", function () {
     var file = this.files && this.files[0];
     this.value = "";
+    if (!setterTools()) { return; }   /* the hidden input is the real entry point, not the button */
     if (!file || !pendingHit) { return; }
     var target = pendingHit; pendingHit = null;
     var f = feature(target.id);
@@ -4064,6 +4066,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   document.querySelectorAll(".recmode button").forEach(function (b) {
     b.addEventListener("click", function () {
+      if (!setterTools()) { return; }
       var f = feature(selected);
       if (!f || f.properties.kind !== "point") { return; }
       claimEdit(f);
@@ -4778,10 +4781,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderRhythmPanel(); toast("Point reset");
   });
 
-  $("#rec-add").addEventListener("click", function () { $("#rec-file").click(); });
+  $("#rec-add").addEventListener("click", function () {
+    if (!setterTools()) { return; }
+    $("#rec-file").click();
+  });
   $("#rec-file").addEventListener("change", function () {
     var file = this.files && this.files[0], f = feature(selected);
     this.value = "";
+    if (!setterTools()) { return; }   /* the hidden input is the real entry point, not the button */
     if (!file || !f) { return; }
     $("#rec-add").textContent = "Analysing…";
     putAudio(f.properties.id, file).then(function () {
@@ -4823,6 +4830,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   });
   $("#rec-remove").addEventListener("click", function () {
+    if (!setterTools()) { return; }
     var f = feature(selected);
     if (!f) { return; }
     delAudio(f.properties.id).then(function () {
@@ -9743,7 +9751,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   flagToggle("#f-sensitive", "sensitive");
   flagToggle("#f-published", "published");
 
-  $("#f-delete").addEventListener("click", removeSelected);
+  /* Defence in depth, and the reason is the review finding this wave closes: every one of these
+     actions was gated only by whether its trigger was visible, and three separate places turned
+     out to write .hidden without knowing about sign-in at all (#rec-add via clearPlayer, #g-type
+     and friends via renderDetail, #hitgrid via renderAudioMode) — each one handing an authoring
+     control straight back. A handler that refuses to run makes the next missed .hidden line
+     cosmetic instead of exploitable. None of these changes anything for a signed-in setter:
+     setterTools() is true whenever they reach one of them. */
+  $("#f-delete").addEventListener("click", function () {
+    if (!setterTools()) { return; }
+    removeSelected();
+  });
   $("#cells-btn").addEventListener("click", function () { cellsSet(!cells.on); });
 
   /* What the player asked for, decided the moment they click. Starting is asynchronous —
@@ -9774,6 +9792,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   });
 
   $("#f-patch").addEventListener("click", function () {
+    if (!setterTools()) { return; }
     var f = feature(selected);
     if (!f || f.properties.kind !== "route") { return; }
     $("#patchpanel").hidden = false;
@@ -9871,6 +9890,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* ---------- Import / export ---------- */
   $("#export").addEventListener("click", function () {
+    if (!setterTools()) { return; }
     var out = {
       type: "FeatureCollection",
       properties: {
@@ -9890,13 +9910,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
     setExportState({ at: new Date().toISOString(), changes: 0 });
   });
-  $("#undo").addEventListener("click", restoreLast);
-  $("#import-btn").addEventListener("click", function () { $("#import").click(); });
+  $("#undo").addEventListener("click", function () {
+    if (!setterTools()) { return; }
+    restoreLast();
+  });
+  $("#import-btn").addEventListener("click", function () {
+    if (!setterTools()) { return; }
+    $("#import").click();
+  });
   /* One button, three kinds of file: an archive, a logger trace, or the recordings
      themselves — which are placed by their own timestamp against any imported trace. */
   $("#import").addEventListener("change", function () {
     var files = [].slice.call(this.files || []);
     this.value = "";
+    /* The real entry point: #import is a hidden input, so guarding #import-btn alone would leave
+       a .click() on the input itself, or a dropped file, doing the whole import. */
+    if (!setterTools()) { return; }
     if (!files.length) { return; }
 
     var geo = files.filter(function (f) { return /\.(geojson|json)$/i.test(f.name); });

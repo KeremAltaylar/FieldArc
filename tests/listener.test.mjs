@@ -426,6 +426,47 @@ test("no copy names a control the reader does not have", () => {
     "the Select-mode hint must name the button by its current label, not by the setter's word");
 });
 
+/* Defence in depth, and the reason is this review's own finding: every setter-only action was
+   gated by whether its trigger was visible, and three separate places wrote .hidden with no
+   awareness of sign-in (clearPlayer on #rec-add, renderDetail on #g-type and friends,
+   renderAudioMode on #hitgrid), each handing a control straight back. A handler that refuses to
+   run turns the next missed .hidden line from exploitable into cosmetic. This changes nothing for
+   a signed-in setter: setterTools() is true whenever they reach one of these. */
+test("every setter-only handler refuses to run for a listener, not just its button to appear", () => {
+  const guarded = [
+    ['$("#f-delete").addEventListener("click"', "Delete"],
+    ['$("#f-patch").addEventListener("click"', "Patch"],
+    ['$("#export").addEventListener("click"', "Export"],
+    ['$("#import").addEventListener("change"', "Import — the hidden input, not only its button"],
+    ['$("#import-btn").addEventListener("click"', "the Import button"],
+    ['$("#undo").addEventListener("click"', "Undo delete"],
+    ['$("#rec-add").addEventListener("click"', "Attach audio"],
+    ['$("#rec-file").addEventListener("change"', "the attach-audio input"],
+    ['$("#rec-remove").addEventListener("click"', "Remove recording"],
+    ['$("#hit-file").addEventListener("change"', "the hit-slot input"]
+  ];
+  for (const [marker, what] of guarded) {
+    const at = html.indexOf(marker);
+    assert.ok(at > 0, "handler not found: " + marker);
+    const head = html.slice(at, at + 400);
+    assert.match(head, /if \(!setterTools\(\)\) \{ return; \}/,
+      what + "'s handler must refuse to run, not merely be hard to click");
+  }
+
+  /* The hit grid's per-slot buttons are built at render time, so the guard lives in the row
+     builder rather than on a static id. */
+  const audio = html.slice(html.indexOf("function renderAudioMode(f)"),
+                           html.indexOf("\n  var pendingHit"));
+  assert.match(audio, /btn\.addEventListener\("click", function \(\) \{\s*\n\s*if \(!setterTools\(\)\) \{ return; \}/,
+    "each hit slot's delete/attach button must refuse to run too");
+
+  /* The soundscape/hits/grains switch is the same class of control. */
+  const recmode = html.slice(html.indexOf('document.querySelectorAll(".recmode button")'),
+                             html.indexOf('document.querySelectorAll(".recmode button")') + 400);
+  assert.match(recmode, /if \(!setterTools\(\)\) \{ return; \}/,
+    "the recording-type switch must refuse to run for a listener");
+});
+
 test("GPS is promoted out of the ghost-button row for a listener", () => {
   const idx = html.indexOf('id="gps-btn"');
   const tag = html.slice(html.lastIndexOf("<button", idx), idx + 30);
