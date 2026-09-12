@@ -1413,7 +1413,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   <div id="panel">
     <button type="button" id="sheet" aria-expanded="false">Details ▲</button>
-    <div class="section">
+    <div class="section" id="mode-section">
       <h2>Mode</h2>
       <div class="modes" role="group" aria-label="Drawing mode">
         <button type="button" data-mode="select" aria-pressed="true">Select</button>
@@ -1904,7 +1904,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        Delete) is untouched — Delete is named directly instead. #markbar is hidden outright
        rather than relabeled to Locate — decided 2026-09-12: a listener has no marking to do,
        and the GPS/Virtual toggle already covers "use my own position" for a route in progress. */
-    var SETTER_ONLY = [".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
+    var SETTER_ONLY = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
       "#hitgrid", "#storage > .actions", "#offline", "#undo", "#publishbar", "#markbar",
       "#audit"];
@@ -1912,6 +1912,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
     });
+    /* The mobile peek is sized from the Mode section's height, and that section has just changed
+       height to zero (or back). Without this the heading's space stayed reserved over nothing,
+       so "the whole mode bar buys back the peek" did not actually happen. */
+    sizePeek();
     /* The blanket unhide above force-shows elements whose real visibility depends on the
        currently selected feature (#g-type/#card-icons/#f-patch on its kind, .recmode/#rec-add/
        #f-rhythm on its audio state) or on the drawing mode (#mode-icons) — none of which the
@@ -9754,7 +9758,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function sizePeek() {
     if (!isMobile()) { return; }
     var handle = $("#sheet").offsetHeight;
-    var modes = document.querySelector("#panel > .section").offsetHeight;
+    /* By id rather than by position. This reads the Mode section, and a hidden section measures
+       zero — which is the point: the spec's "one mode means no bar, which also buys back the
+       mobile peek" only happens if the section, heading included, is what goes. */
+    var modes = $("#mode-section").offsetHeight;
     document.documentElement.style.setProperty("--peek", (handle + modes) + "px");
   }
 

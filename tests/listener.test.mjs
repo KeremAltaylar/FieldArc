@@ -26,7 +26,7 @@ test("fetchPublished queries public_features scoped to a place", () => {
 test("applyModeGating hides exactly the setter-only elements, and never the sign-in block", () => {
   const src = html.slice(html.indexOf("function applyModeGating("),
                          html.indexOf("function applyModeGating(") + 2000);
-  const mustHide = [".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
+  const mustHide = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
     ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
     "#hitgrid", "#offline", "#undo", "#publishbar", "#markbar", "#audit"];
   mustHide.forEach((sel) => {
@@ -331,6 +331,28 @@ test("the keyboard cannot author for a listener, and neither can its fallout", (
                                html.indexOf("\n  }", html.indexOf("function renderTrash()")));
   assert.match(trashBody, /\$\("#undo"\)\.hidden = !n \|\| !setterTools\(\);/,
     "#undo may hide unconditionally but must only unhide for a device allowed to author");
+});
+
+/* The bug this closes: .modes and #mode-icons were gated but their section and its <h2>Mode</h2>
+   were not, so a listener got a heading with one sentence under it and no mode controls. And
+   sizePeek() measures that section's height to size the mobile peek, so the heading's space
+   stayed reserved over nothing — the spec's "one mode means no bar, which also buys back the
+   mobile peek" never actually happened. */
+test("the Mode heading goes with its controls, and the peek is re-measured when it does", () => {
+  assert.match(html, /<div class="section" id="mode-section">\s*\n\s*<h2>Mode<\/h2>/,
+    "the Mode section needs a stable id of its own, on the div that carries the heading");
+
+  const gate = html.slice(html.indexOf("function applyModeGating("),
+                          html.indexOf("function applySession("));
+  const forEachAt = gate.indexOf("SETTER_ONLY.forEach(");
+  const peekAt = gate.indexOf("sizePeek();");
+  assert.ok(peekAt > forEachAt,
+    "sizePeek() must run after the gating pass, so it measures the new height, not the old one");
+
+  const peek = html.slice(html.indexOf("function sizePeek()"),
+                          html.indexOf("function openSheet("));
+  assert.match(peek, /\$\("#mode-section"\)\.offsetHeight/,
+    "sizePeek must name the section it measures, not find it by position in #panel");
 });
 
 test("GPS is promoted out of the ghost-button row for a listener", () => {
