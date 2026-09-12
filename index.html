@@ -3372,6 +3372,49 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function getAudio(id) { return idb("readonly", function (st) { return st.get(id); }); }
   function delAudio(id) { return idb("readwrite", function (st) { return st.delete(id); }); }
 
+  /* ---------- Audio, wherever it actually is ----------
+     IndexedDB first, the bucket second. Stage 3 shipped a listener who could SEE a published
+     point's audio lamp and never hear it: every playback path read IndexedDB only, and a
+     listener's IndexedDB is empty by definition — audio lands there through attach-audio, which
+     is a setter's act. publish() already writes each uploaded blob's storage_path onto the row,
+     and public_features carries it down inside properties, so the path a listener needs is
+     already in hand; nothing was reading it.
+
+     Cached on the way through, so a listener who has opened a point once can walk it again with
+     no signal — which is the whole point of the offline constraint.
+
+     Failure is silent by convention (see fetchPublished's .catch): no client, no policy, no
+     signal are all the normal morning in a forest, and a toast for each would be noise. Only
+     the IndexedDB read's own rejection still propagates, so loadPlayer's "Could not read audio"
+     branch keeps meaning what it meant.
+
+     Deliberately NOT used by publish()'s uploadAudio(): there, a missing local blob must abort
+     the publish ("this device no longer has the audio for it"), and re-downloading the server's
+     own copy to upload it back would turn that guard into a no-op. */
+  function audioBlob(key, path) {
+    return getAudio(key).then(function (blob) {
+      if (blob || !sb || !path) { return blob; }
+      return sb.storage.from("recordings").download(path).then(function (r) {
+        if (r.error || !r.data) { return null; }
+        /* Cached or not, it still plays now — a failed write must not lose the blob. */
+        return putAudio(key, r.data).then(function () { return r.data; },
+                                         function () { return r.data; });
+      }).catch(function () { return null; });
+    });
+  }
+
+  /* Where the server keeps a feature's audio, if it has any. Read from the live feature rather
+     than passed around, because the zone engine holds zone objects, not features. */
+  function remotePath(id) {
+    var f = feature(id);
+    return (f && f.properties && f.properties.storage_path) || null;
+  }
+  function remoteHitPath(id, slot) {
+    var f = feature(id);
+    var h = f && f.properties && f.properties.hits && f.properties.hits[slot];
+    return (h && typeof h === "object" && h.storage_path) || null;
+  }
+
   /* ---------- Player ---------- */
   var audioEl = new Audio(), audioURL = null;
   audioEl.preload = "metadata";
@@ -3407,7 +3450,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!specMode) { $("#rec-bar").classList.remove("spec"); }
     var f = feature(selected);
     if (!f || !f.properties.has_audio) { return; }
-    getAudio(f.properties.id).then(function (blob) {
+    audioBlob(f.properties.id, f.properties.storage_path).then(function (blob) {
       if (!blob) { return; }
       if (specMode) { showSpec(f, blob); }
       else { drawWave((f.properties.audio || {}).peaks); }
@@ -3589,7 +3632,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#v-name").textContent = (f.properties.audio || {}).name || label(f);
     /* Open showing what you clicked, not what you last looked at. */
     setViewerMode(specMode ? "spec" : "wave");
-    getAudio(f.properties.id).then(function (blob) {
+    audioBlob(f.properties.id, f.properties.storage_path).then(function (blob) {
       if (!blob || !viewer.open) { return; }
       return spectrogram(blob, f.properties.id, 900, 200).then(function (sp) {
         viewer.spec = sp;
@@ -3685,7 +3728,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function loadPlayer(f) {
     clearPlayer();
     if (!f || !f.properties.has_audio) { return; }
-    getAudio(f.properties.id).then(function (blob) {
+    audioBlob(f.properties.id, f.properties.storage_path).then(function (blob) {
       if (!blob || feature(selected) !== f) { return; }   // selection may have moved on
       audioURL = URL.createObjectURL(blob);
       audioEl.src = audioURL;
@@ -6370,7 +6413,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
 
     v = bed.voices[z.id] = { ready: false, idle: false };
-    getAudio(z.id).then(function (blob) {
+    audioBlob(z.id, remotePath(z.id)).then(function (blob) {
       if (!blob || !bed || !bed.on || !bed.voices[z.id]) { return; }
       var f = feature(z.id), a = (f && f.properties.audio) || {};
       v.url = URL.createObjectURL(blob);
@@ -6606,7 +6649,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        plays a file, and what this needs is to read arbitrary slices of it at arbitrary
        times, many at once. */
     if (z.mode === "grains") {
-      getAudio(z.id).then(function (blob) {
+      audioBlob(z.id, remotePath(z.id)).then(function (blob) {
         if (!blob || !bed || !bed.rhythms[z.id]) { return; }
         var url = URL.createObjectURL(blob);
         R.grainUrl = url;
@@ -6616,7 +6659,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       return R;
     }
     HIT_SLOTS.forEach(function (slot) {
-      getAudio(z.id + "#" + slot).then(function (blob) {
+      audioBlob(z.id + "#" + slot, remoteHitPath(z.id, slot)).then(function (blob) {
         if (!blob || !bed || !bed.rhythms[z.id]) { return; }
         var url = URL.createObjectURL(blob);
         R.urls[slot] = url;
@@ -8841,7 +8884,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       tour.timer = setTimeout(tourStep, 1400);
       return;
     }
-    getAudio(f.properties.id).then(function (blob) {
+    audioBlob(f.properties.id, f.properties.storage_path).then(function (blob) {
       if (!tour) { return; }
       if (!blob) { tour.timer = setTimeout(tourStep, 800); return; }
       if (tour.url) { URL.revokeObjectURL(tour.url); }

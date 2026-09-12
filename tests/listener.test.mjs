@@ -118,6 +118,50 @@ test("renderDetail reasserts setter-only visibility after its kind/audio-state l
     "not $() which only ever returns the first match");
 });
 
+/* The bug this closes: stage 3 gave anon a storage read policy and never gave the client a
+   download. index.html held exactly one sb.storage call — the upload inside publish() — so
+   every playback path read IndexedDB only. A listener's IndexedDB is empty by definition
+   (audio lands there through attach-audio, a setter's act), so a published point with
+   has_audio: true drew its audio lamp, resolved undefined, and loadPlayer() returned with
+   #player still hidden: nothing played and nothing said why. */
+test("a listener's playback falls back to the bucket and caches what it downloads", () => {
+  const fnAt = html.indexOf("function audioBlob(key, path)");
+  assert.ok(fnAt > 0, "audioBlob() — the IndexedDB-then-bucket read — must exist");
+  const fn = html.slice(fnAt, html.indexOf("\n  }", fnAt));
+  assert.match(fn, /sb\.storage\.from\("recordings"\)\s*\.download\(path\)/,
+    "the miss path must download from the recordings bucket");
+  assert.match(fn, /putAudio\(key, r\.data\)/,
+    "a downloaded blob must be cached, or a listener's second offline walk is silent again");
+  assert.match(fn, /if \(blob \|\| !sb \|\| !path\) \{ return blob; \}/,
+    "a local hit must short-circuit — this must never become a network read for a setter");
+  assert.match(fn, /catch\(function \(\) \{ return null; \}\)/,
+    "a failed download is silent: no client, no policy and no signal are all normal here");
+});
+
+test("every playback path reads through audioBlob, and the publish upload does not", () => {
+  /* loadPlayer is the card's player; the two zone reads are the walk engine. All three were
+     IndexedDB-only before this fix. */
+  const loadAt = html.indexOf("function loadPlayer(f)");
+  assert.ok(loadAt > 0, "loadPlayer must be found");
+  assert.match(html.slice(loadAt, loadAt + 400),
+    /audioBlob\(f\.properties\.id, f\.properties\.storage_path\)/,
+    "loadPlayer must use the fallback, keyed on the storage_path the view already carries");
+  assert.match(html, /audioBlob\(z\.id, remotePath\(z\.id\)\)/,
+    "a zone's soundscape/grain source must use the fallback");
+  assert.match(html, /audioBlob\(z\.id \+ "#" \+ slot, remoteHitPath\(z\.id, slot\)\)/,
+    "a rhythm point's four hits must use the fallback");
+
+  /* publish()'s uploadAudio deliberately keeps the raw read: a missing local blob must abort
+     the publish, and re-downloading the server's own copy to upload it back would turn that
+     guard into a no-op. */
+  const upAt = html.indexOf("function uploadAudio(key, pathFor, missing)");
+  assert.ok(upAt > 0, "uploadAudio must be found");
+  const up = html.slice(upAt, html.indexOf("\n    }", upAt));
+  assert.match(up, /return getAudio\(key\)/,
+    "uploadAudio must read IndexedDB directly — the missing-blob rejection is the point");
+  assert.doesNotMatch(up, /audioBlob\(/, "the publish path must not fall back to the server");
+});
+
 test("GPS is promoted out of the ghost-button row for a listener", () => {
   const idx = html.indexOf('id="gps-btn"');
   const tag = html.slice(html.lastIndexOf("<button", idx), idx + 30);
