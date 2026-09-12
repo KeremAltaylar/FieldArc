@@ -1854,6 +1854,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
     });
+    /* The blanket unhide above force-shows elements whose real visibility depends on the
+       currently selected feature (#g-type/#card-icons/#f-patch on its kind, .recmode/#rec-add/
+       #f-rhythm on its audio state) or on the drawing mode (#mode-icons) — none of which the
+       setter/listener boolean knows about. A listener can only reach `show === true` by signing
+       in while already looking at a feature (Supabase syncs auth across tabs via storage
+       events), so that stale state is a real, if transient, possibility and not a hypothetical.
+       Re-running the code that actually owns each element's visibility reasserts the truth on
+       top of the blanket unhide. */
+    if (show) {
+      if (selected) { renderDetail(); }
+      if (mode) { $("#mode-icons").hidden = mode !== "point"; }
+    }
     /* mode never reaches "point" or "route" for a listener — the buttons that would set it
        are gone, and #markbar (Mark's own button) is gone too — but a stale mode from a
        session that just signed out must not survive the transition. Guarded on `mode` itself
