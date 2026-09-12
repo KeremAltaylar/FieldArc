@@ -1671,6 +1671,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   var TRASH_KEY = "fieldarc.trash";
   var TRASH_DAYS = 30;
   var LASTAUTH_KEY = "fieldarc.lastauth";
+  /* Whether this device has ever held a setter session. The one question a cold offline load
+     cannot ask the server, and the one it needs an answer to — see the no-library branch at
+     the end of the setter-session block for what it is for. */
+  var WASSETTER_KEY = "fieldarc.wassetter";
   var LICENSE = "CC BY-SA 4.0";
   var DEFAULT_PLACE = "R8845862";      // Belgrad Ormanı
   var CENTER = [28.9800, 41.1850];   // Belgrad Ormanı
@@ -1847,7 +1851,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     applyModeGating();
   }
 
+  function wasSetter() {
+    try { return localStorage.getItem(WASSETTER_KEY) === "1"; } catch (e) { return false; }
+  }
+  function setWasSetter(on) {
+    try {
+      if (on) { localStorage.setItem(WASSETTER_KEY, "1"); }
+      else { localStorage.removeItem(WASSETTER_KEY); }
+    } catch (e) { /* private mode — this is evidence, not state; absence gates, which is safe */ }
+  }
+
+  /* Set once, in the no-library branch at the end of this block. "Sign-in status is
+     unknowable AND this device has been a setter's" is a state gating must decline rather
+     than guess at; the reasoning is recorded at the call site, where it is needed. */
+  var gatingDeclined = false;
+
   function applyModeGating() {
+    if (gatingDeclined) { return; }
     /* Every control a setter has that a listener should not. Two elements are deliberately
        absent: #setter, because it is the door a listener walks through to become a setter,
        and #f-walk / #f-zoom, because starting a route is how a listener hears it and zooming
@@ -1890,6 +1910,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     setter.signedIn = !!(session && session.user);
     setter.email = session && session.user ? session.user.email : null;
     setter.id = session && session.user ? session.user.id : null;
+    /* Written here, at the one place sign-in state is ever established, and cleared the same
+       way on sign-out or on a load that finds no session — so the flag is self-healing and a
+       device that stops being a setter's stops claiming to be one. */
+    setWasSetter(setter.signedIn);
     renderSetter();
   }
 
@@ -1976,6 +2000,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (e === "SIGNED_IN") { logSignIn(session); }
     });
   } else {
+    /* This path is special-cased, and here is why, because the next person will wonder.
+       sb is null only when the supabase library never arrived — a first load with no signal,
+       which the plan names explicitly as a path offline capture must not regress on. With no
+       client there is no session to read, applySession() is unreachable, and setter.signedIn
+       stays false for the entire session with nothing scheduled to ever correct it. Gating on
+       that false would hand a genuinely signed-in setter the full listener surface — no Mark,
+       no mode bar, no attach-audio — for as long as they stay out of signal, which is the
+       opposite of the constraint.
+       So when the device carries prior evidence of a setter session, gating declines to run
+       at all: the DOM keeps the default state it has in the markup, which is exactly what this
+       app looked like before the listener surface existed. Nothing fakes a signed-in state —
+       setter.signedIn stays honestly false, so Publish stays disabled and nothing reaches for
+       a server that is not there. A device with no such evidence is gated normally: a listener
+       offline is still a listener. */
+    gatingDeclined = wasSetter();
     renderSetter();
   }
 

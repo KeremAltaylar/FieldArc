@@ -179,6 +179,42 @@ test("a listener is never built a hit grid", () => {
     "the guard must precede the early return, so a listener's rows are never constructed");
 });
 
+/* The bug this closes: when the supabase library never arrives, sb is null and the else branch
+   calls renderSetter() synchronously — which now calls applyModeGating() with setter.signedIn
+   still false, because without a client there is no session to read and applySession() is
+   unreachable. Nothing re-runs it for the rest of the session, so a signed-in setter who opens
+   the app with no signal got the full listener surface (no Mark, no mode bar, no attach-audio)
+   for the whole session. The plan names this exact path in its offline-capture constraint. */
+test("a cold offline load does not gate a device that has been a setter's", () => {
+  assert.match(html, /var WASSETTER_KEY = "fieldarc\.wassetter";/,
+    "the flag needs a key in the file's existing fieldarc.* naming");
+
+  const apply = html.slice(html.indexOf("function applySession("),
+                           html.indexOf("function signIn("));
+  assert.match(apply, /setWasSetter\(setter\.signedIn\);/,
+    "the flag is written at the one place sign-in state is established, and cleared there too");
+
+  const gate = html.slice(html.indexOf("function applyModeGating("),
+                          html.indexOf("function applySession("));
+  assert.match(gate, /^\s*function applyModeGating\(\) \{\s*\n\s*if \(gatingDeclined\) \{ return; \}/,
+    "the decline must be the first thing applyModeGating does, before anything is hidden");
+
+  /* Bounded forwards on purpose: $("#setter-send") also appears inside renderSetter(), which
+     is defined earlier, so an unanchored end marker would slice backwards to nothing and every
+     assertion below would pass without checking anything. */
+  const elseAt = html.indexOf("  } else {", html.indexOf("function logSignIn("));
+  const endAt = html.indexOf('$("#setter-send").addEventListener', elseAt);
+  assert.ok(elseAt !== -1 && endAt > elseAt, "the no-library branch slice is bounded and forwards");
+  const offline = html.slice(elseAt, endAt);
+  assert.match(offline, /gatingDeclined = wasSetter\(\);/,
+    "the no-library branch must decline gating on a setter's device, not guess at sign-in");
+  assert.match(offline, /renderSetter\(\);/, "and must still render the setter block");
+  assert.ok(offline.indexOf("gatingDeclined") < offline.indexOf("renderSetter()"),
+    "the decision must be made before renderSetter() calls applyModeGating()");
+  assert.doesNotMatch(offline, /setter\.signedIn = true/,
+    "no fake signed-in state: Publish must stay disabled and nothing may reach for a server");
+});
+
 test("GPS is promoted out of the ghost-button row for a listener", () => {
   const idx = html.indexOf('id="gps-btn"');
   const tag = html.slice(html.lastIndexOf("<button", idx), idx + 30);
