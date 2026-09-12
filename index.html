@@ -3908,7 +3908,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     clearPlayer();
     if (!f || !f.properties.has_audio) { return; }
     audioBlob(f.properties.id, f.properties.storage_path).then(function (blob) {
-      if (!blob || feature(selected) !== f) { return; }   // selection may have moved on
+      if (!blob) {
+        /* A sensitive point's recording is deliberately not anon-readable — 0016: a field
+           recorder's BWF/iXML chunks can carry the true coordinate the fuzz exists to hide, and
+           withholding the file is safer than a metadata stripper that fails quietly. `fuzzed` is
+           the view's own marker for exactly those rows, so this is the one case where a missing
+           blob is a decision rather than an absence, and it is worth saying out loud instead of
+           leaving the silent dead end audioBlob() was written to remove. */
+        if (f.properties.fuzzed && feature(selected) === f) {
+          $("#saved").textContent = "This point's position is approximate and its recording is " +
+            "not published — sensitive recordings stay with the setter.";
+        }
+        return;
+      }
+      if (feature(selected) !== f) { return; }   // selection may have moved on
       audioURL = URL.createObjectURL(blob);
       audioEl.src = audioURL;
       $("#player").hidden = false;

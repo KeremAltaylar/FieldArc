@@ -87,6 +87,108 @@ test("anon can download a published feature's recording, but not an unpublished 
   }
 });
 
+/* A field recorder writes its own metadata into the file: BWF bext and iXML chunks routinely
+   carry GPS coordinates, and index.html already reads those chunks. So anon downloading a
+   published SENSITIVE point's recording would hand over the true coordinate inside the file and
+   defeat the fuzz entirely. 0016 therefore excludes sensitive features from the anon read policy
+   outright rather than attempting to strip metadata — a parser that fails quietly on one
+   untested recorder leaks exactly what it was written to protect. A listener sees a sensitive
+   point fuzzed, as before, and does not hear it. Silence is the safe failure. */
+test("anon cannot download a sensitive published feature's recording", async () => {
+  const { data: sens, error: sensErr } = await db.from("features").insert({
+    place: "belgrad-ormani", kind: "point",
+    geometry: { type: "Point", coordinates: [28.99, 41.19] },
+    properties: { published: true, sensitive: true }, created_by: userId
+  }).select().single();
+  assert.equal(sensErr, null, sensErr?.message);
+
+  /* The control: same place, same publish state, no sensitive flag. It must stay readable, or
+     this test would pass just as well against a policy that had stopped working altogether. */
+  const { data: open, error: openErr } = await db.from("features").insert({
+    place: "belgrad-ormani", kind: "point",
+    geometry: { type: "Point", coordinates: [28.99, 41.19] },
+    properties: { published: true }, created_by: userId
+  }).select().single();
+  assert.equal(openErr, null, openErr?.message);
+
+  const sensPath = sens.id + "/take.wav";
+  const openPath = open.id + "/take.wav";
+  try {
+    for (const p of [sensPath, openPath]) {
+      const { error } = await db.storage.from("recordings")
+        .upload(p, new Blob(["a"]), { upsert: true });
+      assert.equal(error, null, error?.message);
+    }
+
+    const a = anon();
+    /* Both halves are asserted against the same anon client in the same test, so "denied"
+       cannot be an artefact of a broken client. */
+    const okDl = await a.storage.from("recordings").download(openPath);
+    assert.equal(okDl.error, null,
+      "a published, non-sensitive recording must still be readable — 0016 must not close 0015");
+
+    const badDl = await a.storage.from("recordings").download(sensPath);
+    assert.ok(badDl.error,
+      "anon read a SENSITIVE published feature's recording — its BWF/iXML chunks may carry the " +
+      "true coordinate the fuzz exists to hide");
+
+    /* And the view still shows it, fuzzed: the feature stays visible and only its audio is
+       withheld. This also pins the coupling the policy depends on — 0016 cannot read the real
+       `sensitive` flag, because an RLS policy expression runs with the QUERYING role's
+       privileges and anon holds no SELECT on public.features (measured: every download failed
+       with "permission denied for table features"). It tests the view's `fuzzed` marker instead,
+       which 0014 writes for exactly `sensitive and kind = 'point'`. If that marker ever stops
+       being emitted, this assertion fails before the policy silently starts allowing the
+       download. */
+    const seen = await a.from("public_features").select("id, properties").eq("id", sens.id);
+    assert.equal(seen.error, null, seen.error?.message);
+    assert.equal(seen.data.length, 1,
+      "a sensitive published feature must still be visible — only its recording is withheld");
+    assert.equal(seen.data[0].properties.fuzzed, true,
+      "the policy's predicate IS this marker — without it, sensitive audio becomes readable");
+  } finally {
+    await db.storage.from("recordings").remove([sensPath, openPath]);
+    await db.from("features").delete().in("id", [sens.id, open.id]);
+  }
+});
+
+/* The scope decision, pinned so it reads as a decision rather than a gap. A route marked
+   sensitive publishes as drawn — 0004: offsetting every vertex would either destroy the walk or
+   leave the true path recoverable from its shape. Its geometry is already public in full, so
+   there is no hidden coordinate for its file's metadata to give away, and 0016 does not withhold
+   its audio. `sensitive` on a route buys a caution in the UI, not a concealed position. */
+test("a sensitive route's recording stays readable, because its path is published as drawn", async () => {
+  const { data: r, error } = await db.from("features").insert({
+    place: "belgrad-ormani", kind: "route",
+    geometry: { type: "LineString", coordinates: [[28.99, 41.19], [28.991, 41.191]] },
+    properties: { published: true, sensitive: true }, created_by: userId
+  }).select().single();
+  assert.equal(error, null, error?.message);
+
+  const path = r.id + "/take.wav";
+  try {
+    const { error: upErr } = await db.storage.from("recordings")
+      .upload(path, new Blob(["a"]), { upsert: true });
+    assert.equal(upErr, null, upErr?.message);
+
+    const a = anon();
+    const seen = await a.from("public_features").select("geometry, properties").eq("id", r.id);
+    assert.equal(seen.error, null, seen.error?.message);
+    assert.equal(seen.data[0].properties.fuzzed, undefined,
+      "a sensitive route is not fuzzed — that is why its audio is not withheld");
+    assert.deepEqual(seen.data[0].geometry.coordinates[0], [28.99, 41.19],
+      "its true path is already public, so the file's metadata reveals nothing new");
+
+    const dl = await a.storage.from("recordings").download(path);
+    assert.equal(dl.error, null,
+      "a sensitive route's recording must stay readable — withholding it would cost a listener " +
+      "the walk for no coordinate gained");
+  } finally {
+    await db.storage.from("recordings").remove([path]);
+    await db.from("features").delete().eq("id", r.id);
+  }
+});
+
 /* The upload has to happen BEFORE the row is upserted. A feature row that claims audio the
    server does not hold is worse than a queue still draining: the archive would advertise a
    document it cannot produce. */
