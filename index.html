@@ -1835,6 +1835,33 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#setter-email").parentNode.hidden = setter.signedIn;
     renderPending();
     renderAudit();
+    applyModeGating();
+  }
+
+  function applyModeGating() {
+    /* Every control a setter has that a listener should not. Two elements are deliberately
+       absent: #setter, because it is the door a listener walks through to become a setter,
+       and #f-walk / #f-zoom, because starting a route is how a listener hears it and zooming
+       to a feature is not an authoring act. .actions here means #storage's top row
+       (Export/Import), scoped through its parent so the card's own .actions row (Zoom to,
+       Delete) is untouched — Delete is named directly instead. #markbar is hidden outright
+       rather than relabeled to Locate — decided 2026-09-12: a listener has no marking to do,
+       and the GPS/Virtual toggle already covers "use my own position" for a route in progress. */
+    var SETTER_ONLY = [".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
+      ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
+      "#storage > .actions", "#offline", "#undo", "#publishbar", "#markbar"];
+    var show = setter.signedIn;
+    SETTER_ONLY.forEach(function (sel) {
+      document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
+    });
+    /* mode never reaches "point" or "route" for a listener — the buttons that would set it
+       are gone, and #markbar (Mark's own button) is gone too — but a stale mode from a
+       session that just signed out must not survive the transition. Guarded on `mode` itself
+       being set (not just !== "select"): renderSetter() also runs once at page load before
+       the drawing-mode state exists at all (the offline branch, when the supabase library
+       never arrives, calls it synchronously before `map`/`mode` are initialised) — calling
+       setMode() that early would reach into a map that is not there yet. */
+    if (!show && mode && mode !== "select") { setMode("select"); }
   }
 
   function applySession(session) {
@@ -2728,6 +2755,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa.fetchPublished = fetchPublished;
   window.__fa.mergeRemote = mergeRemote;
   window.__fa.setter = setterState;
+  window.__fa.applyModeGating = applyModeGating;
   /* `refresh` is not only a debug hook: the deferred module that defines FA_PENDING calls it
      once it exists, because the offline path renders the panel before that module has run. */
   window.__fa.publish = { count: pendingCount, run: publish, diff: pendingDiff,
