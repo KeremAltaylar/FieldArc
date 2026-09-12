@@ -1858,7 +1858,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        and the GPS/Virtual toggle already covers "use my own position" for a route in progress. */
     var SETTER_ONLY = [".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
-      "#storage > .actions", "#offline", "#undo", "#publishbar", "#markbar", "#audit"];
+      "#hitgrid", "#storage > .actions", "#offline", "#undo", "#publishbar", "#markbar",
+      "#audit"];
     var show = setter.signedIn;
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
@@ -3820,7 +3821,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
     }
     var grid = $("#hitgrid");
-    grid.hidden = !(isPoint && mode === "hits");
+    /* Unhiding needs the sign-in check; hiding never does. Without this a listener selecting a
+       published "hits" point got four rows of delete/attach buttons, and the early return below
+       means the guard also stops those rows from being BUILT rather than merely hidden. */
+    grid.hidden = !(isPoint && mode === "hits") || !setter.signedIn;
     /* Grains needs the same single recording a soundscape does, so the attach button stays;
        only the four-hit grid is specific to hits. */
     $("#rec-add").hidden = !isPoint ? $("#rec-add").hidden : (mode === "hits");
@@ -9501,6 +9505,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       $("#f-rhythm").hidden = true;
       document.querySelectorAll(".recmode").forEach(function (el) { el.hidden = true; });
       $("#rec-add").hidden = true;
+      /* #hitgrid was the third instance of this same bug, and the worst of the three: a
+         published Point whose audio_mode is "hits" (the value arrives verbatim through
+         public_features) handed a signed-out listener four slot rows, each with a live button
+         that deleted the hit or opened a file picker to replace it. renderAudioMode() also
+         refuses to build those rows for a listener now, so this line is the belt to that
+         braces rather than the only thing standing there. */
+      $("#hitgrid").hidden = true;
     }
   }
 

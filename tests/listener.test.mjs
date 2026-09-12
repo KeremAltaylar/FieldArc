@@ -28,7 +28,7 @@ test("applyModeGating hides exactly the setter-only elements, and never the sign
                          html.indexOf("function applyModeGating(") + 2000);
   const mustHide = [".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
     ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
-    "#offline", "#undo", "#publishbar", "#markbar", "#audit"];
+    "#hitgrid", "#offline", "#undo", "#publishbar", "#markbar", "#audit"];
   mustHide.forEach((sel) => {
     assert.ok(src.includes(JSON.stringify(sel)) || src.includes("'" + sel + "'"),
       sel + " is not in the gated list");
@@ -108,7 +108,7 @@ test("renderDetail reasserts setter-only visibility after its kind/audio-state l
     "#g-type kind line — it exists specifically to override what they just set");
 
   const guardBlock = src.slice(guardIdx, src.indexOf("}", src.lastIndexOf("hidden = true;", src.length)) + 1);
-  ["#g-type", "#f-patch", "#f-rhythm", "#rec-add"].forEach((sel) => {
+  ["#g-type", "#f-patch", "#f-rhythm", "#rec-add", "#hitgrid"].forEach((sel) => {
     const re = new RegExp("\\$\\(\"" + sel.replace("#", "#") + "\"\\)\\.hidden = true");
     assert.match(guardBlock, re, sel + " must be forced hidden for a listener");
   });
@@ -160,6 +160,23 @@ test("every playback path reads through audioBlob, and the publish upload does n
   assert.match(up, /return getAudio\(key\)/,
     "uploadAudio must read IndexedDB directly — the missing-blob rejection is the point");
   assert.doesNotMatch(up, /audioBlob\(/, "the publish path must not fall back to the server");
+});
+
+/* The bug this closes: renderAudioMode() derived #hitgrid's visibility from the selected
+   feature's audio_mode alone, and audio_mode: "hits" rides down to a listener verbatim inside
+   public_features.properties. A signed-out visitor selecting such a published Point was handed
+   four hit-slot rows, each carrying a live button that deleted the hit or opened a file picker.
+   Gating the build, not just the reveal, is what keeps those buttons from existing at all. */
+test("a listener is never built a hit grid", () => {
+  const fnAt = html.indexOf("function renderAudioMode(f)");
+  assert.ok(fnAt > 0, "renderAudioMode must be found");
+  const fn = html.slice(fnAt, html.indexOf("\n  var pendingHit", fnAt));
+  assert.match(fn, /grid\.hidden = !\(isPoint && mode === "hits"\) \|\| !setter\.signedIn;/,
+    "#hitgrid must only ever be unhidden for a signed-in setter");
+  const guardAt = fn.indexOf("!setter.signedIn");
+  const buildAt = fn.indexOf("if (grid.hidden) { grid.textContent = \"\"; return; }");
+  assert.ok(guardAt !== -1 && buildAt > guardAt,
+    "the guard must precede the early return, so a listener's rows are never constructed");
 });
 
 test("GPS is promoted out of the ghost-button row for a listener", () => {
