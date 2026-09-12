@@ -1901,13 +1901,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        and #f-walk / #f-zoom, because starting a route is how a listener hears it and zooming
        to a feature is not an authoring act. .actions here means #storage's top row
        (Export/Import), scoped through its parent so the card's own .actions row (Zoom to,
-       Delete) is untouched — Delete is named directly instead. #markbar is hidden outright
-       rather than relabeled to Locate — decided 2026-09-12: a listener has no marking to do,
-       and the GPS/Virtual toggle already covers "use my own position" for a route in progress. */
+       Delete) is untouched — Delete is named directly instead.
+
+       #markbar is NOT here, and that is a reversal. An earlier pass on this branch hid Mark
+       outright on the theory that GPS/Virtual covered "use my own position" — but GPS only
+       exists once a route walk is already running, which left a listener with no way at all to
+       see where they are before starting one, and it contradicts the spec outright: "The Mark
+       button changes job rather than disappearing... For listeners it keeps the button and loses
+       the marking." Its Select-mode behaviour already IS the listener's job — centre the map on
+       your position, create nothing — so the button stays and only its name changes, below.
+
+       #offline ("Download map") is not here either, and its gating had no spec basis at all: the
+       spec's Gone list does not mention the offline tile download, and "nothing that works
+       offline today may start requiring a network" argues the other way. A listener walking a
+       route with no signal needs those tiles exactly as much as a setter does. #undo stays
+       gated, which is the distinction: undoing your own edit only means something to someone who
+       can make one. */
     var SETTER_ONLY = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
-      "#hitgrid", "#storage > .actions", "#offline", "#undo", "#publishbar", "#markbar",
-      "#audit"];
+      "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit"];
     var show = setter.signedIn;
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
@@ -1916,6 +1928,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        height to zero (or back). Without this the heading's space stayed reserved over nothing,
        so "the whole mode bar buys back the peek" did not actually happen. */
     sizePeek();
+    /* Mark keeps its place and changes its name. Routed through setMarkState() rather than
+       written here because that function is the only writer of this label: doing it directly
+       would relabel a mid-trace "Finish" out from under a setter, and would be undone anyway the
+       first time a listener's own Locate completed and reset the button to idle. */
+    setMarkState($("#mark").dataset.state || "idle");
     /* The blanket unhide above force-shows elements whose real visibility depends on the
        currently selected feature (#g-type/#card-icons/#f-patch on its kind, .recmode/#rec-add/
        #f-rhythm on its audio state) or on the drawing mode (#mode-icons) — none of which the
@@ -3202,11 +3219,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return c;
   }
 
+  /* What the button is called when it is idle. A setter marks; a listener locates — the same
+     third behaviour this button already had in Select mode (centre on your position, create
+     nothing), named for what it actually does. Spec, "The listener surface": "The Mark button
+     changes job rather than disappearing." */
+  function markLabel() {
+    return setterTools()
+      ? { text: "Mark", aria: "Mark current location" }
+      : { text: "Locate", aria: "Centre on your position" };
+  }
+
   function setMarkState(state) {
-    var b = $("#mark");
+    var b = $("#mark"), idle = markLabel();
     b.dataset.state = state;
-    b.textContent = state === "recording" ? "Finish" : state === "busy" ? "…" : "Mark";
-    b.setAttribute("aria-label", state === "recording" ? "Finish route" : "Mark current location");
+    b.textContent = state === "recording" ? "Finish" : state === "busy" ? "…" : idle.text;
+    b.setAttribute("aria-label", state === "recording" ? "Finish route" : idle.aria);
     $("#marklive").hidden = state !== "recording";
   }
 

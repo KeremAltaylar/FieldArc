@@ -24,11 +24,14 @@ test("fetchPublished queries public_features scoped to a place", () => {
 });
 
 test("applyModeGating hides exactly the setter-only elements, and never the sign-in block", () => {
+  /* Bounded by the next function rather than by a character count: the comment above
+     SETTER_ONLY has grown twice, and a fixed-length slice that stops short of the array would
+     fail for a reason that has nothing to do with the gating list. */
   const src = html.slice(html.indexOf("function applyModeGating("),
-                         html.indexOf("function applyModeGating(") + 2000);
+                         html.indexOf("function applySession("));
   const mustHide = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
     ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
-    "#hitgrid", "#offline", "#undo", "#publishbar", "#markbar", "#audit"];
+    "#hitgrid", "#undo", "#publishbar", "#audit"];
   mustHide.forEach((sel) => {
     assert.ok(src.includes(JSON.stringify(sel)) || src.includes("'" + sel + "'"),
       sel + " is not in the gated list");
@@ -37,6 +40,16 @@ test("applyModeGating hides exactly the setter-only elements, and never the sign
     "the sign-in block must never be hidden — it is how a listener becomes a setter");
   assert.doesNotMatch(src, /["']#f-walk["']/, "Walk stays — it is how a listener hears a route");
   assert.doesNotMatch(src, /["']#f-zoom["']/, "Zoom to stays — it is not an authoring tool");
+  /* Reversed on this branch: Mark changes job rather than disappearing (spec, "The listener
+     surface"), and GPS — the thing it was said to be redundant with — only exists once a route
+     walk is already running, so hiding Mark left a listener with no way to see where they are. */
+  assert.doesNotMatch(src, /["']#markbar["']/,
+    "Mark stays — it is relabelled to Locate, not hidden");
+  /* Never gated, and it never should have been: the spec's Gone list does not mention the
+     offline tile download, and "nothing that works offline today may start requiring a network"
+     points the other way. A listener walking a route with no signal needs it as much as a setter. */
+  assert.doesNotMatch(src, /["']#offline["']/,
+    "Download map stays — it is the one control that makes the offline constraint keepable");
 });
 
 /* The bug this closes: a listener can reach show===true (sign in) while a feature is already
@@ -353,6 +366,43 @@ test("the Mode heading goes with its controls, and the peek is re-measured when 
                           html.indexOf("function openSheet("));
   assert.match(peek, /\$\("#mode-section"\)\.offsetHeight/,
     "sizePeek must name the section it measures, not find it by position in #panel");
+});
+
+/* The decision this records: an earlier pass on this branch hid #markbar outright, arguing that
+   GPS/Virtual covered "use my own position". It does not — GPS only exists once a route walk is
+   already running, so a listener had no way to see where they were before starting one — and the
+   spec says the opposite in as many words: "The Mark button changes job rather than
+   disappearing... For listeners it keeps the button and loses the marking." */
+test("Mark stays for a listener and reads Locate", () => {
+  assert.match(html, /function markLabel\(\) \{\s*\n\s*return setterTools\(\)\s*\n\s*\? \{ text: "Mark", aria: "Mark current location" \}\s*\n\s*: \{ text: "Locate", aria: "Centre on your position" \};/,
+    "the idle label must be derived from whether this device may author");
+
+  /* setMarkState is the only writer of this label, so it is where the derivation has to land —
+     otherwise a listener's button reverts to "Mark" the first time their own Locate finishes. */
+  const sms = html.slice(html.indexOf("function setMarkState(state)"),
+                         html.indexOf("function geoMessage(err)"));
+  assert.match(sms, /var b = \$\("#mark"\), idle = markLabel\(\);/);
+  assert.match(sms, /: idle\.text;/, "the idle text comes from markLabel()");
+  assert.match(sms, /: idle\.aria\);/, "and so does the idle aria-label");
+  assert.doesNotMatch(sms, /"Mark current location"/,
+    "the setter wording must live in markLabel() only, or the two can drift apart");
+
+  const gate = html.slice(html.indexOf("function applyModeGating("),
+                          html.indexOf("function applySession("));
+  assert.match(gate, /setMarkState\(\$\("#mark"\)\.dataset\.state \|\| "idle"\);/,
+    "gating must re-label Mark through setMarkState, preserving a mid-trace Finish");
+
+  /* The click handler needs no change, and this pins the reason: a listener's `mode` can never
+     become point or route (the buttons are gone and the keyboard shortcuts are guarded), and
+     `track` is only ever set by startTrack(), which Route mode is the only way to reach. So the
+     fall-through branch — geolocate, centre, create nothing — is the only one they can hit. */
+  const click = html.slice(html.indexOf('$("#mark").addEventListener("click"'),
+                           html.indexOf("/* ---------- Weather ----------"));
+  assert.match(click, /if \(track\) \{ stopTrack\(\); return; \}/);
+  assert.match(click, /if \(mode === "route"\) \{ startTrack\(\); return; \}/);
+  assert.match(click, /if \(mode === "point"\) \{ markPoint\(\); return; \}/);
+  assert.match(click, /map\.easeTo\(\{ center: c/,
+    "the fall-through branch centres the map and creates nothing — the listener's whole need");
 });
 
 test("GPS is promoted out of the ghost-button row for a listener", () => {
