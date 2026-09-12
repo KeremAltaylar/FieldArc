@@ -78,6 +78,46 @@ test("applyModeGating reconciles feature- and mode-scoped visibility only after 
     "existing stale-mode-on-sign-out fix, for the same offline-init reason");
 });
 
+/* The bug this closes: renderDetail()'s kind/audio-state logic (renderAudioMode()/
+   clearPlayer()/loadPlayer() and the #g-type/#f-patch/#f-rhythm lines) predates setter-only
+   gating and has no awareness of it. clearPlayer() unconditionally sets #rec-add.hidden =
+   false whenever the selected feature has no point-style audio (true for every Route, and
+   for a Point with nothing attached yet) — so a listener who signed out (or never signed in)
+   gets an authoring control back the instant they select such a feature, even though
+   applyModeGating() correctly hid it moments earlier. Confirmed live in a browser: after a
+   signed-out visitor selected a Route, document.getElementById("rec-add").hidden read false
+   while setter-who still read "Not signed in". This is a source assertion of the fix's control
+   flow (this suite has no DOM) — it proves the reassertion block exists, runs after the
+   kind-based lines it must override, and is scoped to a listener only. */
+test("renderDetail reasserts setter-only visibility after its kind/audio-state logic runs", () => {
+  const startIdx = html.indexOf("function renderDetail() {");
+  const endIdx = html.indexOf("\n  function render() {", startIdx);
+  assert.ok(startIdx !== -1 && endIdx !== -1, "renderDetail() must be found");
+  const src = html.slice(startIdx, endIdx);
+
+  const loadPlayerIdx = src.indexOf("loadPlayer(f);");
+  const audioModeIdx = src.indexOf("renderAudioMode(f);");
+  const gTypeIdx = src.indexOf('$("#g-type").hidden = f.properties.kind');
+  const guardIdx = src.indexOf("if (!setter.signedIn) {");
+  assert.ok(loadPlayerIdx !== -1 && audioModeIdx !== -1 && gTypeIdx !== -1 && guardIdx !== -1,
+    "all four landmarks (loadPlayer, renderAudioMode, the #g-type kind line, and the " +
+    "reassertion guard) must be present in renderDetail()");
+
+  assert.ok(loadPlayerIdx < guardIdx && audioModeIdx < guardIdx && gTypeIdx < guardIdx,
+    "the reassertion must run after loadPlayer()/clearPlayer(), renderAudioMode(), and the " +
+    "#g-type kind line — it exists specifically to override what they just set");
+
+  const guardBlock = src.slice(guardIdx, src.indexOf("}", src.lastIndexOf("hidden = true;", src.length)) + 1);
+  ["#g-type", "#f-patch", "#f-rhythm", "#rec-add"].forEach((sel) => {
+    const re = new RegExp("\\$\\(\"" + sel.replace("#", "#") + "\"\\)\\.hidden = true");
+    assert.match(guardBlock, re, sel + " must be forced hidden for a listener");
+  });
+  assert.match(guardBlock, /\.recmode/, ".recmode elements must be forced hidden for a listener");
+  assert.match(guardBlock, /querySelectorAll\(".recmode"\)/,
+    ".recmode is a class used by multiple elements — it must be reasserted via querySelectorAll, " +
+    "not $() which only ever returns the first match");
+});
+
 test("GPS is promoted out of the ghost-button row for a listener", () => {
   const idx = html.indexOf('id="gps-btn"');
   const tag = html.slice(html.lastIndexOf("<button", idx), idx + 30);

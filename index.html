@@ -9444,6 +9444,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     $("#f-meta").innerHTML = "<b>" + head + "</b>" + tail + extra;
     sheetLabel();
+
+    /* The kind/audio-state logic above (renderAudioMode/clearPlayer/loadPlayer and the
+       #g-type/#card-icons/#f-patch/#f-rhythm lines) predates setter-only gating and has no
+       awareness of it — it unconditionally re-derives these elements' visibility from the
+       selected feature every time selection changes, silently undoing whatever
+       applyModeGating() hid for a listener. Reassert here rather than calling
+       applyModeGating() itself: applyModeGating()'s own reconciliation branch calls
+       renderDetail() when show is true, so calling back into it here would recurse. */
+    if (!setter.signedIn) {
+      $("#g-type").hidden = true;
+      $("#f-patch").hidden = true;
+      $("#f-rhythm").hidden = true;
+      document.querySelectorAll(".recmode").forEach(function (el) { el.hidden = true; });
+      $("#rec-add").hidden = true;
+    }
   }
 
   function render() {
