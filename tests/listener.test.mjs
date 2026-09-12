@@ -215,6 +215,70 @@ test("a cold offline load does not gate a device that has been a setter's", () =
     "no fake signed-in state: Publish must stay disabled and nothing may reach for a server");
 });
 
+/* The bug this closes: pendingDiff() hashed every feature in fc, merged remote ones included.
+   Their ids were never in the last-publish manifest (they were never authored on this device),
+   so every one read as "added" — and publishing an "added" row stamps created_by and upserts
+   the feature's geometry, which for anything fetched through public_features is the VIEW's
+   geometry: fuzzed if the feature is sensitive, with `sensitive`/`fuzz_m` already stripped. One
+   click from a setter on a second device, or on any device with a cleared cache, would have
+   written a fuzzed point over the true coordinate (irreversibly — the 0014 trigger re-fuzzes it)
+   and reassigned authorship of the whole archive. */
+test("merged remote features cannot enter the publish-pending manifest", () => {
+  assert.match(html, /function authoredFeatures\(\) \{\s*\n\s*return fc\.features\.filter\(function \(f\) \{ return !f\.properties\._remote; \}\);/,
+    "there must be one predicate for 'authored on this device'");
+
+  const diff = html.slice(html.indexOf("function pendingDiff()"),
+                          html.indexOf("function pendingCount()"));
+  assert.match(diff, /manifestOf\(authoredFeatures\(\)\)/,
+    "the current manifest must exclude merged features");
+  assert.doesNotMatch(diff, /manifestOf\(fc\.features\)/, "…and must not hash the raw list");
+
+  /* Both arguments must agree. Recording merged ids at publish time while the diff leaves them
+     out would make every one of them read as REMOVED on the next diff — and `removed` is the
+     branch that soft-deletes rows on the server. */
+  const pub = html.slice(html.indexOf("function publish()"),
+                         html.indexOf('addEventListener("click", publish)'));
+  assert.match(pub, /saveManifest\(window\.FA_PENDING\.manifestOf\(authoredFeatures\(\)\)\)/,
+    "the recorded manifest must use the same predicate, or a merge becomes a mass unpublish");
+  assert.doesNotMatch(pub, /manifestOf\(fc\.features\)/,
+    "one inconsistent argument here turns a read-only merge into a mass unpublish");
+
+  /* A setter who edits a merged feature owns that edit: it must persist (save() drops anything
+     still tagged _remote) and it must become publishable. */
+  assert.match(html, /function claimEdit\(f\) \{\s*\n\s*if \(f && f\.properties && f\.properties\._remote\) \{ delete f\.properties\._remote; \}/,
+    "an edited merged feature must stop being treated as remote");
+  for (const site of ['f.properties.name = this.value', 'f.properties.note = this.value',
+                      'function commitPatch(f, patch)']) {
+    const at = html.indexOf(site);
+    assert.ok(at > 0, "edit site not found: " + site);
+    assert.ok(html.lastIndexOf("claimEdit(f)", at) > html.lastIndexOf("addEventListener", at - 400) ||
+              html.slice(at - 200, at + 200).includes("claimEdit(f)"),
+      site + " must claim the edit before saving");
+  }
+  assert.ok(html.split("claimEdit(f)").length - 1 >= 15,
+    "every user-facing editing site must claim the edit — the panels included");
+
+  /* rowFor keeps its own strip, unchanged: the flag must never travel to the server. */
+  assert.match(pub, /delete p\.id; delete p\.place; delete p\.kind; delete p\._remote;/);
+});
+
+/* Even a deliberate edit must not publish a SENSITIVE merged point: `fuzzed: true` is written
+   by public_features and by nothing else, so the local copy's geometry is the fuzzed position
+   and `sensitive`/`fuzz_m` are already gone. Upserting it writes the fuzz over the truth and the
+   0014 trigger then fuzzes that again. */
+test("a fuzzed view copy is refused by publish rather than upserted", () => {
+  const pub = html.slice(html.indexOf("function publish()"),
+                         html.indexOf('addEventListener("click", publish)'));
+  const guardAt = pub.indexOf("var viewCopies =");
+  const rowsAt = pub.indexOf("var newRows =");
+  assert.ok(guardAt > 0, "the fuzzed-copy guard must exist");
+  assert.ok(rowsAt > guardAt, "it must run before any row is built");
+  assert.match(pub, /return !!\(f && f\.properties && f\.properties\.fuzzed\);/,
+    "the marker is properties.fuzzed, which only the view ever writes");
+  assert.match(pub.slice(guardAt, rowsAt), /return Promise\.resolve\(\{ pushed: 0/,
+    "the publish must abort, not silently skip the row and report success");
+});
+
 test("GPS is promoted out of the ghost-button row for a listener", () => {
   const idx = html.indexOf('id="gps-btn"');
   const tag = html.slice(html.lastIndexOf("<button", idx), idx + 30);

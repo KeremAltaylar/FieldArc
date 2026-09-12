@@ -1804,6 +1804,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      left the panel saying "nothing pending" with Publish greyed out over a queue that was
      genuinely full. renderPending() is a pure read of state that already exists, so calling
      it from the funnel costs nothing and cannot be forgotten. */
+  /* A merged feature the setter has actually edited is theirs now: the edit has to persist
+     (save() drops anything still tagged _remote) and the feature has to rejoin the pending
+     manifest so it can be published.
+
+     Called from the editing sites rather than from save(), deliberately, and against this
+     file's own standing preference for funnels — because save() also runs for writes nobody
+     asked for: a duration read off the audio element, a weather lookup, a patch-version
+     migration. Promoting on one of those would walk an UNTOUCHED merged feature back into the
+     publish queue carrying the view's fuzzed geometry and a reassigned created_by, which is the
+     exact failure authoredFeatures() exists to prevent. So this fails closed: a site missed
+     here costs one edit that does not persist, while a site promoted too eagerly costs the
+     archive a true coordinate. */
+  function claimEdit(f) {
+    if (f && f.properties && f.properties._remote) { delete f.properties._remote; }
+  }
+
   function save() {
     try {
       var toStore = { type: fc.type,
@@ -2053,10 +2069,30 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
+  /* Only what this device actually authored — the same predicate save() applies before writing
+     to localStorage, for the same reason.
+
+     A feature merged from public_features was never authored here, so its id was never in the
+     last-publish manifest either, and every one of them therefore read as "added" on the very
+     next diff. Pressing Publish on that would have upserted the VIEW's copy over the real row:
+     the fuzzed geometry written over the true coordinate in features.geometry — irreversibly,
+     since the 0014 trigger then re-fuzzes an already-fuzzed point — `sensitive` and `fuzz_m`
+     gone, because the view strips them before anon ever sees them, and created_by reassigned to
+     whoever happened to press the button. A setter on a second device, or any device with a
+     cleared cache, was one click away from it.
+
+     Filtered here rather than guarded at the publish call, so a merged feature is never even
+     counted as pending. A merged feature the setter actually edits loses its _remote tag at the
+     moment of the edit (see claimEdit) and so rejoins this list and publishes like anything
+     else. */
+  function authoredFeatures() {
+    return fc.features.filter(function (f) { return !f.properties._remote; });
+  }
+
   function pendingDiff() {
     if (!window.FA_PENDING) { return { added: [], changed: [], removed: [] }; }
     return window.FA_PENDING.diffManifest(loadManifest(),
-                                          window.FA_PENDING.manifestOf(fc.features));
+                                          window.FA_PENDING.manifestOf(authoredFeatures()));
   }
 
   function pendingCount() {
@@ -2079,6 +2115,28 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var d = pendingDiff();
     var byId = {};
     fc.features.forEach(function (f) { byId[f.properties.id] = f; });
+
+    /* The one merged feature that must never be upserted, even after a setter has deliberately
+       edited it. `fuzzed: true` is written by public_features (0014) and by nothing else, so a
+       feature carrying it is a copy of a SENSITIVE point as an anonymous reader sees it: the
+       position is the fuzzed one, and `sensitive`/`fuzz_m` were stripped on the way out. Sending
+       that back would write the fuzzed point over features.geometry — which the fuzz trigger
+       would then fuzz AGAIN, so the true coordinate is gone for good — and drop the flag that
+       asked for the fuzz in the first place. Refused rather than silently skipped: this device
+       does not hold the coordinate it would be overwriting, and saying so beats both corrupting
+       the row and pretending the push happened. A locally authored feature never carries the
+       key, so nothing a setter made here is affected. */
+    var viewCopies = d.added.concat(d.changed).filter(function (id) {
+      var f = byId[id];
+      return !!(f && f.properties && f.properties.fuzzed);
+    });
+    if (viewCopies.length) {
+      toast("Cannot publish " + viewCopies.length +
+            (viewCopies.length === 1 ? " feature" : " features") +
+            " fetched as an anonymous reader sees them — those positions are fuzzed, not true. " +
+            "Edit them on the device that holds the real coordinate.");
+      return Promise.resolve({ pushed: 0, removed: 0, failed: viewCopies.length });
+    }
 
     /* `added` and `changed` are kept apart here rather than concatenated blindly, because two
        columns must be written differently for each:
@@ -2227,7 +2285,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         detail: { added: d.added.length, changed: d.changed.length, removed: d.removed.length }
       });
     }).then(function () {
-      var recorded = saveManifest(window.FA_PENDING.manifestOf(fc.features));
+      /* authoredFeatures(), not fc.features, and the two MUST agree. Recording merged ids here
+         while pendingDiff() leaves them out of the current manifest would make every one of
+         them read as REMOVED on the very next diff — and `removed` is the branch that soft-
+         deletes rows on the server. One inconsistent argument here turns a read-only merge into
+         a mass unpublish. */
+      var recorded = saveManifest(window.FA_PENDING.manifestOf(authoredFeatures()));
       renderPending();
       /* Only when the manifest actually persisted: saveManifest has already said something
          more useful otherwise, and this line would erase it. */
@@ -3885,6 +3948,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       btn.title = hits[slot] ? "Remove this hit" : "Attach a hit";
       btn.addEventListener("click", function () {
         if (hits[slot]) {
+          claimEdit(f);
           delAudio(f.properties.id + "#" + slot);
           delete hits[slot];
           commit(); renderAudioMode(f);
@@ -3907,6 +3971,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var f = feature(target.id);
     if (!f) { return; }
     putAudio(target.id + "#" + target.slot, file).then(function () {
+      claimEdit(f);
       f.properties.hits = f.properties.hits || {};
       f.properties.hits[target.slot] = { name: file.name, size: file.size };
       f.properties.audio_mode = "hits";
@@ -3925,6 +3990,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     b.addEventListener("click", function () {
       var f = feature(selected);
       if (!f || f.properties.kind !== "point") { return; }
+      claimEdit(f);
       f.properties.audio_mode = b.dataset.amode;
       commit();
       renderAudioMode(f);
@@ -4054,7 +4120,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
 
     var g = r.grains || (r.grains = defaultGrains());
-    var commitR = function () { save(); };
+    var commitR = function () { claimEdit(f); save(); };
 
     var wave = document.createElement("canvas");
     wave.className = "grainwave";
@@ -4074,10 +4140,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     h1.textContent = "The line";
     col.appendChild(h1);
     [RHYTHM_FIELDS[0], RHYTHM_FIELDS[1], RHYTHM_FIELDS[2]].forEach(function (fl) {
-      col.appendChild(buildRhythmRow(fl, r, function () { save(); markGrainPattern(); }));
+      col.appendChild(buildRhythmRow(fl, r, function () { claimEdit(f); save(); markGrainPattern(); }));
     });
     GRAIN_FIELDS.slice(0, 2).forEach(function (fl) {
-      col.appendChild(buildRhythmRow(fl, g, function () { save(); markGrainPattern(); }));
+      col.appendChild(buildRhythmRow(fl, g, function () { claimEdit(f); save(); markGrainPattern(); }));
     });
     cols.appendChild(col);
 
@@ -4097,7 +4163,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     hE.textContent = "The grain envelope";
     colE.appendChild(hE);
     GRAIN_ENV_FIELDS.forEach(function (fl) {
-      colE.appendChild(buildRhythmRow(fl, g, function () { save(); grainEnvDraw(); }));
+      colE.appendChild(buildRhythmRow(fl, g, function () { claimEdit(f); save(); grainEnvDraw(); }));
     });
     var eshape = document.createElement("canvas");
     eshape.className = "grainenv";
@@ -4162,6 +4228,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       g.decay = +(0.15 + Math.random() * 0.4).toFixed(2);
       g.sustain = +(Math.random() * 0.7).toFixed(2);
       g.release = +(0.3 + Math.random() * 0.25).toFixed(2);
+      claimEdit(f);
       save();
       renderRhythmPanel();
       toast("E(" + g.pulses + "," + st + ") \u00b7 " + g.count + " grains");
@@ -4347,7 +4414,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var sh = document.createElement("h2");
     sh.textContent = "This point";
     scol.appendChild(sh);
-    var commitQ = function () { save(); updateBed(); redrawZones(); };
+    var commitQ = function () { claimEdit(f); save(); updateBed(); redrawZones(); };
     SOUND_FIELDS.forEach(function (fl) {
       scol.appendChild(buildSoundRow(fl, q, commitQ));
     });
@@ -4388,7 +4455,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     /* Nothing is rebuilt on an edit: the sequencer reads the pattern every step, so a change
        is heard on the next one rather than needing the point reloaded. */
-    var commitR = function () { save(); markPattern(); };
+    var commitR = function () { claimEdit(f); save(); markPattern(); };
 
     var cols = document.createElement("div");
     cols.className = "ppcols";
@@ -4418,6 +4485,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     rnd.title = "Four Euclidean patterns that will not lock to each other";
     rnd.addEventListener("click", function () {
       randomRhythm(r);
+      claimEdit(f);
       save();
       renderRhythmPanel();
       toast("New pattern");
@@ -4627,6 +4695,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!f) { return; }
     /* The panel holds both halves now, so the button that says "reset to default" has to
        mean both of them. */
+    claimEdit(f);
     f.properties.sound = { radius: 140, gain: 0.9, zoneR: 25 };
     f.properties.rhythm = defaultRhythm();
     save(); redrawZones(); updateBed();
@@ -4640,6 +4709,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!file || !f) { return; }
     $("#rec-add").textContent = "Analysing…";
     putAudio(f.properties.id, file).then(function () {
+      claimEdit(f);
       f.properties.has_audio = true;
       f.properties.audio = {
         name: file.name, type: file.type || "audio/*", size: file.size,
@@ -4680,6 +4750,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var f = feature(selected);
     if (!f) { return; }
     delAudio(f.properties.id).then(function () {
+      claimEdit(f);
       delete f.properties.audio;
       f.properties.has_audio = false;
       commit();
@@ -8610,6 +8681,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function commitPatch(f, patch) {
+    claimEdit(f);     /* the one funnel every patch-panel control already goes through */
     save();
     if (pacer && pacer.f === f) {
       pacer.patch = patch;
@@ -9507,6 +9579,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#card-icons").hidden = f.properties.kind !== "point";
     if (f.properties.kind === "point") {
       renderIconPicker($("#card-icons"), f.properties.icon || null, function (k) {
+        claimEdit(f);
         if (k) { f.properties.icon = k; } else { delete f.properties.icon; }
         commit();
         renderDetail();
@@ -9562,14 +9635,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   $("#f-name").addEventListener("input", function () {
     var f = feature(selected); if (!f) { return; }
+    claimEdit(f);
     f.properties.name = this.value; commit();
   });
   $("#f-note").addEventListener("input", function () {
     var f = feature(selected); if (!f) { return; }
+    claimEdit(f);
     f.properties.note = this.value; save();
   });
   $("#f-tags").addEventListener("input", function () {
     var f = feature(selected); if (!f) { return; }
+    claimEdit(f);
     var t = this.value.split(",").map(function (x) { return x.trim(); })
               .filter(function (x) { return x.length; });
     if (t.length) { f.properties.tags = t; } else { delete f.properties.tags; }
@@ -9579,6 +9655,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $(id).addEventListener("click", function () {
       var f = feature(selected); if (!f) { return; }
       var on = this.getAttribute("aria-pressed") !== "true";
+      claimEdit(f);
       if (on) { f.properties[prop] = true; } else { delete f.properties[prop]; }
       this.setAttribute("aria-pressed", String(on));
       commit();
