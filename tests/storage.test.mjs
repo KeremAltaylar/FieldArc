@@ -50,6 +50,43 @@ test("anon cannot list or download", async () => {
   assert.ok(dl.error, "anon downloaded a recording");
 });
 
+test("anon can download a published feature's recording, but not an unpublished one", async () => {
+  const { data: pub, error: pubErr } = await db.from("features").insert({
+    place: "belgrad-ormani", kind: "point",
+    geometry: { type: "Point", coordinates: [28.99, 41.19] },
+    properties: { published: true }, created_by: userId
+  }).select().single();
+  assert.equal(pubErr, null, pubErr?.message);
+
+  const { data: draft, error: draftErr } = await db.from("features").insert({
+    place: "belgrad-ormani", kind: "point",
+    geometry: { type: "Point", coordinates: [28.99, 41.19] },
+    properties: { published: false }, created_by: userId
+  }).select().single();
+  assert.equal(draftErr, null, draftErr?.message);
+
+  const pubPath = pub.id + "/take.wav";
+  const draftPath = draft.id + "/take.wav";
+  try {
+    const { error: upErr } = await db.storage.from("recordings")
+      .upload(pubPath, new Blob(["a"]), { upsert: true });
+    assert.equal(upErr, null, upErr?.message);
+    const { error: upErr2 } = await db.storage.from("recordings")
+      .upload(draftPath, new Blob(["a"]), { upsert: true });
+    assert.equal(upErr2, null, upErr2?.message);
+
+    const a = anon();
+    const okDl = await a.storage.from("recordings").download(pubPath);
+    assert.equal(okDl.error, null, "anon could not read a published feature's recording");
+
+    const badDl = await a.storage.from("recordings").download(draftPath);
+    assert.ok(badDl.error, "anon read an unpublished feature's recording");
+  } finally {
+    await db.storage.from("recordings").remove([pubPath, draftPath]);
+    await db.from("features").delete().in("id", [pub.id, draft.id]);
+  }
+});
+
 /* The upload has to happen BEFORE the row is upserted. A feature row that claims audio the
    server does not hold is worse than a queue still draining: the archive would advertise a
    document it cannot produce. */
