@@ -16,3 +16,6 @@ node_modules/
 
 # A fresh export taken for the one-time migration.
 archive-export.geojson
+
+# Isolated workspaces for subagent-driven plan execution.
+.worktrees/
