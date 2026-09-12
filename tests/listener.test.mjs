@@ -77,3 +77,10 @@ test("applyModeGating reconciles feature- and mode-scoped visibility only after 
     "the #mode-icons line must not run before `mode` exists — same guard shape as the " +
     "existing stale-mode-on-sign-out fix, for the same offline-init reason");
 });
+
+test("GPS is promoted out of the ghost-button row for a listener", () => {
+  const idx = html.indexOf('id="gps-btn"');
+  const tag = html.slice(html.lastIndexOf("<button", idx), idx + 30);
+  assert.doesNotMatch(tag, /class="ghost"/,
+    "gps-btn must not stay styled as a small ghost button once promoted");
+});

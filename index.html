@@ -875,6 +875,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 #patch-clip.lit { color: var(--sunk); background: var(--lamp); padding: 0 var(--s-1); border-radius: 2px; }
 
+/* Promoted out of the ghost-button row: for a walker this is the choice between their own
+   position and the draggable marker, not a small aside next to Cells. Same visual weight as
+   #patch-play, which sits beside it. */
+#patchbar #gps-btn.modeToggle {
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  padding: var(--s-2) var(--s-3);
+}
+
 #markbar {
   position: absolute;
   right: var(--s-4); bottom: var(--s-4);
@@ -1603,7 +1612,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <button type="button" id="patch-play" aria-pressed="false">Sound</button>
       <button type="button" id="cells-btn" class="ghost" aria-pressed="false"
               title="Morph cells — one cell per morph, breathing on its own clock">Cells</button>
-      <button type="button" id="gps-btn" class="ghost" aria-pressed="false"
+      <button type="button" id="gps-btn" class="modeToggle" aria-pressed="false"
               title="Let your own position drive the listener along this route">GPS</button>
       <span id="patch-info">—</span>
       <span id="patch-clip" title="Clip — read from the master signal, not from fader positions">clip</span>
