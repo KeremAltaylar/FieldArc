@@ -2750,7 +2750,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     selected = id;
     if (id) { showPane("info"); if (reveal && isMobile()) { openSheet(true); } }
-    if (!id && isMobile()) { openSheet(false); }
+    /* showPane isn't called here — the pane itself isn't changing, only whether the card
+       has something to show — so storage's visibility has to be restored directly, or it
+       stays however the last showPane("info") left it: hidden, for the rest of the session. */
+    if (!id) { $("#storage").hidden = false; if (isMobile()) { openSheet(false); } }
     map.setFilter("point-sel", ["all", ["==", ["geometry-type"], "Point"], ["==", ["get", "id"], id || "~none~"]]);
     map.setFilter("route-sel", ["all", ["==", ["geometry-type"], "LineString"], ["==", ["get", "id"], id || "~none~"]]);
     renderDetail();
@@ -9194,8 +9197,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#pane-info").hidden = !info;
     $("#pane-list").hidden = info;
     /* Export and import act on the archive, so they live with it. Giving the card those
-       129px is what lets it hold weather, tags and audio specs without clipping. */
-    $("#storage").hidden = info;
+       129px is what lets it hold weather, tags and audio specs without clipping. The card
+       only actually needs the room while a feature's inspector is filling it — hence
+       `selected`, not `info` alone. Without that, deselecting (the map click has no `id`,
+       so setSelected never calls showPane at all) left this hidden for the rest of the
+       session: the one path back to it, a reload, is not one a setter mid-session finds. */
+    $("#storage").hidden = info && !!selected;
     sizePeek();
     $("#tab-info").setAttribute("aria-pressed", String(info));
     $("#tab-list").setAttribute("aria-pressed", String(!info));
