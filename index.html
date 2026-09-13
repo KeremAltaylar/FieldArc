@@ -10277,7 +10277,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             toast(snap.name + " has changed on the server since it was saved offline — " +
                   "download it again from Storage to refresh your copy.");
           }
-        });
+        })
+        /* Supabase resolves most failures to { error }, handled above — but a genuine
+           network rejection (DNS, dropped connection, aborted request) rejects the promise
+           instead. This runs on every setPlace(), including initial load, so a signed-in
+           setter offline in the field — the normal case — would otherwise see a spurious
+           "Error: rejection: ..." toast on every load or place switch. Best-effort background
+           sync: fail silently and keep whatever is already local. */
+        .catch(function () { /* offline in a forest is the normal case */ });
     });
   }
 

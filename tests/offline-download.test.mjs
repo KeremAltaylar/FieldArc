@@ -71,3 +71,15 @@ test("setPlace checks staleness for a place that was downloaded", () => {
   const src = slice("function setPlace(p, initial)", "function renderPlaceList");
   assert.match(src, /checkStaleness\(/);
 });
+
+test("checkStaleness swallows a genuine network rejection, not just a Supabase {error} reply", () => {
+  /* Supabase resolves most failures to { error }, already handled above — but a real network
+     rejection (DNS, dropped connection, aborted request) rejects the promise instead.
+     checkStaleness is called fire-and-forget from setPlace with no .then/.catch at the call
+     site, so an unhandled rejection here would reach the app's global unhandledrejection
+     handler and toast a spurious "Error: ..." at a listener who is simply offline in the
+     field — exactly the case this function must degrade silently through, per fetchPublished's
+     identical guard on the same public_features query shape. */
+  const src = slice("function checkStaleness(", "var offlineArmed");
+  assert.match(src, /\.catch\(/, "a network rejection on the version fetch must be caught");
+});
