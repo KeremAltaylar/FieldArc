@@ -24,3 +24,22 @@ test("sameVersion compares both count and maxUpdatedAt", () => {
   assert.match(src, /count/);
   assert.match(src, /maxUpdatedAt/);
 });
+
+test("offlineBytes sums a recording's own size and every hit's own size", () => {
+  const start = html.indexOf("function offlineBytes(");
+  const src = html.slice(start, html.indexOf("function ", start + 20));
+  assert.match(src, /properties\.audio/);
+  assert.match(src, /properties\.hits/);
+  assert.doesNotMatch(src, /storage\.from/, "the estimate must not cost a network call");
+});
+
+test("the IndexedDB helper takes a store name, so places and audio can share one database", () => {
+  const src = slice("function idb(", "function putAudio(");
+  assert.match(src, /storeName/);
+});
+
+test("downloadPlace writes a places snapshot carrying its own version", () => {
+  const src = slice("function downloadPlace(", "$(\"#offline\")");
+  assert.match(src, /putPlaceSnapshot/);
+  assert.match(src, /placeVersion/);
+});

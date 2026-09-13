@@ -1798,6 +1798,32 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return !!a && !!b && a.count === b.count && a.maxUpdatedAt === b.maxUpdatedAt;
   }
 
+  /* Every byte this place would cost to take offline, read from data already in hand — a
+     public_features row already carries properties.audio.size (set at attach time,
+     index.html:4811) and properties.hits[slot].size (index.html:4067) for a rhythm point's
+     one-shots. Nothing here asks the network, so showing this number costs nothing extra
+     over the fetch the download needs anyway. */
+  function offlineBytes(rows) {
+    var total = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var properties = rows[i].properties || {};
+      if (properties.audio && typeof properties.audio.size === "number") { total += properties.audio.size; }
+      if (properties.hits) {
+        HIT_SLOTS.forEach(function (slot) {
+          var h = properties.hits[slot];
+          if (h && typeof h === "object" && typeof h.size === "number") { total += h.size; }
+        });
+      }
+    }
+    return total;
+  }
+
+  function fmtBytes(n) {
+    if (n < 1024) { return n + " B"; }
+    if (n < 1024 * 1024) { return Math.round(n / 1024) + " KB"; }
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
   /* A row from public_features is shaped like the view: id, place, kind, geometry,
      properties, created_at — flat, not nested the way a GeoJSON Feature is. rowFor() (the
      publish path) strips id/place/kind out of properties before sending; this is that,
@@ -2912,6 +2938,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     setSelected(null);
     closePlaceMenu();
     commit();
+    offlineArmed = null;
+    $("#offline").textContent = "Download map";
     return fetchPublished(place ? place.properties.id : DEFAULT_PLACE);
   }
 
@@ -2993,7 +3021,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa.sb = sb;   /* null offline, a client otherwise — measurable either way */
   window.__fa.fetchPublished = fetchPublished;
   window.__fa.mergeRemote = mergeRemote;
-  window.__fa.offline = { version: placeVersion, sameVersion: sameVersion };
+  window.__fa.offline = { version: placeVersion, sameVersion: sameVersion,
+    bytes: offlineBytes, run: downloadPlace, snapshot: getPlaceSnapshot };
   window.__fa.deepLink = { parse: parseDeepLink, url: urlForSelection };
   window.__fa.setter = setterState;
   window.__fa.applyModeGating = applyModeGating;
@@ -3610,26 +3639,35 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function db() {
     if (!dbp) {
       dbp = new Promise(function (res, rej) {
-        var r = indexedDB.open("fieldarc", 1);
-        r.onupgradeneeded = function () { r.result.createObjectStore("audio"); };
+        var r = indexedDB.open("fieldarc", 2);
+        r.onupgradeneeded = function () {
+          var d = r.result;
+          if (!d.objectStoreNames.contains("audio")) { d.createObjectStore("audio"); }
+          /* Keyed by place id, one row per downloaded place: the raw public_features rows
+             (so a cold reload has the archive without a fetch) plus the version they were
+             downloaded at (Task 5 compares against it) and when. */
+          if (!d.objectStoreNames.contains("places")) { d.createObjectStore("places"); }
+        };
         r.onsuccess = function () { res(r.result); };
         r.onerror = function () { rej(r.error); };
       });
     }
     return dbp;
   }
-  function idb(mode, fn) {
+  function idb(mode, storeName, fn) {
     return db().then(function (d) {
       return new Promise(function (res, rej) {
-        var tx = d.transaction("audio", mode), req = fn(tx.objectStore("audio"));
+        var tx = d.transaction(storeName, mode), req = fn(tx.objectStore(storeName));
         tx.oncomplete = function () { res(req && req.result); };
         tx.onerror = function () { rej(tx.error); };
       });
     });
   }
-  function putAudio(id, blob) { return idb("readwrite", function (st) { return st.put(blob, id); }); }
-  function getAudio(id) { return idb("readonly", function (st) { return st.get(id); }); }
-  function delAudio(id) { return idb("readwrite", function (st) { return st.delete(id); }); }
+  function putAudio(id, blob) { return idb("readwrite", "audio", function (st) { return st.put(blob, id); }); }
+  function getAudio(id) { return idb("readonly", "audio", function (st) { return st.get(id); }); }
+  function delAudio(id) { return idb("readwrite", "audio", function (st) { return st.delete(id); }); }
+  function putPlaceSnapshot(id, snap) { return idb("readwrite", "places", function (st) { return st.put(snap, id); }); }
+  function getPlaceSnapshot(id) { return idb("readonly", "places", function (st) { return st.get(id); }); }
 
   /* ---------- Audio, wherever it actually is ----------
      IndexedDB first, the bucket second. Stage 3 shipped a listener who could SEE a published
@@ -10148,17 +10186,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return urls;
   }
 
-  $("#offline").addEventListener("click", function () {
-    if (!place || !window.caches) { toast("Offline storage unavailable"); return; }
-    /* C-5: the empty case says why rather than reporting 0 tiles stored. */
-    if (!RASTER[activeBase()]) { toast("Virtual draws no tiles — nothing to store"); return; }
-    var btn = this, bb = place.properties.bbox;
-    var zmin = 11, zmax = 15, urls = tileURLs(bb, zmin, zmax);
+  function cacheTiles(p, onProgress) {
+    if (!RASTER[activeBase()]) { return Promise.resolve({ tiles: 0, failed: 0 }); }
+    var bb = p.properties.bbox, zmin = 11, zmax = 15, urls = tileURLs(bb, zmin, zmax);
     while (urls.length > 900 && zmax > zmin) { zmax--; urls = tileURLs(bb, zmin, zmax); }
-    btn.disabled = true;
     var done = 0, failed = 0;
-    caches.open("fieldarc-tiles-v1").then(function (c) {
-      /* Six at a time: enough to be quick, not enough to get throttled by a tile server. */
+    return caches.open("fieldarc-tiles-v1").then(function (c) {
       var i = 0;
       function next() {
         if (i >= urls.length) { return Promise.resolve(); }
@@ -10171,22 +10204,81 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           }).catch(function () { failed++; });
         }).then(function () {
           done++;
-          if (done % 15 === 0 || done === urls.length) {
-            btn.textContent = "Saving " + done + "/" + urls.length;
-          }
+          if (onProgress) { onProgress(done, urls.length); }
           return next();
         });
       }
       var lanes = [];
       for (var k = 0; k < 6; k++) { lanes.push(next()); }
       return Promise.all(lanes);
-    }).then(function () {
+    }).then(function () { return { tiles: urls.length, failed: failed, zmax: zmax }; });
+  }
+
+  /* Every feature, patch and recording for one place, so a walk needs no network afterward.
+     Sequential audio fetches, same reasoning as publish()'s uploads (index.html:2272): this
+     runs over a phone connection at the edge of a forest's signal, and parallel requests
+     there are how a download half-finishes instead of finishing slowly. */
+  function downloadPlace(p) {
+    return sb.from("public_features").select("*").eq("place", p.properties.id)
+      .then(function (r) {
+        if (r.error || !r.data) { return Promise.reject(new Error(r.error ? r.error.message : "no data")); }
+        var rows = r.data;
+        var jobs = [];
+        rows.forEach(function (row) {
+          var props = row.properties || {};
+          if (props.storage_path) { jobs.push(function () { return audioBlob(row.id, props.storage_path); }); }
+          if (props.hits) {
+            HIT_SLOTS.forEach(function (slot) {
+              var h = props.hits[slot];
+              if (h && typeof h === "object" && h.storage_path) {
+                jobs.push(function () { return audioBlob(row.id + "#" + slot, h.storage_path); });
+              }
+            });
+          }
+        });
+        var audio = jobs.reduce(function (chain, job) { return chain.then(job); }, Promise.resolve());
+        return audio.then(function () { return cacheTiles(p); }).then(function (tileResult) {
+          return putPlaceSnapshot(p.properties.id, {
+            name: p.properties.name,
+            downloadedAt: new Date().toISOString(),
+            version: placeVersion(rows),
+            features: rows
+          }).then(function () { return { rows: rows.length, tiles: tileResult.tiles }; });
+        });
+      });
+  }
+
+  var offlineArmed = null;   /* the place id the button is currently primed to download */
+  $("#offline").addEventListener("click", function () {
+    var btn = this;
+    if (!place) { toast("No place selected"); return; }
+    if (!sb) { toast("Offline archive download needs a connection — tiles alone still work below"); return; }
+    if (offlineArmed !== place.properties.id) {
+      btn.disabled = true;
+      sb.from("public_features").select("*").eq("place", place.properties.id).then(function (r) {
+        btn.disabled = false;
+        if (r.error || !r.data) { toast("Could not size this place — check the connection"); return; }
+        offlineArmed = place.properties.id;
+        var bytes = offlineBytes(r.data);
+        btn.textContent = "Confirm " + fmtBytes(bytes) + " — tap again";
+        $("#saved").textContent = r.data.length + " features, " + fmtBytes(bytes) +
+          " of recordings, plus map tiles. Tap Download again to fetch it all.";
+      });
+      return;
+    }
+    offlineArmed = null;
+    btn.disabled = true;
+    btn.textContent = "Downloading…";
+    downloadPlace(place).then(function (result) {
       btn.disabled = false;
       btn.textContent = "Download map";
-      toast(place.properties.name + " saved to z" + zmax +
-            (failed ? " · " + failed + " failed" : ""));
-      $("#saved").textContent = urls.length + " tiles cached for " + place.properties.name +
-        " — the map now works offline.";
+      toast(place.properties.name + " saved — " + result.rows + " features, " + result.tiles + " tiles");
+      $("#saved").textContent = place.properties.name + " is available offline as of " +
+        new Date().toLocaleString() + ".";
+    }, function (err) {
+      btn.disabled = false;
+      btn.textContent = "Download map";
+      toast("Download failed: " + (err.message || err));
     });
   });
 
