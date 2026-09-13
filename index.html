@@ -382,6 +382,22 @@ h2 {
   overflow-wrap: anywhere;
 }
 #setter .field { width: 100%; margin: 0; }
+#setter-form { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s-2); width: 100%; }
+/* The door itself, deliberately unbuilt as a door: every other control on this panel is a
+   bordered button because it wants to be found. This one wants the opposite — a listener
+   scanning the panel should read it as a stray caption, not a control, and only someone who
+   already knows to look for "setter" clicks it. No border, no background, text-sized down to
+   the same --t-xs a byline or a unit label uses elsewhere in this file. */
+button.reveal {
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: var(--font-body);
+  font-size: var(--t-xs);
+  color: var(--faint);
+  text-decoration: underline;
+}
+button.reveal:hover, button.reveal:focus-visible { color: var(--dim); background: none; }
 
 /* s-2 above, not s-3: the whole block has to come out no taller than the undesigned one it
    replaces, or it re-opens the clipping that took #storage past the bottom of the panel. The
@@ -1527,10 +1543,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       <h3>Setter</h3>
       <div id="setter">
         <p id="setter-who">Not signed in — this device keeps its own archive.</p>
-        <label class="field" for="setter-email"><span>email</span>
-          <input type="email" id="setter-email" placeholder="you@example.com"
-                 autocomplete="email" inputmode="email"></label>
-        <button type="button" id="setter-send">Send link</button>
+        <button type="button" class="reveal" id="setter-reveal">· setter</button>
+        <div id="setter-form" hidden>
+          <label class="field" for="setter-email"><span>email</span>
+            <input type="email" id="setter-email" placeholder="you@example.com"
+                   autocomplete="email" inputmode="email"></label>
+          <button type="button" id="setter-send">Send link</button>
+        </div>
         <button type="button" id="setter-out" hidden>Sign out</button>
       </div>
       <div id="publishbar">
@@ -1940,6 +1959,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function setterState() { return { signedIn: setter.signedIn, email: setter.email, id: setter.id }; }
 
+  /* Whether this visit has clicked "· setter" yet. Session-only and never persisted — the
+     point is that a fresh load hides the sign-in form again, not that a returning setter has
+     to re-discover the toggle every time they actually mean to sign in. */
+  var setterRevealed = false;
+
   function renderSetter() {
     var who = $("#setter-who");
     who.textContent = "";
@@ -1954,14 +1978,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     } else {
       who.textContent = "Not signed in — this device keeps its own archive.";
     }
-    $("#setter-email").hidden = setter.signedIn;
-    $("#setter-send").hidden = setter.signedIn;
+    $("#setter-reveal").hidden = setter.signedIn;
+    $("#setter-form").hidden = setter.signedIn || !setterRevealed;
     $("#setter-out").hidden = !setter.signedIn;
-    $("#setter-email").parentNode.hidden = setter.signedIn;
     renderPending();
     renderAudit();
     applyModeGating();
   }
+
+  $("#setter-reveal").addEventListener("click", function () {
+    setterRevealed = true;
+    renderSetter();
+    $("#setter-email").focus();
+  });
 
   function wasSetter() {
     try { return localStorage.getItem(WASSETTER_KEY) === "1"; } catch (e) { return false; }

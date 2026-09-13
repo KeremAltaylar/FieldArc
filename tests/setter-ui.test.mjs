@@ -80,6 +80,21 @@ test("the email field is styled like every other input in the app", () => {
   assert.match(html, /input\[type="email"\]:focus-visible/);
 });
 
+test("the setter sign-in form starts hidden behind an unobtrusive reveal", () => {
+  /* Not a security boundary — the real one is server-side (RLS's is_setter(), and
+     disable_signup on the Supabase project). This only stops a casual visitor from seeing
+     a login box at all; anyone who already knows to look for "setter" still finds it. */
+  assert.match(html, /<button type="button" class="reveal" id="setter-reveal">/,
+    "the door must exist and be styled as unobtrusive, not as a normal button");
+  assert.match(html, /<div id="setter-form" hidden>/,
+    "the email field and Send link must start hidden, not visible by default");
+  const render = slice("function renderSetter()", "function ");
+  assert.match(render, /setter-form.*hidden\s*=\s*setter\.signedIn \|\| !setterRevealed/,
+    "the form stays hidden until revealed, and re-hides once signed in");
+  const click = slice('$("#setter-reveal").addEventListener', "});");
+  assert.match(click, /setterRevealed = true/, "clicking the door must actually open it");
+});
+
 test("Storage carries one h2, and Setter sits under it as an h3", () => {
   const section = slice('<div class="section" id="storage">', "</div>\n  </div>");
   const h2s = section.match(/<h2\b/g) || [];
