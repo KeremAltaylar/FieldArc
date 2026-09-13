@@ -28,3 +28,11 @@ test("setPlace returns fetchPublished's promise, so a deep link can chain past i
   const src = html.slice(start, html.indexOf("function renderPlaceList"));
   assert.match(src, /return fetchPublished\(/, "setPlace must hand back the fetch it triggers");
 });
+
+test("loadPlaces rejects a linked route that belongs to a different place", () => {
+  const start = html.indexOf("function loadPlaces(");
+  const src = html.slice(start, html.indexOf("function byId"));
+  assert.match(src, /properties\.place\s*===?\s*p\.properties\.id/,
+    "feature() searches every place's features, so a linked route id must be checked " +
+    "against the place just loaded before setSelected runs, not just found to exist");
+});

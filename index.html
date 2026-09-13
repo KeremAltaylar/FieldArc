@@ -2837,8 +2837,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         /* feature() reads fc.features, which mergeRemote (inside fetchPublished) has just
            populated for a fresh browser — the exact gap stage 3 closed for the map, now
            closed for a link too. A route id that names nothing (stale link, wrong place)
-           leaves the app on the place alone rather than failing. */
-        if (link && link.route && feature(link.route)) { setSelected(link.route, true); }
+           leaves the app on the place alone rather than failing. feature() searches every
+           place's features, not just p's — so a route id that is real but belongs to a
+           different place must still be rejected, the same way visible() scopes by
+           properties.place, or the info card would open on a place the map isn't showing. */
+        var linkedRoute = link && link.route ? feature(link.route) : null;
+        if (linkedRoute && linkedRoute.properties.place === p.properties.id) {
+          setSelected(link.route, true);
+        }
       });
     }).catch(function (err) {
       $("#saved").textContent = "Place catalogue unavailable (" + err.message +
