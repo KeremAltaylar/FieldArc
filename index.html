@@ -2891,10 +2891,31 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
            place's features, not just p's — so a route id that is real but belongs to a
            different place must still be rejected, the same way visible() scopes by
            properties.place, or the info card would open on a place the map isn't showing. */
-        var linkedRoute = link && link.route ? feature(link.route) : null;
-        if (linkedRoute && linkedRoute.properties.place === p.properties.id) {
-          setSelected(link.route, true);
+        function selectLinkedRoute() {
+          var linkedRoute = link && link.route ? feature(link.route) : null;
+          if (linkedRoute && linkedRoute.properties.place === p.properties.id) {
+            setSelected(link.route, true);
+          }
         }
+        if (visible().length > 0) { selectLinkedRoute(); return; }
+        /* fetchPublished (inside setPlace, above) has already settled — successfully or
+           not, since its own .catch swallows a genuine network rejection (see its comment
+           about offline in a forest being the normal case). Zero features once that
+           settles is exactly the offline/no-network case Stage 4's download exists for:
+           a cold reload with no network still owes this place its downloaded features,
+           not an empty map. Fall back to whatever downloadPlace saved locally.
+           mergeRemote dedupes by id, so running this after a successful online fetch
+           that simply returned nothing is harmless — it stays a no-op. Resolved before
+           selecting a linked route so a route named by the URL but only present in the
+           snapshot still opens. */
+        getPlaceSnapshot(p.properties.id).then(function (snap) {
+          if (snap && snap.features) {
+            mergeRemote(snap.features);
+            map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+            renderList();
+          }
+          selectLinkedRoute();
+        });
       });
     }).catch(function (err) {
       $("#saved").textContent = "Place catalogue unavailable (" + err.message +
@@ -3106,7 +3127,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      row. Creating a point or a route selects it without throwing the sheet over the map;
      on a phone that hid the very thing you were aiming at. */
   function setSelected(id, reveal) {
-    var wasSelected = selected;
     /* Only another route ends a walk. Selecting a point along the one you are walking is
        inspecting, not leaving — and since a point's rhythm is edited from its own card,
        stopping here meant you could never hear an edit you were making. Deselecting does
@@ -3128,8 +3148,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderLabels();
     var f = id ? feature(id) : null;
     var routeId = (f && f.properties.kind === "route") ? f.properties.id : null;
-    if (place && id !== wasSelected) {
-      history.pushState(null, "", urlForSelection(place.properties.id, routeId));
+    /* Compare the URL itself, not the id: a tourStep() walk selects a different point on
+       every step, but urlForSelection only ever names a route (never a point), so most of
+       those id changes produce the exact same URL. Pushing on every id change turned a
+       30-point walk into 30 near-identical history entries; pushing only when the URL
+       actually differs fixes that without touching tourStep itself. */
+    var newUrl = place ? urlForSelection(place.properties.id, routeId) : null;
+    if (newUrl && newUrl !== location.pathname) {
+      history.pushState(null, "", newUrl);
     }
   }
 
@@ -3661,8 +3687,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
              downloaded at (Task 5 compares against it) and when. */
           if (!d.objectStoreNames.contains("places")) { d.createObjectStore("places"); }
         };
-        r.onsuccess = function () { res(r.result); };
+        r.onsuccess = function () {
+          /* Another tab (or this one, after a future schema bump) can request a version
+             change while this connection is still open; left unhandled, that stalls the
+             OTHER tab's upgrade forever with no error anywhere. Closing here lets it
+             proceed — this tab simply reopens its own connection the next time db() runs. */
+          r.result.onversionchange = function () { r.result.close(); };
+          res(r.result);
+        };
         r.onerror = function () { rej(r.error); };
+        /* onupgradeneeded can't run at all while another tab holds the previous version
+           open — indexedDB.open then just hangs with no event and no error, silently
+           stalling every audio/offline-download/staleness operation that awaits db(). */
+        r.onblocked = function () { toast("Close FieldArc's other open tab to finish updating storage"); };
       });
     }
     return dbp;
@@ -10240,10 +10277,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var audioFailed = 0;
         rows.forEach(function (row) {
           var props = row.properties || {};
+          /* audioBlob deliberately swallows a failed putAudio write and still returns the
+             fetched blob — correct for its OTHER caller, lazy per-open playback, where a
+             blob you can hear right now matters more than whether it also landed in
+             storage. But that means a fetch that succeeded and a store that silently
+             failed (quota exceeded, say) look identical here unless the write is verified
+             by reading it back — one extra local IndexedDB read, not a network round trip. */
           if (props.storage_path) {
             jobs.push(function () {
-              return audioBlob(row.id, props.storage_path).then(function (blob) {
-                if (!blob) { audioFailed++; }
+              var key = row.id;
+              return audioBlob(key, props.storage_path).then(function (blob) {
+                if (!blob) { audioFailed++; return; }
+                return getAudio(key).then(function (stored) {
+                  if (!stored) { audioFailed++; }
+                });
               });
             });
           }
@@ -10252,8 +10299,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
               var h = props.hits[slot];
               if (h && typeof h === "object" && h.storage_path) {
                 jobs.push(function () {
-                  return audioBlob(row.id + "#" + slot, h.storage_path).then(function (blob) {
-                    if (!blob) { audioFailed++; }
+                  var key = row.id + "#" + slot;
+                  return audioBlob(key, h.storage_path).then(function (blob) {
+                    if (!blob) { audioFailed++; return; }
+                    return getAudio(key).then(function (stored) {
+                      if (!stored) { audioFailed++; }
+                    });
                   });
                 });
               }
@@ -10261,7 +10312,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           }
         });
         var audio = jobs.reduce(function (chain, job) { return chain.then(job); }, Promise.resolve());
-        return audio.then(function () { return cacheTiles(p); }).then(function (tileResult) {
+        /* The snapshot this writes at the end is what Finding 1's cold-reload fallback
+           reads back — it must land even when tile caching fails outright (Cache API
+           unavailable in this context, storage full, a rejected caches.open()), so a
+           listener whose every recording fetched fine isn't left with no offline archive
+           over a tile problem. Treat a total cacheTiles rejection as "no tiles cached"
+           rather than letting it abort the chain before putPlaceSnapshot runs; a per-tile
+           failure already comes back as a resolved { failed } count and needs no special
+           handling here. */
+        return audio.then(function () {
+          return cacheTiles(p).catch(function () { return { tiles: 0, failed: 0 }; });
+        }).then(function (tileResult) {
           return putPlaceSnapshot(p.properties.id, {
             name: p.properties.name,
             downloadedAt: new Date().toISOString(),
@@ -10304,24 +10365,46 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   $("#offline").addEventListener("click", function () {
     var btn = this;
     if (!place) { toast("No place selected"); return; }
+    if (!window.caches) { toast("Offline storage unavailable"); return; }
     if (!sb) { toast("Offline archive download needs a connection — tiles alone still work below"); return; }
-    if (offlineArmed !== place.properties.id) {
+    /* Captured once, up front, and used everywhere below instead of the outer `place` —
+       switching places while a size query or a download is in flight must not attribute
+       its result to whatever place happens to be selected when it resolves. */
+    var targetPlace = place;
+    if (offlineArmed !== targetPlace.properties.id) {
       btn.disabled = true;
-      sb.from("public_features").select("*").eq("place", place.properties.id).then(function (r) {
+      sb.from("public_features").select("*").eq("place", targetPlace.properties.id).then(function (r) {
+        /* The place changed under this in-flight query — its result belongs to a place
+           the UI has already left. Skip every side effect rather than re-arm the button
+           or write text into a slot that now represents somewhere else. */
+        if (place !== targetPlace) { return; }
         btn.disabled = false;
         if (r.error || !r.data) { toast("Could not size this place — check the connection"); return; }
-        offlineArmed = place.properties.id;
+        offlineArmed = targetPlace.properties.id;
         var bytes = offlineBytes(r.data);
         btn.textContent = "Confirm " + fmtBytes(bytes) + " — tap again";
         $("#saved").textContent = r.data.length + " features, " + fmtBytes(bytes) +
           " of recordings, plus map tiles. Tap Download again to fetch it all.";
+      })
+      /* A genuine network rejection (DNS, dropped connection, aborted request) — as
+         opposed to Supabase's own { error } reply, handled above — would otherwise never
+         resolve this promise: the button stays disabled forever and the global
+         unhandledrejection handler shows a spurious error toast instead of this one,
+         actionable message. Unlike fetchPublished/checkStaleness (background syncs where
+         silence is correct — see their comments on being offline in a forest), this runs
+         from a direct tap, so the tapper needs to hear that it didn't work. */
+      .catch(function () {
+        if (place !== targetPlace) { return; }
+        btn.disabled = false;
+        toast("Could not size this place — check the connection");
       });
       return;
     }
     offlineArmed = null;
     btn.disabled = true;
     btn.textContent = "Downloading…";
-    downloadPlace(place).then(function (result) {
+    downloadPlace(targetPlace).then(function (result) {
+      if (place !== targetPlace) { return; }
       btn.disabled = false;
       btn.textContent = "Download map";
       var failParts = [];
@@ -10330,11 +10413,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       }
       if (result.tilesFailed) { failParts.push(result.tilesFailed + " tiles failed"); }
       var failMsg = failParts.length ? " · " + failParts.join(", ") : "";
-      toast(place.properties.name + " saved — " + result.rows + " features, " + result.tiles + " tiles" + failMsg);
-      $("#saved").textContent = place.properties.name + " is available offline as of " +
+      toast(targetPlace.properties.name + " saved — " + result.rows + " features, " + result.tiles + " tiles" + failMsg);
+      $("#saved").textContent = targetPlace.properties.name + " is available offline as of " +
         new Date().toLocaleString() +
         (failParts.length ? " (" + failParts.join(", ") + " — try again on a better connection)" : ".");
     }, function (err) {
+      if (place !== targetPlace) { return; }
       btn.disabled = false;
       btn.textContent = "Download map";
       toast("Download failed: " + (err.message || err));

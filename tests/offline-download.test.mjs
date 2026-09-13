@@ -72,6 +72,90 @@ test("setPlace checks staleness for a place that was downloaded", () => {
   assert.match(src, /checkStaleness\(/);
 });
 
+test("loadPlaces falls back to the downloaded snapshot when the place ends up with no " +
+     "features after fetchPublished settles", () => {
+  /* This is the fix for the cold/offline-reload bug: putPlaceSnapshot wrote a snapshot
+     that nothing ever read back into fc. The real proof of this fix is the live-browser
+     verification in the fix report, not a source-text regex — but the wiring itself
+     (calling getPlaceSnapshot and feeding its features through mergeRemote) is at least
+     pinned here so a future edit can't silently drop it. */
+  const start = html.indexOf("function loadPlaces(");
+  const src = html.slice(start, html.indexOf("function byId"));
+  assert.match(src, /visible\(\)\.length\s*>\s*0|visible\(\)\.length\s*===?\s*0/,
+    "must gate the fallback on whether the place actually has any features");
+  assert.match(src, /getPlaceSnapshot\(/, "must read back the snapshot downloadPlace wrote");
+  assert.match(src, /mergeRemote\(\s*snap\.features\s*\)/,
+    "the snapshot's features must be merged into fc the same way a live fetch's rows are");
+  assert.match(src, /map\.getSource\(\s*["']features["']\s*\)\.setData/,
+    "the map must be redrawn from the snapshot, not just fc updated invisibly");
+});
+
+test("the #offline button's size-estimate query has a .catch, so a network rejection " +
+     "can't leave the button disabled forever", () => {
+  const handler = slice("$(\"#offline\").addEventListener", "setMode(\"select\")");
+  const armStep = handler.slice(0, handler.indexOf("offlineArmed = null;"));
+  assert.match(armStep, /\.catch\(/, "a genuine network rejection on the size query must be caught");
+  assert.match(armStep, /btn\.disabled\s*=\s*false/, "the catch must re-enable the button");
+});
+
+test("the #offline click handler captures the place it started for and uses it in both " +
+     "in-flight callbacks, not whatever `place` is when they resolve", () => {
+  const handler = slice("$(\"#offline\").addEventListener", "setMode(\"select\")");
+  assert.match(handler, /var\s+targetPlace\s*=\s*place\s*;/,
+    "must snapshot `place` once, up front, before either async step");
+  assert.match(handler, /downloadPlace\(\s*targetPlace\s*\)/,
+    "the download itself must run against the captured place");
+  assert.match(handler, /place\s*!==?\s*targetPlace/,
+    "each callback must check whether the place has since changed before touching the UI");
+});
+
+test("the #offline click handler restores the !window.caches guard", () => {
+  const handler = slice("$(\"#offline\").addEventListener", "setMode(\"select\")");
+  assert.match(handler, /!window\.caches/, "offline storage being unavailable must still be checked");
+});
+
+test("db() handles a blocked upgrade and a version change from elsewhere", () => {
+  const src = slice("function db()", "function idb(");
+  assert.match(src, /onblocked\s*=/, "another tab holding the old version open must not hang silently");
+  assert.match(src, /onversionchange\s*=/, "a version bump elsewhere must not leave a stale connection open");
+});
+
+test("downloadPlace verifies a fetched blob actually landed in storage before counting " +
+     "the job as successful", () => {
+  /* audioBlob swallows a failed putAudio write and still returns the blob it fetched —
+     correct for its other caller (lazy per-open playback), wrong for a download whose
+     whole point is that the write succeeded. Reading the key back with getAudio is the
+     only way downloadPlace can tell the two cases apart. */
+  const dl = slice("function downloadPlace(", "$(\"#offline\")");
+  assert.match(dl, /getAudio\(\s*key\s*\)/, "must read the blob back by the same key it was stored under");
+  assert.match(dl, /if \(!stored\) \{ audioFailed\+\+; \}/,
+    "a fetch that succeeded but didn't land in storage must still count as a failure");
+});
+
+test("downloadPlace does not add navigator.storage.persist/estimate UI", () => {
+  /* Explicitly out of scope for this fix wave — only the fetch-vs-store distinction above. */
+  const dl = slice("function downloadPlace(", "$(\"#offline\")");
+  assert.doesNotMatch(dl, /navigator\.storage/);
+});
+
+test("downloadPlace's snapshot write does not depend on cacheTiles succeeding", () => {
+  /* The snapshot is load-bearing for the cold-offline-reload fallback (loadPlaces reads
+     it back) — a listener whose every recording fetched fine must not lose the whole
+     offline archive because tile caching rejected outright (Cache API unavailable,
+     storage full, a rejected caches.open()). A per-tile failure already comes back as a
+     resolved { failed } count from cacheTiles and needs no special handling; only an
+     outright rejection of the cacheTiles() call itself is the gap this closes. */
+  const dl = slice("function downloadPlace(", "$(\"#offline\")");
+  const cacheTilesCallAt = dl.indexOf("cacheTiles(p)");
+  const putSnapshotAt = dl.indexOf("putPlaceSnapshot(");
+  assert.ok(cacheTilesCallAt !== -1, "downloadPlace must still call cacheTiles");
+  assert.ok(putSnapshotAt !== -1 && putSnapshotAt > cacheTilesCallAt,
+    "putPlaceSnapshot must still run after the tile step, just not depend on it succeeding");
+  const between = dl.slice(cacheTilesCallAt, putSnapshotAt);
+  assert.match(between, /\.catch\(/,
+    "a rejected cacheTiles() must not prevent putPlaceSnapshot from running");
+});
+
 test("checkStaleness swallows a genuine network rejection, not just a Supabase {error} reply", () => {
   /* Supabase resolves most failures to { error }, already handled above — but a real network
      rejection (DNS, dropped connection, aborted request) rejects the promise instead.

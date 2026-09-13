@@ -45,6 +45,22 @@ test("setPlace returns fetchPublished's promise, so a deep link can chain past i
   assert.match(src, /return fetchPublished\(/, "setPlace must hand back the fetch it triggers");
 });
 
+test("setPlace assigns the outer `place` before setSelected(null) runs, so a place switch " +
+     "pushes the NEW place's URL rather than reusing the one it's leaving", () => {
+  /* setSelected reads the module-level `place` variable itself, not a parameter — so this
+     only pushes the right URL if setPlace has already reassigned `place = p` by the time
+     it calls setSelected(null). If that assignment ever moved below the setSelected(null)
+     call, the address bar would keep the OLD place's URL after a switch. */
+  const start = html.indexOf("function setPlace(p, initial)");
+  const src = html.slice(start, html.indexOf("function renderPlaceList"));
+  const assignAt = src.indexOf("place = p;");
+  const selectAt = src.indexOf("setSelected(null)");
+  assert.ok(assignAt !== -1, "setPlace must assign the outer `place` from its own parameter");
+  assert.ok(selectAt !== -1, "setPlace must deselect via setSelected(null) when switching places");
+  assert.ok(assignAt < selectAt,
+    "`place = p` must run before setSelected(null) so setSelected computes the NEW place's URL");
+});
+
 test("loadPlaces rejects a linked route that belongs to a different place", () => {
   const start = html.indexOf("function loadPlaces(");
   const src = html.slice(start, html.indexOf("function byId"));
@@ -64,10 +80,26 @@ test("setSelected pushes the URL, and setPlace's own URL update comes first", ()
   assert.match(setSel, /pushState|replaceState/, "selecting must update the address bar");
 });
 
-test("setSelected does not push when the selection hasn't actually changed", () => {
+test("setSelected does not push when the URL hasn't actually changed", () => {
+  /* Comparing ids (the old guard) fires on every step of a tourStep() walk, since each
+     step selects a different point — even though urlForSelection only ever names a
+     route, so most of those id changes produce the exact same URL. Comparing the URL
+     itself is strictly more correct: it also covers the id-changed case, since a
+     changed id that maps to the same URL (a non-route selection) still shouldn't push. */
   const setSel = html.slice(html.indexOf("function setSelected("), html.indexOf("function feature("));
-  assert.match(setSel, /var\s+wasSelected\s*=\s*selected/,
-    "must capture the previous selected value before reassigning");
-  assert.match(setSel, /id\s*!==?\s*wasSelected/,
-    "pushState must only fire when the id actually changed, preventing spurious history entries");
+  assert.match(setSel, /urlForSelection\(/, "the new URL must be computed to compare against");
+  assert.match(setSel, /newUrl\s*!==?\s*location\.pathname/,
+    "pushState must only fire when the computed URL actually differs from the address bar");
+  assert.doesNotMatch(setSel, /wasSelected/,
+    "the id-based guard this replaces should be removed, not left dead alongside it");
+});
+
+test("tourStep's per-step selection no longer needs an id-based push guard", () => {
+  /* tourStep calls setSelected(id, false) once per walked point — pre-existing behavior,
+     unchanged by this fix. What changed is that most of those calls now produce the same
+     URL (see setSelected's own new guard above), so a 30-point walk no longer pushes 30
+     near-identical history entries. */
+  const start = html.indexOf("function tourStep(");
+  const src = html.slice(start, html.indexOf("function ", start + 20));
+  assert.match(src, /setSelected\(/, "tourStep must still drive selection per step");
 });
