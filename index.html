@@ -1680,6 +1680,36 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   var CENTER = [28.9800, 41.1850];   // Belgrad Ormanı
   var ZOOM = 12.4;
 
+  /* The other half of 404.html's redirect: turn "?p=/R8845862/<route-id>" back into
+     "/FieldArc/R8845862/<route-id>" in the address bar, with no second navigation and no
+     entry added to history — a listener who taps back should leave the app, not land on
+     the redirect's own intermediate URL. */
+  (function restoreDeepLinkPath() {
+    var p = new URLSearchParams(location.search).get("p");
+    if (!p) { return; }
+    var qs = new URLSearchParams(location.search);
+    qs.delete("p");
+    var rest = qs.toString();
+    history.replaceState(null, "", location.pathname.replace(/\/$/, "") + p +
+      (rest ? "?" + rest : "") + location.hash);
+  })();
+
+  /* Matches 404.html's pathSegmentsToKeep = 1: the deployed GitHub Pages project page is
+     rooted one segment deep ("/FieldArc"), so a deep link's own segments start after that.
+     Local development (npx serve . from the repo root) is rooted at "/", with no base
+     segment at all. Hardcoded rather than counted from the current path, because counting
+     cannot tell "a bare place link at the site root" apart from "the site root with no link"
+     — both are exactly one path segment, and only knowing which host this is resolves it. */
+  var BASE_PATH = location.hostname === "keremaltaylar.github.io" ? "/FieldArc" : "";
+
+  function parseDeepLink(pathname) {
+    var rest = pathname.indexOf(BASE_PATH) === 0 ? pathname.slice(BASE_PATH.length) : pathname;
+    var parts = rest.split("/").filter(function (s) { return s && s !== "index.html"; });
+    if (!parts.length) { return null; }
+    if (parts.length === 1) { return { place: parts[0], route: null }; }
+    return { place: parts[0], route: parts[1] };
+  }
+
   var $ = function (s) { return document.querySelector(s); };
   var mapEl = $("#map");
 
@@ -2800,8 +2830,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }).then(function (data) {
       places = data.features;
       renderPlaceList();
-      var want = localStorage.getItem(PLACE_KEY) || DEFAULT_PLACE;
-      setPlace(byId(want) || byId(DEFAULT_PLACE) || places[0], true);
+      var link = parseDeepLink(location.pathname);
+      var want = (link && link.place) || localStorage.getItem(PLACE_KEY) || DEFAULT_PLACE;
+      var p = byId(want) || byId(DEFAULT_PLACE) || places[0];
+      setPlace(p, true).then(function () {
+        /* feature() reads fc.features, which mergeRemote (inside fetchPublished) has just
+           populated for a fresh browser — the exact gap stage 3 closed for the map, now
+           closed for a link too. A route id that names nothing (stale link, wrong place)
+           leaves the app on the place alone rather than failing. */
+        if (link && link.route && feature(link.route)) { setSelected(link.route, true); }
+      });
     }).catch(function (err) {
       $("#saved").textContent = "Place catalogue unavailable (" + err.message +
         ") — open via the local server, not file://.";
@@ -2856,7 +2894,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     setSelected(null);
     closePlaceMenu();
     commit();
-    fetchPublished(place ? place.properties.id : DEFAULT_PLACE);
+    return fetchPublished(place ? place.properties.id : DEFAULT_PLACE);
   }
 
   function renderPlaceList() {
