@@ -4857,12 +4857,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      about half the time so something still anchors. */
   function gcd(a, b) { while (b) { var t = a % b; a = b; b = t; } return a; }
 
-  function randomRhythm(r) {
-    var steps = Math.max(4, Math.min(64, r.steps | 0));
-    var band = { low: [0.05, 0.16], mid: [0.16, 0.34], high: [0.28, 0.55],
-                 rand: [0.04, 0.28] };
+  var RHYTHM_BAND = { low: [0.05, 0.16], mid: [0.16, 0.34], high: [0.28, 0.55], rand: [0.04, 0.28] };
+  /* How many related patterns one phrase cycle carries. A setter picks the phrase LENGTH
+     (sentenceBars); this is how many distinct phrases exist to cycle through before one
+     repeats — the same reason four hits, not two or eight, made the original pattern rich
+     enough to not obviously loop. */
+  var SENTENCE_VARIATIONS = 4;
+
+  /* One deduplicated combo across all four voices — not four independent draws applied to
+     one voice each, since a later dedup pass has to reason about all four together anyway.
+     This is the unit both the pattern a setter sees immediately and every later phrase are
+     built from, so a phrase change is never a step down from the pattern they actually
+     chose. */
+  function oneComboSet(steps) {
+    var out = {};
     HIT_SLOTS.forEach(function (slot) {
-      var b = band[slot], cfg = r.voices[slot];
+      var b = RHYTHM_BAND[slot];
       var k = Math.round(steps * (b[0] + Math.random() * (b[1] - b[0])));
       if (k < 1) { k = 1; }
       /* Nudge to something coprime with the step count, but never past the band. */
@@ -4871,15 +4881,54 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         k = (up <= steps && up <= Math.ceil(steps * b[1]) + 1) ? up : k - 1;
         if (k < 1) { k = 1; break; }
       }
-      cfg.pulses = Math.min(k, steps);
-      cfg.rotate = Math.random() < 0.45 ? 0 : Math.floor(Math.random() * steps);
+      out[slot] = { pulses: Math.min(k, steps), rotate: Math.random() < 0.45 ? 0 : Math.floor(Math.random() * steps) };
     });
     /* Two voices with the same count and the same rotation are one voice played twice. */
     var seen = {};
     HIT_SLOTS.forEach(function (slot) {
-      var cfg = r.voices[slot], key = cfg.pulses + ":" + cfg.rotate;
-      if (seen[key]) { cfg.rotate = (cfg.rotate + 1 + Math.floor(Math.random() * 3)) % steps; }
-      seen[cfg.pulses + ":" + cfg.rotate] = 1;
+      var c = out[slot], key = c.pulses + ":" + c.rotate;
+      if (seen[key]) { c.rotate = (c.rotate + 1 + Math.floor(Math.random() * 3)) % steps; }
+      seen[c.pulses + ":" + c.rotate] = 1;
+    });
+    return out;
+  }
+
+  /* SENTENCE_VARIATIONS combos, reshaped from "one set of four voices" to "one array of
+     combos per voice" — the shape advanceSentence actually walks through phrase by phrase. */
+  function buildSentenceSet(steps) {
+    var sets = [];
+    for (var i = 0; i < SENTENCE_VARIATIONS; i++) { sets.push(oneComboSet(steps)); }
+    var out = {};
+    HIT_SLOTS.forEach(function (slot) {
+      out[slot] = sets.map(function (s) { return s[slot]; });
+    });
+    return out;
+  }
+
+  function randomRhythm(r) {
+    var steps = Math.max(4, Math.min(64, r.steps | 0));
+    r.sentenceSet = buildSentenceSet(steps);
+    HIT_SLOTS.forEach(function (slot) {
+      var first = r.sentenceSet[slot][0];
+      r.voices[slot].pulses = first.pulses;
+      r.voices[slot].rotate = first.rotate;
+    });
+  }
+
+  /* One bar has just elapsed for this point. Counted against this point's OWN sentenceBars,
+     not the route's — two points with different phrase lengths never need to agree on
+     anything, the same independence rhythmStep already gives their step counters (R.tick,
+     R.step) today. Cycles through sentenceSet rather than drawing fresh each phrase, so a
+     later phrase is a related pattern rather than a coin flip (A-11/A-12). */
+  function advanceSentence(r, R) {
+    R.barsThisSentence = (R.barsThisSentence || 0) + 1;
+    var span = Math.max(1, r.sentenceBars || 8);
+    if (R.barsThisSentence < span || !r.sentenceSet) { return; }
+    R.barsThisSentence = 0;
+    R.sentenceIdx = ((R.sentenceIdx || 0) + 1) % SENTENCE_VARIATIONS;
+    HIT_SLOTS.forEach(function (slot) {
+      var set = r.sentenceSet[slot], combo = set && set[R.sentenceIdx];
+      if (combo) { r.voices[slot].pulses = combo.pulses; r.voices[slot].rotate = combo.rotate; }
     });
   }
 
@@ -6938,7 +6987,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   function defaultRhythm() {
     return {
-      on: true, steps: 64, div: "16n", gain: 0.85, swing: 0, idiom: 0.35,
+      on: true, steps: 64, div: "16n", gain: 0.85, swing: 0, idiom: 0.35, sentenceBars: 8,
       /* Sixty-four sixteenths is four bars, which is long enough for four lines to drift
          against each other instead of repeating every bar. The pulse counts are all
          different and three of the four are coprime with 64, so the pattern they make
@@ -6984,6 +7033,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var r = f.properties.rhythm;
     if (!r.voices) { r.voices = defaultRhythm().voices; }
     if (r.idiom === undefined) { r.idiom = defaultRhythm().idiom; }
+    if (r.sentenceBars === undefined) { r.sentenceBars = defaultRhythm().sentenceBars; }
+    if (!r.sentenceSet) {
+      /* Built fresh, not from randomRhythm(): that also overwrites cfg.pulses/.rotate, and
+         a point saved before this plan existed must keep the pattern its setter already
+         chose. Only the phrase set — what it grows INTO later — is new for them. */
+      r.sentenceSet = buildSentenceSet(Math.max(4, Math.min(64, r.steps | 0)));
+    }
     HIT_SLOTS.forEach(function (k) {
       if (!r.voices[k]) { r.voices[k] = defaultRhythm().voices[k]; }
     });
@@ -7292,6 +7348,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!r.on) { continue; }
       var stride = SECT_STRIDE[r.div] || 1;
       R.tick = (R.tick || 0) + 1;
+      /* Bars, not the stride gate below: a phrase length is measured against a real bar,
+         not against this voice's own step subdivision, so the sentence maker advances on
+         schedule however div/steps are set. 16 sixteenths per bar matches SECT_GRID's own
+         "16n" and the whole-note "1n" a bar already means everywhere else in this file
+         (SECT_STRIDE["1n"] === 16). Hits only: a grains point has one line, not four voices
+         to cycle through phrases across. */
+      if (f.properties.audio_mode === "hits" && (R.tick - 1) % 16 === 0) {
+        advanceSentence(r, R);
+      }
       if ((R.tick - 1) % stride !== 0) { continue; }
       var steps = Math.max(1, Math.min(64, r.steps | 0));
       var at = R.step % steps;
