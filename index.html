@@ -10224,14 +10224,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (r.error || !r.data) { return Promise.reject(new Error(r.error ? r.error.message : "no data")); }
         var rows = r.data;
         var jobs = [];
+        var audioFailed = 0;
         rows.forEach(function (row) {
           var props = row.properties || {};
-          if (props.storage_path) { jobs.push(function () { return audioBlob(row.id, props.storage_path); }); }
+          if (props.storage_path) {
+            jobs.push(function () {
+              return audioBlob(row.id, props.storage_path).then(function (blob) {
+                if (!blob) { audioFailed++; }
+              });
+            });
+          }
           if (props.hits) {
             HIT_SLOTS.forEach(function (slot) {
               var h = props.hits[slot];
               if (h && typeof h === "object" && h.storage_path) {
-                jobs.push(function () { return audioBlob(row.id + "#" + slot, h.storage_path); });
+                jobs.push(function () {
+                  return audioBlob(row.id + "#" + slot, h.storage_path).then(function (blob) {
+                    if (!blob) { audioFailed++; }
+                  });
+                });
               }
             });
           }
@@ -10243,7 +10254,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             downloadedAt: new Date().toISOString(),
             version: placeVersion(rows),
             features: rows
-          }).then(function () { return { rows: rows.length, tiles: tileResult.tiles }; });
+          }).then(function () {
+            return { rows: rows.length, tiles: tileResult.tiles, audioFailed: audioFailed, tilesFailed: tileResult.failed };
+          });
         });
       });
   }
@@ -10272,9 +10285,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     downloadPlace(place).then(function (result) {
       btn.disabled = false;
       btn.textContent = "Download map";
-      toast(place.properties.name + " saved — " + result.rows + " features, " + result.tiles + " tiles");
+      var failParts = [];
+      if (result.audioFailed) {
+        failParts.push(result.audioFailed + (result.audioFailed === 1 ? " recording" : " recordings") + " failed");
+      }
+      if (result.tilesFailed) { failParts.push(result.tilesFailed + " tiles failed"); }
+      var failMsg = failParts.length ? " · " + failParts.join(", ") : "";
+      toast(place.properties.name + " saved — " + result.rows + " features, " + result.tiles + " tiles" + failMsg);
       $("#saved").textContent = place.properties.name + " is available offline as of " +
-        new Date().toLocaleString() + ".";
+        new Date().toLocaleString() +
+        (failParts.length ? " (" + failParts.join(", ") + " — try again on a better connection)" : ".");
     }, function (err) {
       btn.disabled = false;
       btn.textContent = "Download map";

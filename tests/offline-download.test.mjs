@@ -43,3 +43,16 @@ test("downloadPlace writes a places snapshot carrying its own version", () => {
   assert.match(src, /putPlaceSnapshot/);
   assert.match(src, /placeVersion/);
 });
+
+test("downloadPlace reports audio and tile failures instead of silently succeeding", () => {
+  /* audioBlob resolves to null (not a rejection) on failure, and cacheTiles already counts
+     failed tiles — a "saved" result that drops both numbers tells a listener a flaky
+     download finished clean when it didn't. */
+  const dl = slice("function downloadPlace(", "$(\"#offline\")");
+  assert.match(dl, /audioFailed/, "must count blobs that resolved to null");
+  assert.match(dl, /tilesFailed/, "must carry cacheTiles' own failed count forward");
+
+  const handler = slice("$(\"#offline\").addEventListener", "setMode(\"select\")");
+  assert.match(handler, /result\.audioFailed/, "the success path must surface audio failures");
+  assert.match(handler, /result\.tilesFailed/, "the success path must surface tile failures");
+});
