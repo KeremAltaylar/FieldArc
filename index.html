@@ -4794,6 +4794,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       toast("New pattern");
     });
     mhead.appendChild(rnd);
+    var rndFx = document.createElement("button");
+    rndFx.type = "button"; rndFx.className = "ghost ppgen";
+    rndFx.textContent = "Randomize effects";
+    rndFx.title = "New crush, drive and delay for all four voices";
+    rndFx.addEventListener("click", function () {
+      randomHitFx(r);
+      claimEdit(f);
+      save();
+      renderRhythmPanel();
+      toast("New effects");
+    });
+    mhead.appendChild(rndFx);
     body.appendChild(mhead);
 
     HIT_SLOTS.forEach(function (slot) {
@@ -4839,6 +4851,44 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(out);
         row.appendChild(wrap);
       });
+      [["crush", 0, 1, 0.02], ["drive", 0, 1, 0.02],
+       ["delayFb", 0, 0.85, 0.02], ["delayWet", 0, 1, 0.02]].forEach(function (spec) {
+        var wrap = document.createElement("label");
+        wrap.className = "pprow";
+        var lab = document.createElement("span");
+        lab.textContent = spec[0];
+        var inp = document.createElement("input");
+        inp.type = "range"; inp.min = spec[1]; inp.max = spec[2]; inp.step = spec[3];
+        inp.value = cfg[spec[0]];
+        inp.dataset.def = defaultRhythm().voices[slot][spec[0]];
+        inp.title = "Shift-drag for fine steps · double-click to reset";
+        var out = document.createElement("i");
+        var show = function () { out.textContent = (+inp.value).toFixed(2); };
+        show();
+        inp.addEventListener("input", function () {
+          cfg[spec[0]] = +inp.value; show(); commitR();
+        });
+        wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(out);
+        row.appendChild(wrap);
+      });
+      /* A musical division, not a free number — same idiom as RHYTHM_FIELDS' own "div" row
+         and the shared room's own delay-division control. */
+      var delWrap = document.createElement("label");
+      delWrap.className = "pprow";
+      var delLab = document.createElement("span");
+      delLab.textContent = "delay time";
+      var delSel = document.createElement("select");
+      DIVISIONS.forEach(function (d) {
+        var op = document.createElement("option");
+        op.value = d; op.textContent = DIV_LABEL[d] || d;
+        delSel.appendChild(op);
+      });
+      delSel.value = cfg.delayDiv;
+      delSel.addEventListener("change", function () {
+        cfg.delayDiv = delSel.value; commitR();
+      });
+      delWrap.appendChild(delLab); delWrap.appendChild(delSel);
+      row.appendChild(delWrap);
       var pat = document.createElement("div");
       pat.className = "rpat";
       pat.dataset.slot = slot;
@@ -4912,6 +4962,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var first = r.sentenceSet[slot][0];
       r.voices[slot].pulses = first.pulses;
       r.voices[slot].rotate = first.rotate;
+    });
+  }
+
+  /* A separate roll from randomRhythm(): a setter who likes their pattern should be able to
+     reroll only its effects, and vice versa. Weighted toward modest values on each field
+     (roughly two-thirds of the time) with an occasional more extreme outlier, so a click
+     usually lands somewhere musically usable rather than somewhere harsh. */
+  function randomHitFx(r) {
+    HIT_SLOTS.forEach(function (slot) {
+      var cfg = r.voices[slot];
+      cfg.crush = Math.random() < 0.65 ? Math.random() * 0.2 : 0.2 + Math.random() * 0.5;
+      cfg.drive = Math.random() < 0.65 ? Math.random() * 0.25 : 0.25 + Math.random() * 0.45;
+      cfg.delayDiv = DIVISIONS[Math.floor(Math.random() * DIVISIONS.length)];
+      cfg.delayFb = Math.random() * 0.4;
+      cfg.delayWet = Math.random() < 0.5 ? 0 : Math.random() * 0.35;
     });
   }
 
@@ -7005,11 +7070,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          together only comes back around after a very long time: 8 divides 64 and gives the
          low its steady half-bar, while 13, 21 and 5 never line up with it twice the same
          way. */
+      /* crush/drive/delay* all default to their off position — a point saved before this
+         plan existed must sound identical to today until a setter (or Randomize effects)
+         touches one. */
       voices: {
-        low:  { pulses:  8, rotate: 0,  gain: 1.00, pitch: 0 },
-        mid:  { pulses: 13, rotate: 2,  gain: 0.80, pitch: 0 },
-        high: { pulses: 21, rotate: 1,  gain: 0.65, pitch: 0 },
-        rand: { pulses:  5, rotate: 11, gain: 0.55, pitch: 0 }
+        low:  { pulses:  8, rotate: 0,  gain: 1.00, pitch: 0,
+                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0 },
+        mid:  { pulses: 13, rotate: 2,  gain: 0.80, pitch: 0,
+                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0 },
+        high: { pulses: 21, rotate: 1,  gain: 0.65, pitch: 0,
+                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0 },
+        rand: { pulses:  5, rotate: 11, gain: 0.55, pitch: 0,
+                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0 }
       }
     };
   }
@@ -7053,6 +7125,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
     HIT_SLOTS.forEach(function (k) {
       if (!r.voices[k]) { r.voices[k] = defaultRhythm().voices[k]; }
+    });
+    var dv = defaultRhythm().voices;
+    HIT_SLOTS.forEach(function (k) {
+      var v = r.voices[k];
+      if (v.crush === undefined) { v.crush = dv[k].crush; }
+      if (v.drive === undefined) { v.drive = dv[k].drive; }
+      if (v.delayDiv === undefined) { v.delayDiv = dv[k].delayDiv; }
+      if (v.delayFb === undefined) { v.delayFb = dv[k].delayFb; }
+      if (v.delayWet === undefined) { v.delayWet = dv[k].delayWet; }
     });
     if (!r.grains) { r.grains = defaultGrains(); }
     /* Field by field, so a point saved before a control existed gains it rather than being
