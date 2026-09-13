@@ -36,3 +36,14 @@ test("loadPlaces rejects a linked route that belongs to a different place", () =
     "feature() searches every place's features, so a linked route id must be checked " +
     "against the place just loaded before setSelected runs, not just found to exist");
 });
+
+test("urlForSelection names only a route, never a point", () => {
+  const start = html.indexOf("function urlForSelection(");
+  const src = html.slice(start, html.indexOf("function ", start + 30));
+  assert.match(src, /kind\s*===?\s*["']route["']/, "a point must not become the URL's target");
+});
+
+test("setSelected pushes the URL, and setPlace's own URL update comes first", () => {
+  const setSel = html.slice(html.indexOf("function setSelected("), html.indexOf("function feature("));
+  assert.match(setSel, /pushState|replaceState/, "selecting must update the address bar");
+});

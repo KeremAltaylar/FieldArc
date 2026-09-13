@@ -1710,6 +1710,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return { place: parts[0], route: parts[1] };
   }
 
+  /* The inverse of parseDeepLink, built on the same BASE_PATH constant rather than by
+     stripping segments off the CURRENT address bar — by the second selection in a session
+     the current bar already ends in the PREVIOUS place and route, not the site's own root,
+     so re-deriving the base from it on every call would drift after the first selection. */
+  function urlForSelection(placeId, routeId) {
+    /* Guard against points: only routes get named, never points. This is defensive since
+       setSelected already filters routeId to only be routes, but we verify it here too. */
+    var f = routeId ? feature(routeId) : null;
+    routeId = (f && f.properties.kind === "route") ? routeId : null;
+    return BASE_PATH + "/" + placeId + (routeId ? "/" + routeId : "");
+  }
+
   var $ = function (s) { return document.querySelector(s); };
   var mapEl = $("#map");
 
@@ -2982,6 +2994,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa.fetchPublished = fetchPublished;
   window.__fa.mergeRemote = mergeRemote;
   window.__fa.offline = { version: placeVersion, sameVersion: sameVersion };
+  window.__fa.deepLink = { parse: parseDeepLink, url: urlForSelection };
   window.__fa.setter = setterState;
   window.__fa.applyModeGating = applyModeGating;
   /* `refresh` is not only a debug hook: the deferred module that defines FA_PENDING calls it
@@ -3070,6 +3083,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderDetail();
     renderList();
     renderLabels();
+    var f = id ? feature(id) : null;
+    var routeId = (f && f.properties.kind === "route") ? f.properties.id : null;
+    if (place) {
+      history.pushState(null, "", urlForSelection(place.properties.id, routeId));
+    }
   }
 
   function feature(id) {
