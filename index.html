@@ -2940,6 +2940,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     commit();
     offlineArmed = null;
     $("#offline").textContent = "Download map";
+    checkStaleness(p.properties.id);
     return fetchPublished(place ? place.properties.id : DEFAULT_PLACE);
   }
 
@@ -3022,7 +3023,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa.fetchPublished = fetchPublished;
   window.__fa.mergeRemote = mergeRemote;
   window.__fa.offline = { version: placeVersion, sameVersion: sameVersion,
-    bytes: offlineBytes, run: downloadPlace, snapshot: getPlaceSnapshot };
+    bytes: offlineBytes, run: downloadPlace, snapshot: getPlaceSnapshot, check: checkStaleness };
   window.__fa.deepLink = { parse: parseDeepLink, url: urlForSelection };
   window.__fa.setter = setterState;
   window.__fa.applyModeGating = applyModeGating;
@@ -10259,6 +10260,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           });
         });
       });
+  }
+
+  /* Reports only. A downloaded place is a promise that a walk needs no network — silently
+     refreshing it out from under a device that is mid-walk would break that promise in the
+     one moment it matters most. The listener decides when to pay for a re-download, same as
+     they decided to pay for the first one. */
+  function checkStaleness(placeId) {
+    if (!sb) { return Promise.resolve(); }
+    return getPlaceSnapshot(placeId).then(function (snap) {
+      if (!snap) { return; }
+      return sb.from("public_features").select("id, updated_at").eq("place", placeId)
+        .then(function (r) {
+          if (r.error || !r.data) { return; }
+          if (!sameVersion(snap.version, placeVersion(r.data))) {
+            toast(snap.name + " has changed on the server since it was saved offline — " +
+                  "download it again from Storage to refresh your copy.");
+          }
+        });
+    });
   }
 
   var offlineArmed = null;   /* the place id the button is currently primed to download */

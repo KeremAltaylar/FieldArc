@@ -56,3 +56,18 @@ test("downloadPlace reports audio and tile failures instead of silently succeedi
   assert.match(handler, /result\.audioFailed/, "the success path must surface audio failures");
   assert.match(handler, /result\.tilesFailed/, "the success path must surface tile failures");
 });
+
+test("checkStaleness only reports — it never calls downloadPlace itself", () => {
+  /* Not the "next function" heuristic used elsewhere in this file: checkStaleness's own
+     first line is a `.then(function (snap) {` callback, so that heuristic would cut the
+     slice off before ever reaching the toast() call it exists to check for. An explicit
+     end marker (the next declaration in index.html) captures the whole body instead. */
+  const src = slice("function checkStaleness(", "var offlineArmed");
+  assert.match(src, /toast\(/, "a mismatch must be reported, not silently ignored");
+  assert.doesNotMatch(src, /downloadPlace\(/, "staleness must never trigger its own refresh");
+});
+
+test("setPlace checks staleness for a place that was downloaded", () => {
+  const src = slice("function setPlace(p, initial)", "function renderPlaceList");
+  assert.match(src, /checkStaleness\(/);
+});
