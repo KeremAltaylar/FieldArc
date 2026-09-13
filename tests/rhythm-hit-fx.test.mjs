@@ -77,3 +77,58 @@ test("each voice row exposes crush, drive and a delay division/feedback/mix", ()
   });
   assert.match(panel, /DIV_LABEL/, "the delay division must show a real division label, not a bare code");
 });
+
+test("buildHitFx wires input through bitcrush, distortion and delay inserts to output, each blended via makeBlend", () => {
+  const src = slice("function buildHitFx(Tone)", "\n  }\n");
+  assert.match(src, /new Tone\.BitCrusher\(/, "bitcrush insert");
+  assert.match(src, /new Tone\.WaveShaper\(/, "distortion insert, matching the shared room's own shape");
+  assert.match(src, /new Tone\.FeedbackDelay\(/, "an independent per-slot delay");
+  const blendCalls = src.match(/makeBlend\(Tone,\s*0\)/g) || [];
+  assert.equal(blendCalls.length, 3, "each of the three inserts gets its own dry/wet blend");
+  assert.doesNotMatch(src, /Tone\.CrossFade/, "A-17: makeBlend, never Tone.CrossFade");
+});
+
+test("buildHitFx returns every node it creates, so disposeRhythm can clean all of them up", () => {
+  const src = slice("function buildHitFx(Tone)", "\n  }\n");
+  const returnLine = src.slice(src.lastIndexOf("return"));
+  ["input", "crush", "crushBlend", "shape", "drivePre", "drivePost", "driveBlend",
+   "delay", "delayBlend", "output"].forEach((key) => {
+    assert.match(returnLine, new RegExp("\\b" + key + "\\b"), "buildHitFx must return " + key);
+  });
+});
+
+test("disposeRhythm disposes every per-slot fx node, not just the player", () => {
+  const src = slice("function disposeRhythm(id)", "\n  }\n");
+  assert.match(src, /R\.fx/, "disposeRhythm must reach into the per-slot fx chains");
+});
+
+test("applyHitFx maps crush to both the wet blend and the BitCrusher's own bit depth", () => {
+  const src = slice("function applyHitFx(R, r)", "\n  }\n");
+  assert.match(src, /crushBlend\.fade\.rampTo\(/);
+  assert.match(src, /\.crush\.bits\s*=/);
+  assert.match(src, /driveBlend\.fade\.rampTo\(/);
+  assert.match(src, /delayBlend\.fade\.rampTo\(/);
+  assert.match(src, /delay\.delayTime\.rampTo\(/);
+  assert.match(src, /delay\.feedback\.rampTo\(/);
+});
+
+test("applyHitFx is safe to call with no live R", () => {
+  const src = slice("function applyHitFx(R, r)", "\n  }\n");
+  assert.match(src, /if\s*\(!R \|\| !R\.fx\)\s*\{\s*return;\s*\}/,
+    "a setter editing a point currently out of range must not throw");
+});
+
+test("ensureRhythm connects each player through its slot's fx chain, not straight to R.gain", () => {
+  const src = slice("function ensureRhythm(z)", "function disposeRhythm(");
+  assert.match(src, /R\.fx\s*=\s*\{\}/);
+  assert.match(src, /buildHitFx\(Tone\)/);
+  assert.match(src, /\.connect\(R\.fx\[slot\]\.input\)/,
+    "each player must feed its own slot's chain, not R.gain directly");
+});
+
+test("rhythmStep applies each point's fx once it is ready, without adding new scheduling", () => {
+  const step = slice("function rhythmStep(time)", "function updateBed");
+  assert.match(step, /applyHitFx\(/);
+  assert.doesNotMatch(step, /scheduleRepeat|\.clear\(/,
+    "this plan must never add a new Transport scheduling call");
+});

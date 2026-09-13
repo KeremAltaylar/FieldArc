@@ -4803,6 +4803,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       claimEdit(f);
       save();
       renderRhythmPanel();
+      applyHitFx(bed && bed.rhythms[f.properties.id], r);
       toast("New effects");
     });
     mhead.appendChild(rndFx);
@@ -4867,6 +4868,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         show();
         inp.addEventListener("input", function () {
           cfg[spec[0]] = +inp.value; show(); commitR();
+          applyHitFx(bed && bed.rhythms[f.properties.id], r);
         });
         wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(out);
         row.appendChild(wrap);
@@ -4886,6 +4888,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       delSel.value = cfg.delayDiv;
       delSel.addEventListener("change", function () {
         cfg.delayDiv = delSel.value; commitR();
+        applyHitFx(bed && bed.rhythms[f.properties.id], r);
       });
       delWrap.appendChild(delLab); delWrap.appendChild(delSel);
       row.appendChild(delWrap);
@@ -7219,6 +7222,60 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     R.reverb.wet.rampTo(c.revWet, 0.2);
   }
 
+  /* One slot's own insert chain: bitcrush, then a distortion stage using the same tanh
+     shape the shared room's own drive already uses (character consistency between "the
+     room" and "this voice's own colour"), then an independent short delay — a voice's own
+     slap-back, not a second trip through the shared room's delay. Built once per slot, kept
+     for the life of the point being in range, same lifecycle R.players/R.gain already have. */
+  function buildHitFx(Tone) {
+    var input = new Tone.Gain(1);
+
+    var crush = new Tone.BitCrusher(16);
+    var crushBlend = makeBlend(Tone, 0);
+    input.connect(crushBlend.a);
+    input.connect(crush); crush.connect(crushBlend.b);
+
+    var shape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 3); }, 2048);
+    var drivePre = new Tone.Gain(1);
+    var drivePost = new Tone.Gain(0.6);
+    var driveBlend = makeBlend(Tone, 0);
+    crushBlend.connect(driveBlend.a);
+    crushBlend.connect(drivePre); drivePre.connect(shape); shape.connect(drivePost);
+    drivePost.connect(driveBlend.b);
+
+    var delay = new Tone.FeedbackDelay({ maxDelay: MAX_DELAY_S, delayTime: 0.2, feedback: 0, wet: 1 });
+    var delayBlend = makeBlend(Tone, 0);
+    driveBlend.connect(delayBlend.a);
+    driveBlend.connect(delay); delay.connect(delayBlend.b);
+
+    return { input: input, crush: crush, crushBlend: crushBlend, shape: shape,
+             drivePre: drivePre, drivePost: drivePost, driveBlend: driveBlend,
+             delay: delay, delayBlend: delayBlend, output: delayBlend };
+  }
+
+  /* Applied once when a point's fx chain is first ready, and again whenever a setter moves
+     one of this slot's sliders — the same "there is one chain, apply on change" shape
+     applyRhythmFx already uses for the shared room. Safe with no live R: a setter can edit
+     a point's effects while it happens to be out of range. */
+  function applyHitFx(R, r) {
+    if (!R || !R.fx) { return; }
+    HIT_SLOTS.forEach(function (slot) {
+      var cfg = r.voices[slot], fx = R.fx[slot];
+      if (!cfg || !fx) { return; }
+      var crushAmt = cfg.crush || 0;
+      fx.crushBlend.fade.rampTo(crushAmt, 0.2);
+      fx.crush.bits = Math.max(2, Math.round(16 - crushAmt * 14));
+      var driveAmt = cfg.drive || 0;
+      fx.driveBlend.fade.rampTo(driveAmt, 0.2);
+      fx.drivePre.gain.rampTo(1 + driveAmt * 12, 0.2);
+      fx.drivePost.gain.rampTo(0.6 / (1 + driveAmt * 3.4), 0.2);
+      fx.delay.delayTime.rampTo(Math.min(MAX_DELAY_S - 0.01,
+        divSeconds(cfg.delayDiv || "8n", pacer ? pacer.patch.tempo : 72)), 0.2);
+      fx.delay.feedback.rampTo(cfg.delayFb || 0, 0.2);
+      fx.delayBlend.fade.rampTo(cfg.delayWet || 0, 0.2);
+    });
+  }
+
   /* One player per slot, loaded once, kept until the point goes out of range. A pool would
      let a hit overlap itself; for percussive material a retrigger is what you want anyway,
      and it costs four nodes per point instead of a pool per slot. */
@@ -7242,6 +7299,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       }).catch(function () { /* nothing attached yet */ });
       return R;
     }
+    /* One insert chain per slot, built synchronously so it exists (fully dry, per A-8)
+       before any player has even started loading — the async audioBlob() calls below only
+       need to connect into it, not build it. */
+    R.fx = {};
+    HIT_SLOTS.forEach(function (slot) {
+      R.fx[slot] = buildHitFx(Tone);
+      R.fx[slot].output.connect(R.gain);
+    });
     HIT_SLOTS.forEach(function (slot) {
       audioBlob(z.id + "#" + slot, remoteHitPath(z.id, slot)).then(function (blob) {
         if (!blob || !bed || !bed.rhythms[z.id]) { return; }
@@ -7250,7 +7315,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         R.players[slot] = new Tone.Player({
           url: url, fadeOut: 0.02,
           onload: function () { R.ready++; }
-        }).connect(R.gain);
+        }).connect(R.fx[slot].input);
       }).catch(function () { /* a slot that will not load simply never fires */ });
     });
     return R;
@@ -7267,6 +7332,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       HIT_SLOTS.forEach(function (slot) {
         try { if (R.players[slot]) { R.players[slot].dispose(); } } catch (e) {}
         if (R.urls[slot]) { URL.revokeObjectURL(R.urls[slot]); }
+        var fx = R.fx && R.fx[slot];
+        if (fx) {
+          [fx.input, fx.crush, fx.crushBlend, fx.shape, fx.drivePre, fx.drivePost,
+           fx.driveBlend, fx.delay, fx.delayBlend].forEach(function (n) {
+            try { n.dispose(); } catch (e) {}
+          });
+        }
       });
       try { R.gain.dispose(); } catch (e) {}
     }, 400);
@@ -7450,6 +7522,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           R.liveVoices[slot] = { pulses: r.voices[slot].pulses, rotate: r.voices[slot].rotate };
         });
       }
+      if (!R.fxReady && R.fx) { applyHitFx(R, r); R.fxReady = true; }
       var stride = SECT_STRIDE[r.div] || 1;
       R.tick = (R.tick || 0) + 1;
       /* Bars, not the stride gate below: a phrase length is measured against a real bar,
