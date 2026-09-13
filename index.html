@@ -1740,6 +1740,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   }
 
+  /* The server-version signal a downloaded place compares itself against. Deliberately not a
+     single opaque hash: count catches a deletion (maxUpdatedAt alone would not move), and
+     maxUpdatedAt catches an edit to an existing row (count alone would not move). Either
+     changing means the place has moved on since the download. */
+  function placeVersion(rows) {
+    var max = null;
+    rows.forEach(function (r) {
+      if (r.updated_at && (!max || r.updated_at > max)) { max = r.updated_at; }
+    });
+    return { count: rows.length, maxUpdatedAt: max };
+  }
+
+  function sameVersion(a, b) {
+    return !!a && !!b && a.count === b.count && a.maxUpdatedAt === b.maxUpdatedAt;
+  }
+
   /* A row from public_features is shaped like the view: id, place, kind, geometry,
      properties, created_at — flat, not nested the way a GeoJSON Feature is. rowFor() (the
      publish path) strips id/place/kind out of properties before sending; this is that,
@@ -2921,6 +2937,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   window.__fa.sb = sb;   /* null offline, a client otherwise — measurable either way */
   window.__fa.fetchPublished = fetchPublished;
   window.__fa.mergeRemote = mergeRemote;
+  window.__fa.offline = { version: placeVersion, sameVersion: sameVersion };
   window.__fa.setter = setterState;
   window.__fa.applyModeGating = applyModeGating;
   /* `refresh` is not only a debug hook: the deferred module that defines FA_PENDING calls it

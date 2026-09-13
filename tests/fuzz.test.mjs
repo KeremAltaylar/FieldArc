@@ -60,6 +60,11 @@ test("an open published point is returned exactly", async () => {
   assert.deepEqual(data.geometry.coordinates, [TRUE_LON, TRUE_LAT]);
 });
 
+test("an open published point carries updated_at, not just created_at", async () => {
+  const { data } = await db.from("public_features").select("*").eq("id", ids.open).single();
+  assert.ok(data.updated_at, "updated_at must be exposed for a downloaded place to compare against");
+});
+
 test("a sensitive point is moved, but stays within its radius", async () => {
   const { data } = await db.from("public_features").select("*").eq("id", ids.sensitive).single();
   const d = metres(data.geometry.coordinates, [TRUE_LON, TRUE_LAT]);
