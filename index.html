@@ -3064,6 +3064,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      row. Creating a point or a route selects it without throwing the sheet over the map;
      on a phone that hid the very thing you were aiming at. */
   function setSelected(id, reveal) {
+    var wasSelected = selected;
     /* Only another route ends a walk. Selecting a point along the one you are walking is
        inspecting, not leaving — and since a point's rhythm is edited from its own card,
        stopping here meant you could never hear an edit you were making. Deselecting does
@@ -3085,7 +3086,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderLabels();
     var f = id ? feature(id) : null;
     var routeId = (f && f.properties.kind === "route") ? f.properties.id : null;
-    if (place) {
+    if (place && id !== wasSelected) {
       history.pushState(null, "", urlForSelection(place.properties.id, routeId));
     }
   }

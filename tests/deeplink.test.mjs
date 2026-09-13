@@ -47,3 +47,11 @@ test("setSelected pushes the URL, and setPlace's own URL update comes first", ()
   const setSel = html.slice(html.indexOf("function setSelected("), html.indexOf("function feature("));
   assert.match(setSel, /pushState|replaceState/, "selecting must update the address bar");
 });
+
+test("setSelected does not push when the selection hasn't actually changed", () => {
+  const setSel = html.slice(html.indexOf("function setSelected("), html.indexOf("function feature("));
+  assert.match(setSel, /var\s+wasSelected\s*=\s*selected/,
+    "must capture the previous selected value before reassigning");
+  assert.match(setSel, /id\s*!==?\s*wasSelected/,
+    "pushState must only fire when the id actually changed, preventing spurious history entries");
+});
