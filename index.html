@@ -4922,13 +4922,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      later phrase is a related pattern rather than a coin flip (A-11/A-12). */
   function advanceSentence(r, R) {
     R.barsThisSentence = (R.barsThisSentence || 0) + 1;
-    var span = Math.max(1, r.sentenceBars || 8);
-    if (R.barsThisSentence < span || !r.sentenceSet) { return; }
+    var span = Math.max(1, r.sentenceBars);
+    if (R.barsThisSentence < span || !r.sentenceSet || !R.liveVoices) { return; }
     R.barsThisSentence = 0;
     R.sentenceIdx = ((R.sentenceIdx || 0) + 1) % SENTENCE_VARIATIONS;
+    var steps = Math.max(1, Math.min(64, r.steps | 0));
     HIT_SLOTS.forEach(function (slot) {
       var set = r.sentenceSet[slot], combo = set && set[R.sentenceIdx];
-      if (combo) { r.voices[slot].pulses = combo.pulses; r.voices[slot].rotate = combo.rotate; }
+      if (!combo) { return; }
+      R.liveVoices[slot].pulses = Math.min(combo.pulses, steps);
+      R.liveVoices[slot].rotate = combo.rotate % steps;
     });
   }
 
@@ -5001,7 +5004,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       show();
       input.addEventListener("input", function () {
         r[fl.k] = +input.value; show(); commitR();
-        if (fl.k === "steps") { renderRhythmPanel(); }
+        if (fl.k === "steps") {
+          /* A phrase set built for the old step count can hand a later sentence-boundary
+             combo whose pulses exceed the new steps — advanceSentence clamps that
+             defensively, but stale is still stale: rebuild it so a later phrase is
+             actually coprime with the step count now in force, the property the
+             generator exists to guarantee. */
+          r.sentenceSet = buildSentenceSet(Math.max(4, Math.min(64, r.steps | 0)));
+          renderRhythmPanel();
+        }
       });
     }
     row.appendChild(input); row.appendChild(val);
@@ -7346,6 +7357,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!f) { continue; }
       var r = rhythmOf(f);
       if (!r.on) { continue; }
+      /* R.liveVoices is a playback-only copy of pulses/rotate, seeded once from the
+         setter's own r.voices and never written back. The sentence maker mutates this
+         copy as phrases advance; r.properties.rhythm — the object save() persists and
+         pendingDiff() hashes — stays exactly as the setter left it, forever. Seeded every
+         tick this point is scheduled (not only past the stride gate below), since
+         advanceSentence runs before that gate and needs it already in place. */
+      if (!R.liveVoices) {
+        R.liveVoices = {};
+        HIT_SLOTS.forEach(function (slot) {
+          R.liveVoices[slot] = { pulses: r.voices[slot].pulses, rotate: r.voices[slot].rotate };
+        });
+      }
       var stride = SECT_STRIDE[r.div] || 1;
       R.tick = (R.tick || 0) + 1;
       /* Bars, not the stride gate below: a phrase length is measured against a real bar,
@@ -7372,18 +7395,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         continue;
       }
       for (var v = 0; v < HIT_SLOTS.length; v++) {
-        var slot = HIT_SLOTS[v], cfg = r.voices[slot];
+        var slot = HIT_SLOTS[v], cfg = r.voices[slot], live = R.liveVoices[slot];
         var pl = R.players[slot];
-        if (!pl || !pl.loaded || !cfg || cfg.pulses <= 0) { continue; }
-        var pat = rotated(euclid(Math.min(cfg.pulses, steps), steps), cfg.rotate || 0);
+        if (!pl || !pl.loaded || !cfg || !live || live.pulses <= 0) { continue; }
+        var pat = rotated(euclid(Math.min(live.pulses, steps), steps), live.rotate || 0);
         if (!pat[at]) { continue; }
-        /* A-11: never twice identically. A few cents and a few percent, no more. */
+        /* A-11: never twice identically. A few cents and a few percent, no more. cfg.pitch
+           is setter-controlled and static during playback, unlike pulses/rotate above. */
         pl.playbackRate = Math.pow(2, (cfg.pitch || 0) / 12) * (1 + (Math.random() - 0.5) * 0.012);
         /* A-12: accents on downbeats. r.idiom is 0 for a point that has not opted in — the
            multiplication makes that exactly zero contribution, not merely a small one. 4 dB
            is the ceiling so a fully-idiomatic downbeat never pushes into the limiter next to
-           a hit that already sits near cfg.gain's own top. */
-        var accentDb = (r.idiom || 0) * metricWeight(at, steps) * 4;
+           a hit that already sits near cfg.gain's own top. The position passed to
+           metricWeight is (R.tick - 1) % 16 — the raw sixteenth-note position within one
+           real bar (16 rhythmStep ticks) — not `at`/`steps`: `at` is this voice's position
+           within its OWN steps-length pattern grid (64 by default, i.e. four bars), so
+           passing steps there would measure quarter-/eighth-note landmarks against a
+           four-bar span instead of a real bar, and no actual quarter-note would ever land
+           on one. */
+        var accentDb = (r.idiom || 0) * metricWeight((R.tick - 1) % 16, 16) * 4;
         pl.volume.value = 20 * Math.log10(Math.max(0.02, (cfg.gain === undefined ? 1 : cfg.gain)))
                         + (Math.random() - 0.5) * 1.5 + accentDb;
         try { pl.start(time); } catch (e) { /* a retrigger inside its own fade */ }

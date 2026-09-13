@@ -32,6 +32,15 @@ test("metricWeight puts the downbeat highest and degrades gracefully off the 4/8
   assert.equal(metricWeight(0, 13), 1, "the downbeat is strongest even when steps has no clean quarter/eighth");
   assert.equal(metricWeight(4, 13), 0.12,
     "13 has no integer quarter or eighth spacing — every non-zero position floors, none throws or NaNs");
+  /* Every fixture above happens to use steps = 16, the one value where a bar and a full
+     pattern grid coincide — which is exactly why the accent-term call site could pass the
+     wrong position argument (a voice's own `steps`, e.g. 64 by default) without any test
+     here catching it. 64 is the shipped default and must still land quarter/eighth
+     landmarks correctly on its own four-bar grid. */
+  assert.equal(metricWeight(0, 64), 1, "the downbeat is strongest on a 64-step grid too");
+  assert.equal(metricWeight(16, 64), 0.6, "64/4 = 16 is a quarter-note landmark");
+  assert.equal(metricWeight(8, 64), 0.35, "64/8 = 8 is an eighth-note landmark, weaker than a quarter");
+  assert.equal(metricWeight(3, 64), 0.12, "an off-grid position on a 64-step grid still floors, not zero");
 });
 
 test("defaultRhythm carries an idiom default, and rhythmOf backfills it field-by-field", () => {
@@ -44,13 +53,17 @@ test("defaultRhythm carries an idiom default, and rhythmOf backfills it field-by
 
 test("the accent term is exactly zero when idiom is zero", () => {
   const step = slice("function rhythmStep(time)", "function updateBed");
-  /* Matches the exact shape Step 5 writes: (r.idiom || 0) * metricWeight(at, steps) * 4.
-     Checked as one literal pattern rather than "idiom and metricWeight both appear
-     somewhere nearby" — the first draft of this test used a generic multiplication regex
-     that did not actually match this shape (idiom comes before metricWeight here, guarded
-     by `|| 0`, not the other way around), and would have passed against code that never
-     multiplied the two at all. */
-  assert.match(step, /\(r\.idiom \|\| 0\)\s*\*\s*metricWeight\(at,\s*steps\)/,
+  /* Matches the exact shape rhythmStep writes: (r.idiom || 0) * metricWeight((R.tick - 1) %
+     16, 16) * 4. Checked as one literal pattern rather than "idiom and metricWeight both
+     appear somewhere nearby" — the first draft of this test used a generic multiplication
+     regex that did not actually match this shape (idiom comes before metricWeight here,
+     guarded by `|| 0`, not the other way around), and would have passed against code that
+     never multiplied the two at all. The position argument is `(R.tick - 1) % 16` rather
+     than `at`/`steps` — `at` is a voice's position within its own steps-length pattern grid
+     (64 by default, four bars), so passing it (with steps) would measure metricWeight's
+     quarter-/eighth-note landmarks against a four-bar span instead of one real bar. That
+     doesn't change whether idiom=0 zeroes the whole term, which is what this test checks. */
+  assert.match(step, /\(r\.idiom \|\| 0\)\s*\*\s*metricWeight\(\(R\.tick - 1\) % 16,\s*16\)/,
     "idiom must multiply metricWeight's result, with a || 0 guard so idiom=0 is a real zero");
 });
 
@@ -125,7 +138,11 @@ test("advanceSentence only rewrites the pattern once sentenceBars bars have elap
      is `sentenceIdx % SENTENCE_VARIATIONS`, not `% this fixture's array length`, so a
      shorter fixture array would silently no-op past its own end instead of proving a wrap
      at all. This bit the first draft of this test. */
-  const r = { sentenceBars: 2,
+  const r = { sentenceBars: 2, steps: 64,
+    /* r.voices is the persisted, setter-owned pattern. advanceSentence must never write to
+       it — it mutates R.liveVoices, a playback-only copy — so this fixture's r.voices stays
+       fixed as a sentinel: every assertion below checks R.liveVoices, and a final check
+       confirms r.voices never moved at all. */
     voices: { low: { pulses: 8, rotate: 0 }, mid: { pulses: 13, rotate: 2 },
               high: { pulses: 21, rotate: 1 }, rand: { pulses: 5, rotate: 11 } },
     sentenceSet: {
@@ -134,18 +151,72 @@ test("advanceSentence only rewrites the pattern once sentenceBars bars have elap
       high: [{ pulses: 21, rotate: 1 }, { pulses: 19, rotate: 8 }, { pulses: 23, rotate: 2 }, { pulses: 25, rotate: 6 }],
       rand: [{ pulses: 5,  rotate: 11 }, { pulses: 7, rotate: 20 }, { pulses: 9,  rotate: 15 }, { pulses: 6,  rotate: 3 }]
     } };
-  const R = {};
+  /* The scheduler seeds R.liveVoices once, as a shallow copy of r.voices, before it ever
+     calls advanceSentence — reproduced here rather than re-deriving rhythmStep's seeding. */
+  const R = { liveVoices: {
+    low: { pulses: 8, rotate: 0 }, mid: { pulses: 13, rotate: 2 },
+    high: { pulses: 21, rotate: 1 }, rand: { pulses: 5, rotate: 11 }
+  } };
   advanceSentence(r, R);
-  assert.equal(r.voices.low.pulses, 8, "one bar into a two-bar phrase: unchanged");
+  assert.equal(R.liveVoices.low.pulses, 8, "one bar into a two-bar phrase: unchanged");
   advanceSentence(r, R);
-  assert.equal(r.voices.low.pulses, 9, "two bars elapsed: the phrase advances to variation 1");
+  assert.equal(R.liveVoices.low.pulses, 9, "two bars elapsed: the phrase advances to variation 1");
   assert.equal(R.barsThisSentence, 0, "the bar counter resets on advance");
   advanceSentence(r, R); advanceSentence(r, R);
-  assert.equal(r.voices.low.pulses, 11, "four bars elapsed total: variation 2");
+  assert.equal(R.liveVoices.low.pulses, 11, "four bars elapsed total: variation 2");
   advanceSentence(r, R); advanceSentence(r, R);
-  assert.equal(r.voices.low.pulses, 7, "six bars elapsed total: variation 3");
+  assert.equal(R.liveVoices.low.pulses, 7, "six bars elapsed total: variation 3");
   advanceSentence(r, R); advanceSentence(r, R);
-  assert.equal(r.voices.low.pulses, 8, "eight bars elapsed total: wraps back to variation 0");
+  assert.equal(R.liveVoices.low.pulses, 8, "eight bars elapsed total: wraps back to variation 0");
+  ["low", "mid", "high", "rand"].forEach((slot) => {
+    assert.equal(r.voices[slot].pulses, r.sentenceSet[slot][0].pulses,
+      slot + ": r.voices (the persisted, setter-owned pattern) must never be touched by advanceSentence");
+    assert.equal(r.voices[slot].rotate, r.sentenceSet[slot][0].rotate,
+      slot + ": same for rotate — only R.liveVoices may move during playback");
+  });
+});
+
+test("advanceSentence does nothing when R.liveVoices has not been seeded yet", () => {
+  const { advanceSentence } = extractRhythmGenerators();
+  /* Guards against a caller that skips rhythmStep's lazy-init: without R.liveVoices there
+     is nothing safe to mutate, so advanceSentence must no-op rather than throw or silently
+     fall back to writing r.voices. */
+  const r = { sentenceBars: 1, steps: 16,
+    voices: { low: { pulses: 8, rotate: 0 }, mid: { pulses: 13, rotate: 2 },
+              high: { pulses: 21, rotate: 1 }, rand: { pulses: 5, rotate: 11 } },
+    sentenceSet: {
+      low: [{ pulses: 9, rotate: 3 }], mid: [{ pulses: 15, rotate: 5 }],
+      high: [{ pulses: 19, rotate: 8 }], rand: [{ pulses: 7, rotate: 20 }]
+    } };
+  const R = {};
+  assert.doesNotThrow(() => advanceSentence(r, R));
+  assert.equal(R.liveVoices, undefined, "no liveVoices must be fabricated by advanceSentence itself");
+  assert.equal(r.voices.low.pulses, 8, "r.voices must still be untouched");
+});
+
+test("advanceSentence clamps a stale sentenceSet combo to the current steps, so voices never collide", () => {
+  const { advanceSentence } = extractRhythmGenerators();
+  /* A setter lowered steps to 8 after the phrase set was built for 64 — the stale combo's
+     pulses (55) and rotate (40) both exceed the new step count. Finding 3 fixes the root
+     cause (rebuilding sentenceSet when steps changes); this is the defensive backstop that
+     must hold even if a stale set slips through some other path. */
+  const r = { sentenceBars: 1, steps: 8,
+    voices: { low: { pulses: 3, rotate: 0 }, mid: { pulses: 3, rotate: 0 },
+              high: { pulses: 3, rotate: 0 }, rand: { pulses: 3, rotate: 0 } },
+    /* advanceSentence's first call moves R.sentenceIdx from undefined to 1 (0 + 1, wrapped
+       by SENTENCE_VARIATIONS), so the stale combo lives at index 1 here, with a harmless
+       placeholder at index 0 that is never reached. */
+    sentenceSet: { low: [{ pulses: 3, rotate: 0 }, { pulses: 55, rotate: 40 }],
+                   mid: [{ pulses: 3, rotate: 0 }, { pulses: 3, rotate: 0 }],
+                   high: [{ pulses: 3, rotate: 0 }, { pulses: 3, rotate: 0 }],
+                   rand: [{ pulses: 3, rotate: 0 }, { pulses: 3, rotate: 0 }] } };
+  const R = { liveVoices: {
+    low: { pulses: 3, rotate: 0 }, mid: { pulses: 3, rotate: 0 },
+    high: { pulses: 3, rotate: 0 }, rand: { pulses: 3, rotate: 0 }
+  } };
+  advanceSentence(r, R);
+  assert.equal(R.liveVoices.low.pulses, 8, "pulses must be clamped down to steps, never exceed it");
+  assert.equal(R.liveVoices.low.rotate, 40 % 8, "rotate must wrap into [0, steps)");
 });
 
 test("rhythmStep advances the sentence on a bar boundary, counted independently of this voice's own div", () => {
