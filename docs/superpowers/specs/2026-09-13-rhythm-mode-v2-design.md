@@ -239,6 +239,19 @@ room's own delay controls are already laid out in the route's Patch panel). "Gen
 pattern" continues to call `randomRhythm()` unchanged; it now also seeds `sentenceSet` from
 the same density-band logic at generation time.
 
+**Decided 2026-09-13, after the first design pass:** eight sliders per voice (sixteen total,
+on top of the existing three) is a lot to dial in by hand for someone who mostly wants "make
+it sound interesting," so the new effects get their own randomize action rather than only
+manual sliders. A second ghost button, "Randomize effects," sits next to "Generate a pattern"
+in the same header and calls a new `randomHitFx(r)` — the same shape as `randomRhythm()`, but
+rolling `stretch`/`crush`/`drive`/`delayDiv`/`delayFb`/`delayWet` per voice within modest
+default bands (mostly low stretch and crush, occasional higher outliers, a random musical
+division for each voice's delay) rather than a full 0–1 uniform draw, so a click lands
+somewhere usable rather than somewhere extreme most of the time. It is deliberately a
+separate action from "Generate a pattern": a setter who has a pattern they like should be able
+to reroll only its effects, and vice versa. The sliders stay — this is an additional path to a
+result, not a replacement for hand-tuning one voice's drive.
+
 ## Verification
 
 Per the studio rulebook's `verify.md` and this project's own [[verify-by-measuring]] standing
