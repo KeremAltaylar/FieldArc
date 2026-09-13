@@ -1702,6 +1702,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      — both are exactly one path segment, and only knowing which host this is resolves it. */
   var BASE_PATH = location.hostname === "keremaltaylar.github.io" ? "/FieldArc" : "";
 
+  /* A relative fetch (places.geojson, ./sw.js) resolves against document.baseURI, which
+     tracks whatever history.pushState/replaceState last put in the address bar — not the URL
+     this page actually loaded from. Once restoreDeepLinkPath (or a route selection) rewrites
+     the visible path to something deeper (/:place/:route), every later relative fetch breaks:
+     places.geojson 404s from /:place/places.geojson instead of the site's real root. A <base>
+     tag pins resolution to that root regardless of what the address bar says afterward. */
+  (function pinBaseURI() {
+    var base = document.createElement("base");
+    base.href = location.origin + BASE_PATH + "/";
+    document.head.appendChild(base);
+  })();
+
   function parseDeepLink(pathname) {
     var rest = pathname.indexOf(BASE_PATH) === 0 ? pathname.slice(BASE_PATH.length) : pathname;
     var parts = rest.split("/").filter(function (s) { return s && s !== "index.html"; });

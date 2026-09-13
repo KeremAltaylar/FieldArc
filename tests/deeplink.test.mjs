@@ -23,6 +23,22 @@ test("parseDeepLink strips BASE_PATH before reading segments", () => {
   assert.match(src, /index\.html/, "must ignore a literal index.html segment from a direct file open");
 });
 
+test("pinBaseURI pins document.baseURI to BASE_PATH before any relative fetch can run", () => {
+  const start = html.indexOf("var BASE_PATH");
+  const src = html.slice(start, html.indexOf("function parseDeepLink("));
+  assert.match(src, /function pinBaseURI\(/,
+    "a <base> tag must be inserted right after BASE_PATH is known, before restoreDeepLinkPath's " +
+    "pushState/replaceState rewrites the address bar out from under any later relative fetch " +
+    "(places.geojson, ./sw.js) — a relative URL resolves against document.baseURI, which tracks " +
+    "the address bar, not the URL the page actually loaded from");
+  assert.match(src, /document\.createElement\(\s*["']base["']\s*\)/,
+    "must insert an actual <base> element, not just read location");
+  assert.match(src, /document\.head\.appendChild/, "the <base> element must land in <head> to take effect");
+  assert.match(src, /location\.origin\s*\+\s*BASE_PATH/,
+    "the <base> href must be built from BASE_PATH (the site's real root), not from the " +
+    "current, possibly-already-rewritten pathname");
+});
+
 test("setPlace returns fetchPublished's promise, so a deep link can chain past it", () => {
   const start = html.indexOf("function setPlace(p, initial)");
   const src = html.slice(start, html.indexOf("function renderPlaceList"));
