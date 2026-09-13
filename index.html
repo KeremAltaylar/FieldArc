@@ -3007,8 +3007,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return fetchPublished(place ? place.properties.id : DEFAULT_PLACE);
   }
 
+  /* Every place name in this catalogue is Turkish, and most carry a diacritic ("Koşuyolu",
+     "Göktürk", "Çamlık") that an ASCII-typed search ("kosuyolu") will never substring-match
+     against verbatim. NFD strips the diacritics that decompose (ç, ö, ü, ş, ğ all reduce to
+     their base Latin letter plus a combining mark); "ı"/"İ" do not decompose under NFD at all
+     — they are their own base characters — so they need an explicit fold to plain "i" first. */
+  function foldTurkish(s) {
+    return s.replace(/[ıİ]/g, "i")
+      .normalize("NFD").replace(/[̀-ͯ]/g, "")
+      .toLowerCase();
+  }
+
   function renderPlaceList() {
-    var q = $("#place-search").value.trim().toLowerCase();
+    var q = foldTurkish($("#place-search").value.trim());
     var ul = $("#place-list");
     ul.textContent = "";
     var counts = {};
@@ -3016,7 +3027,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       counts[f.properties.place] = (counts[f.properties.place] || 0) + 1;
     });
     var shown = places.filter(function (p) {
-      return !q || p.properties.name.toLowerCase().indexOf(q) !== -1;
+      return !q || foldTurkish(p.properties.name).indexOf(q) !== -1;
     });
     if (!shown.length) {
       var none = document.createElement("li");
