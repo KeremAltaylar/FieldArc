@@ -105,7 +105,7 @@ test("disposeRhythm disposes every per-slot fx node, not just the player", () =>
 test("applyHitFx maps crush to both the wet blend and the BitCrusher's own bit depth", () => {
   const src = slice("function applyHitFx(R, r)", "\n  }\n");
   assert.match(src, /crushBlend\.fade\.rampTo\(/);
-  assert.match(src, /\.crush\.bits\s*=/);
+  assert.match(src, /\.crush\.bits\.rampTo\(/);
   assert.match(src, /driveBlend\.fade\.rampTo\(/);
   assert.match(src, /delayBlend\.fade\.rampTo\(/);
   assert.match(src, /delay\.delayTime\.rampTo\(/);
@@ -131,4 +131,11 @@ test("rhythmStep applies each point's fx once it is ready, without adding new sc
   assert.match(step, /applyHitFx\(/);
   assert.doesNotMatch(step, /scheduleRepeat|\.clear\(/,
     "this plan must never add a new Transport scheduling call");
+});
+
+test("commitPatch re-applies each in-range point's hit fx, so a tempo change reaches the per-slot delay", () => {
+  const src = slice("function commitPatch(f, patch)", "\n  }\n");
+  assert.match(src, /applyRhythmFx\(patch\)/, "the shared room must still re-apply on commit");
+  assert.match(src, /bed\.rhythms/, "must reach into the live rhythm points, not just the shared room");
+  assert.match(src, /applyHitFx\(/, "must re-apply each point's per-slot fx too, not just the shared room's");
 });

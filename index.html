@@ -7264,7 +7264,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!cfg || !fx) { return; }
       var crushAmt = cfg.crush || 0;
       fx.crushBlend.fade.rampTo(crushAmt, 0.2);
-      fx.crush.bits = Math.max(2, Math.round(16 - crushAmt * 14));
+      fx.crush.bits.rampTo(Math.max(2, Math.round(16 - crushAmt * 14)), 0.2);
       var driveAmt = cfg.drive || 0;
       fx.driveBlend.fade.rampTo(driveAmt, 0.2);
       fx.drivePre.gain.rampTo(1 + driveAmt * 12, 0.2);
@@ -9302,6 +9302,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           applyRevDecay(patch);
           applySectRhythm(patch);
           applyRhythmFx(patch);
+          Object.keys(bed.rhythms || {}).forEach(function (id) {
+            var rf = feature(id);
+            if (rf) { applyHitFx(bed.rhythms[id], rhythmOf(rf)); }
+          });
         }
         updateBed();
       }
