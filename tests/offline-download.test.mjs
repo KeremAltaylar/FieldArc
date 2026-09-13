@@ -72,6 +72,19 @@ test("setPlace checks staleness for a place that was downloaded", () => {
   assert.match(src, /checkStaleness\(/);
 });
 
+test("setPlace re-enables the offline button, so a stale in-flight arm-query or " +
+     "download left over from the previous place can't leave it stuck disabled", () => {
+  /* The stale-place guard in the #offline handler (`if (place !== targetPlace) { return; }`)
+     abandons any in-flight operation for the OLD place without ever resetting
+     btn.disabled back to false for it. setPlace already resets offlineArmed and the
+     button's text on every switch — disabled must be reset right alongside them. */
+  const src = slice("function setPlace(p, initial)", "function renderPlaceList");
+  const armedAt = src.indexOf("offlineArmed = null;");
+  assert.ok(armedAt !== -1, "setPlace must still reset offlineArmed");
+  assert.match(src.slice(armedAt), /\$\("#offline"\)\.disabled\s*=\s*false/,
+    "must reset the button's disabled state alongside offlineArmed and its text");
+});
+
 test("loadPlaces falls back to the downloaded snapshot when the place ends up with no " +
      "features after fetchPublished settles", () => {
   /* This is the fix for the cold/offline-reload bug: putPlaceSnapshot wrote a snapshot

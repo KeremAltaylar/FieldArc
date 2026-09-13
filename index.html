@@ -2973,6 +2973,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     commit();
     offlineArmed = null;
     $("#offline").textContent = "Download map";
+    $("#offline").disabled = false;
     checkStaleness(p.properties.id);
     return fetchPublished(place ? place.properties.id : DEFAULT_PLACE);
   }
