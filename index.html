@@ -4368,7 +4368,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         return (DIV_LABEL[v] || v) + " \u00b7 " +
           divSeconds(v, pacer ? pacer.patch.tempo : 72).toFixed(2) + " s";
       } },
-    { k: "gain", label: "level", min: 0, max: 1, step: 0.05 }
+    { k: "gain", label: "level", min: 0, max: 1, step: 0.05 },
+    { k: "idiom", label: "idiom", min: 0, max: 1, step: 0.02 },
+    { k: "sentenceBars", label: "phrase length", min: 4, max: 32, step: 1, unit: " bars" }
   ];
 
   var GRAIN_FIELDS = [
@@ -5489,7 +5491,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        any instant instead of waiting out an eleven-minute period in real time. */
     window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
                           clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
-    window.__fa.rhythm = { euclid: euclid, rotated: rotated, of: rhythmOf, slots: HIT_SLOTS };
+    window.__fa.rhythm = { euclid: euclid, rotated: rotated, of: rhythmOf, slots: HIT_SLOTS,
+                            metricWeight: metricWeight };
     window.__fa.zoneFire = zoneFire;   /* which zones speak, testable without walking one */
     window.__fa.grains = { fire: fireGrains, def: defaultGrains };   /* testable without an upload */
     window.__fa.morph.trace = traceDraw;   /* measurable without waiting on a frame */
@@ -6921,9 +6924,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return out;
   }
 
+  /* How strong a beat position is within a steps-length bar, independent of any one voice's
+     own div/pulses — the downbeat is always strongest, then quarter- and eighth-note
+     landmarks where steps actually divides evenly into them, everything else at a floor
+     rather than zero so idiom accents a pattern without ever silencing part of it. */
+  function metricWeight(at, steps) {
+    if (at === 0) { return 1; }
+    var quarter = steps / 4, eighth = steps / 8;
+    if (Number.isInteger(quarter) && at % quarter === 0) { return 0.6; }
+    if (Number.isInteger(eighth) && at % eighth === 0) { return 0.35; }
+    return 0.12;
+  }
+
   function defaultRhythm() {
     return {
-      on: true, steps: 64, div: "16n", gain: 0.85, swing: 0,
+      on: true, steps: 64, div: "16n", gain: 0.85, swing: 0, idiom: 0.35,
       /* Sixty-four sixteenths is four bars, which is long enough for four lines to drift
          against each other instead of repeating every bar. The pulse counts are all
          different and three of the four are coprime with 64, so the pattern they make
@@ -6968,6 +6983,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!f.properties.rhythm) { f.properties.rhythm = defaultRhythm(); }
     var r = f.properties.rhythm;
     if (!r.voices) { r.voices = defaultRhythm().voices; }
+    if (r.idiom === undefined) { r.idiom = defaultRhythm().idiom; }
     HIT_SLOTS.forEach(function (k) {
       if (!r.voices[k]) { r.voices[k] = defaultRhythm().voices[k]; }
     });
@@ -7298,8 +7314,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (!pat[at]) { continue; }
         /* A-11: never twice identically. A few cents and a few percent, no more. */
         pl.playbackRate = Math.pow(2, (cfg.pitch || 0) / 12) * (1 + (Math.random() - 0.5) * 0.012);
+        /* A-12: accents on downbeats. r.idiom is 0 for a point that has not opted in — the
+           multiplication makes that exactly zero contribution, not merely a small one. 4 dB
+           is the ceiling so a fully-idiomatic downbeat never pushes into the limiter next to
+           a hit that already sits near cfg.gain's own top. */
+        var accentDb = (r.idiom || 0) * metricWeight(at, steps) * 4;
         pl.volume.value = 20 * Math.log10(Math.max(0.02, (cfg.gain === undefined ? 1 : cfg.gain)))
-                        + (Math.random() - 0.5) * 1.5;
+                        + (Math.random() - 0.5) * 1.5 + accentDb;
         try { pl.start(time); } catch (e) { /* a retrigger inside its own fade */ }
       }
     }
