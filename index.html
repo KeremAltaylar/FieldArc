@@ -1439,8 +1439,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <span id="place-name">Belgrad Ormanı</span><span class="caret">▾</span>
       </button>
       <div id="place-menu" hidden>
-        <input type="text" id="place-search" placeholder="Search forests and korular…" aria-label="Search places">
+        <input type="text" id="place-search" placeholder="Search forests, korular and routes…" aria-label="Search places and routes">
         <ul id="place-list" role="listbox"></ul>
+        <p id="route-list-label" class="hint" hidden>Routes</p>
+        <ul id="route-list" role="listbox"></ul>
       </div>
     </div>
     <button type="button" id="layers-btn" aria-expanded="false" aria-label="Layers">Layers</button>
@@ -1897,6 +1899,30 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var p = Object.assign({}, row.properties,
       { id: row.id, place: row.place, kind: row.kind, _remote: true });
     return { type: "Feature", properties: p, geometry: row.geometry };
+  }
+
+  var allRoutes = null;
+
+  /* Every published route across every place, not just the one currently selected.
+     fetchPublished only ever loads the place a listener already has open, so a route
+     drawn anywhere else in the catalogue was undiscoverable without already knowing its
+     place id — the picker's own "Routes" section exists to fix exactly that. Refetched
+     each time the menu opens rather than cached forever: cheap enough for a list a
+     listener browses occasionally, and it means a route published moments ago shows up
+     without a reload. */
+  function fetchAllRoutes() {
+    if (!sb) { return Promise.resolve(allRoutes || []); }
+    return sb.from("public_features").select("id, place, properties, created_at")
+      .eq("kind", "route")
+      .then(function (r) {
+        if (r.error || !r.data) { return allRoutes || []; }
+        allRoutes = r.data.map(function (row) {
+          return { id: row.id, place: row.place,
+                    name: (row.properties && row.properties.name) || "" };
+        });
+        return allRoutes;
+      })
+      .catch(function () { return allRoutes || []; /* offline — show the last fetch, if any */ });
   }
 
   function fetchPublished(placeId) {
@@ -3085,6 +3111,40 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       li.appendChild(b);
       ul.appendChild(li);
     });
+    renderRouteList(q);
+  }
+
+  /* A route's own place is always in the static catalogue — a setter can only draw
+     inside a place they already selected from this same picker — so byId() below is
+     expected to resolve every route it lists; one that doesn't (a stale row from a
+     place later removed from the catalogue) is skipped rather than left to throw. */
+  function renderRouteList(q) {
+    var ul = $("#route-list"), label = $("#route-list-label");
+    ul.textContent = "";
+    var shown = (allRoutes || []).filter(function (rt) {
+      var p = byId(rt.place);
+      if (!p) { return false; }
+      if (!q) { return true; }
+      return foldTurkish(rt.name).indexOf(q) !== -1 ||
+             foldTurkish(p.properties.name).indexOf(q) !== -1;
+    });
+    label.hidden = !shown.length;
+    shown.forEach(function (rt) {
+      var p = byId(rt.place);
+      var li = document.createElement("li");
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "placerow";
+      b.setAttribute("aria-current", String(selected === rt.id));
+      b.innerHTML = '<span class="pkind">route</span>' +
+        "<span>" + (rt.name || "Untitled route").replace(/</g, "&lt;") + "</span>" +
+        '<span class="pmeta">' + p.properties.name.replace(/</g, "&lt;") + "</span>";
+      b.addEventListener("click", function () {
+        setPlace(p).then(function () { setSelected(rt.id, true); });
+      });
+      li.appendChild(b);
+      ul.appendChild(li);
+    });
   }
 
   function openPlaceMenu() {
@@ -3092,6 +3152,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#place-btn").setAttribute("aria-expanded", "true");
     $("#place-search").value = "";
     renderPlaceList();
+    fetchAllRoutes().then(function () { renderRouteList(""); });
     $("#place-search").focus();
   }
   function closePlaceMenu() {

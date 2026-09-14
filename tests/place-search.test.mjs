@@ -43,11 +43,20 @@ test("renderPlaceList filters through foldTurkish, not a bare toLowerCase", () =
   /* Explicit end marker, not the generic "function " heuristic: renderPlaceList's own body
      nests fc.features.forEach(function (f) {...}) before reaching the filter() call this
      test needs to see, so the generic heuristic would truncate before it and this test
-     would pass without checking the line it exists to check. */
-  const render = slice("function renderPlaceList()", "function openPlaceMenu(");
+     would pass without checking the line it exists to check. Ends at renderRouteList,
+     renderPlaceList's own next sibling — not at openPlaceMenu, which is one function
+     further and would also pull renderRouteList's own foldTurkish calls into this count. */
+  const render = slice("function renderPlaceList()", "function renderRouteList(");
   const foldCalls = render.match(/foldTurkish\(/g) || [];
   assert.equal(foldCalls.length, 2,
     "both the typed query AND each candidate name must be folded, or the two sides never match");
   assert.doesNotMatch(render, /\.value\.trim\(\)\.toLowerCase\(\)/,
     "reverting to plain toLowerCase() silently reopens the diacritic gap");
+});
+
+test("renderRouteList also filters through foldTurkish against both the route name and its place name", () => {
+  const render = slice("function renderRouteList(q)", "function openPlaceMenu(");
+  const foldCalls = render.match(/foldTurkish\(/g) || [];
+  assert.equal(foldCalls.length, 2,
+    "both rt.name and its place's name must be folded, the same as the place list");
 });
