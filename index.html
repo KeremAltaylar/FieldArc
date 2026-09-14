@@ -7413,6 +7413,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      a hit." This caps how long a single stretched hit is allowed to ring, independent of
      playbackRate. */
   var MAX_STRETCH_HIT_S = 1.5;
+  var STRETCH_STOP_FADE_S = 0.025;
 
   /* Applied once when a point's warp engines are first ready, and again whenever a setter
      moves a slot's stretch slider — the same "one chain, apply on change" shape
@@ -7475,10 +7476,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var blend = makeBlend(Tone, 0);
           R.players[slot] = new Tone.Player({ url: R.buffers[slot], fadeOut: 0.02 })
             .connect(blend.a);
+          /* GrainPlayer.stop() hard-cuts every sounding grain (its own internal
+             _onstop forces each grain's fadeOut to 0 before stopping it) — measured
+             against the real Tone.js build. This gain stage fades the signal down
+             ahead of that hard stop so the cut lands on near-silence instead of a
+             mid-envelope grain, both at the MAX_STRETCH_HIT_S cap and on any retrigger
+             that lands while a previous grain cloud is still ringing. */
+          var stretchGain = new Tone.Gain(1);
           var gp = new Tone.GrainPlayer({ url: R.buffers[slot], loop: false })
-            .connect(blend.b);
+            .connect(stretchGain);
+          stretchGain.connect(blend.b);
           blend.connect(R.fx[slot].input);
-          R.stretch[slot] = { blend: blend, grainPlayer: gp };
+          R.stretch[slot] = { blend: blend, grainPlayer: gp, gain: stretchGain };
           /* Seed this slot's warp engine with whatever stretch is already saved for it —
              looked up fresh here rather than trusting a point-level "ready" latch, since
              this decode (an IndexedDB/network fetch plus real audio decode) finishes on
@@ -7514,6 +7523,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var st = R.stretch && R.stretch[slot];
         if (st) {
           try { st.grainPlayer.dispose(); } catch (e) {}
+          try { st.gain.dispose(); } catch (e) {}
           try { st.blend.dispose(); } catch (e) {}
         }
         var fx = R.fx && R.fx[slot];
@@ -7763,13 +7773,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
            GrainPlayer keeps the two independent, which is the whole point of a granular
            engine. */
         var st = R.stretch[slot];
-        if (st && st.grainPlayer && st.grainPlayer.loaded) {
+        if (st && st.grainPlayer && st.grainPlayer.loaded && (cfg.stretch || 0) > 0) {
           st.grainPlayer.detune = (cfg.pitch || 0) * 100;
-          st.grainPlayer.volume.value = vol;
+          st.grainPlayer.volume.rampTo(vol, 0.01);
           try {
-            /* Capped independent of playbackRate — see MAX_STRETCH_HIT_S above. */
+            var stopAt = time + MAX_STRETCH_HIT_S;
+            /* GrainPlayer.stop() hard-cuts every sounding grain — fade this slot's own
+               gain stage down ahead of the cutoff so it lands on near-silence instead
+               of mid-envelope, both at the cap and on a retrigger landing inside a
+               still-ringing tail from a previous hit. */
+            st.gain.gain.cancelScheduledValues(time);
+            st.gain.gain.setValueAtTime(1, time);
+            st.gain.gain.setValueAtTime(1, stopAt - STRETCH_STOP_FADE_S);
+            st.gain.gain.linearRampToValueAtTime(0, stopAt);
             st.grainPlayer.start(time);
-            st.grainPlayer.stop(time + MAX_STRETCH_HIT_S);
+            st.grainPlayer.stop(stopAt);
           } catch (e) { /* a retrigger inside its own fade */ }
         }
       }

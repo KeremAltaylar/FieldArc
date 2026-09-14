@@ -247,6 +247,32 @@ test("disposeRhythm disposes each slot's buffer and warp engine, not just the pl
   assert.match(src, /R\.stretch/);
 });
 
+test("ensureRhythm's per-slot decode routes the GrainPlayer through its own Tone.Gain before the blend", () => {
+  const src = slice("function ensureRhythm(z)", "function disposeRhythm(");
+  const onloadStart = src.indexOf("R.buffers[slot] = new Tone.ToneAudioBuffer(");
+  assert.ok(onloadStart !== -1, "the per-slot decode callback must still exist");
+  const onload = src.slice(onloadStart);
+  assert.match(onload, /var stretchGain = new Tone\.Gain\(1\);/,
+    "each slot's warp engine must get its own dedicated gain stage");
+  assert.match(onload, /new Tone\.GrainPlayer\(\{[^}]*\}\)\s*\.connect\(stretchGain\)/,
+    "the GrainPlayer must connect into its own gain stage, not straight into the blend");
+  assert.doesNotMatch(onload, /new Tone\.GrainPlayer\(\{[^}]*\}\)\s*\.connect\(blend\.b\)/,
+    "the GrainPlayer must no longer connect directly to blend.b");
+  assert.match(onload, /stretchGain\.connect\(blend\.b\)/,
+    "the gain stage, not the GrainPlayer directly, must feed the blend's wet side");
+  assert.match(onload, /R\.stretch\[slot\]\s*=\s*\{\s*blend:\s*blend,\s*grainPlayer:\s*gp,\s*gain:\s*stretchGain\s*\}/,
+    "the gain node must be stored on R.stretch[slot] alongside blend and grainPlayer, for " +
+    "rhythmStep to schedule its fade and disposeRhythm to clean it up");
+});
+
+test("disposeRhythm disposes st.gain, the per-slot warp engine's own gain stage", () => {
+  const src = slice("function disposeRhythm(id)", "\n  }\n");
+  const stBlock = src.slice(src.indexOf("var st = R.stretch && R.stretch[slot];"));
+  assert.match(stBlock, /st\.grainPlayer\.dispose\(\)/);
+  assert.match(stBlock, /st\.gain\.dispose\(\)/);
+  assert.match(stBlock, /st\.blend\.dispose\(\)/);
+});
+
 test("rhythmStep triggers each slot's warp engine alongside its dry hit, with pitch via detune not playbackRate", () => {
   const step = slice("function rhythmStep(time)", "function updateBed");
   assert.match(step, /grainPlayer\.detune\s*=/,
@@ -258,9 +284,31 @@ test("rhythmStep triggers each slot's warp engine alongside its dry hit, with pi
 
 test("a stretched hit is capped to MAX_STRETCH_HIT_S regardless of how slow playbackRate makes it", () => {
   const step = slice("function rhythmStep(time)", "function updateBed");
-  assert.match(step, /grainPlayer\.stop\(time \+ MAX_STRETCH_HIT_S\)/,
+  assert.match(step, /var stopAt = time \+ MAX_STRETCH_HIT_S;/,
     "a non-looping GrainPlayer at an extreme stretch would otherwise take several seconds " +
     "to finish on its own, long after the pattern has retriggered on top of it");
+  assert.match(step, /grainPlayer\.stop\(stopAt\)/);
+});
+
+test("GrainPlayer.stop() is never called without first scheduling this slot's own gain to fade to 0", () => {
+  const step = slice("function rhythmStep(time)", "function updateBed");
+  assert.match(step, /st\.gain\.gain\.linearRampToValueAtTime\(0,\s*stopAt\)/,
+    "GrainPlayer's real _onstop forces every sounding grain's own fadeOut to 0 and stops it " +
+    "instantly, so the click has to be prevented ahead of time by fading this slot's dedicated " +
+    "gain stage down to silence, ending exactly at the same stopAt the grain player itself stops at");
+  const stopIdx = step.indexOf("grainPlayer.stop(stopAt)");
+  assert.ok(stopIdx !== -1, "grainPlayer.stop(stopAt) must exist");
+  const before = step.slice(0, stopIdx);
+  const rampIdx = before.lastIndexOf("st.gain.gain.linearRampToValueAtTime(0, stopAt)");
+  assert.ok(rampIdx !== -1 && rampIdx < stopIdx,
+    "the gain fade-out must be scheduled before the grain player's own .stop() call, not after");
+});
+
+test("rhythmStep only triggers the warp engine when this voice's own stretch is actually above 0", () => {
+  const step = slice("function rhythmStep(time)", "function updateBed");
+  assert.match(step, /st\s*&&\s*st\.grainPlayer\s*&&\s*st\.grainPlayer\.loaded\s*&&\s*\(cfg\.stretch \|\| 0\) > 0/,
+    "running the grain clock every pulse for zero audible result is wasted CPU on every point " +
+    "that hasn't touched the stretch control, which is the overwhelming majority (default: 0)");
 });
 
 test("rhythmStep no longer gates stretch behind a point-level ready latch, and adds no new scheduling", () => {
