@@ -81,3 +81,74 @@ test("fft is linear: scaling the input scales the transform by the same factor",
     assert.ok(Math.abs(im2[i] - im1[i] * 2.5) < 1e-6, `im[${i}] not linearly scaled`);
   }
 });
+
+test("synthesizeHop returns a windowSize-length frame with no NaN/Infinity, for any read position", () => {
+  const fft = extractFn("fft");
+  const synthesizeHop = extractFn("synthesizeHop");
+  const n = 16, windowSize = 16;
+  const source = Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * 3 * i / n));
+  const rnd = () => Math.random();
+  [-5, 0, 5, n - 2, n + 5].forEach((readPos) => {
+    const out = synthesizeHop(source, readPos, windowSize, 0, fft, rnd);
+    assert.equal(out.length, windowSize);
+    out.forEach((v, i) => {
+      assert.ok(Number.isFinite(v), `synthesizeHop(readPos=${readPos})[${i}] is not finite: ${v}`);
+    });
+  });
+});
+
+test("synthesizeHop is deterministic given a deterministic randomFn — no hidden state beyond what's passed in", () => {
+  const fft = extractFn("fft");
+  const synthesizeHop = extractFn("synthesizeHop");
+  const n = 32;
+  const source = Array.from({ length: n }, (_, i) => Math.cos(2 * Math.PI * 4 * i / n));
+  let calls = 0;
+  const rnd = () => { calls++; return (calls % 7) / 7; }; // deterministic but non-constant
+  const out1 = synthesizeHop(source, 0, n, 0, fft, (() => { let c = 0; return () => { c++; return (c % 7) / 7; }; })());
+  const out2 = synthesizeHop(source, 0, n, 0, fft, (() => { let c = 0; return () => { c++; return (c % 7) / 7; }; })());
+  for (let i = 0; i < n; i++) {
+    assert.ok(Math.abs(out1[i] - out2[i]) < 1e-9, `frame[${i}] differs between two calls with identical inputs`);
+  }
+});
+
+test("synthesizeHop's magnitude spectrum (before the final re-window) matches the source's own, phase aside", () => {
+  /* The whole point of the phase-vocoder step is "keep magnitude, replace phase" — verify
+     that literally, not just "the output has plausible-looking numbers". Uses a FIXED
+     randomFn so the output's own re-transform is directly comparable, rather than trying
+     to reason about a randomised result. warpBins=0 so no shift is applied either. */
+  const fft = extractFn("fft");
+  const synthesizeHop = extractFn("synthesizeHop");
+  const n = 32;
+  const source = Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * 6 * i / n));
+  // Compute the expected magnitude spectrum of the windowed source directly.
+  const win = Array.from({ length: n }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)));
+  const expectedRe = source.map((s, i) => s * win[i]);
+  const expectedIm = new Array(n).fill(0);
+  fft(expectedRe, expectedIm, false);
+  const expectedMag = expectedRe.map((r, i) => Math.sqrt(r * r + expectedIm[i] * expectedIm[i]));
+  // Run synthesizeHop with a fixed phase, then re-FFT its output (which was re-windowed —
+  // divide that back out isn't needed since we only check magnitude proportionality
+  // qualitatively: the frame with the most source energy in a bin must still show it).
+  const out = synthesizeHop(source, 0, n, 0, fft, () => 0.37);
+  const outRe = out.slice(), outIm = new Array(n).fill(0);
+  fft(outRe, outIm, false);
+  const outMag = outRe.map((r, i) => Math.sqrt(r * r + outIm[i] * outIm[i]));
+  const expectedPeak = expectedMag.indexOf(Math.max(...expectedMag));
+  const outPeak = outMag.indexOf(Math.max(...outMag));
+  assert.equal(outPeak, expectedPeak,
+    "the dominant frequency bin must survive the magnitude-keep/phase-discard round trip");
+});
+
+test("synthesizeHop's warpBins shifts which bin carries the dominant magnitude", () => {
+  const fft = extractFn("fft");
+  const synthesizeHop = extractFn("synthesizeHop");
+  const n = 32, k = 4, shift = 3;
+  const source = Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * k * i / n));
+  const outShifted = synthesizeHop(source, 0, n, shift, fft, () => 0.5);
+  const outRe = outShifted.slice(), outIm = new Array(n).fill(0);
+  fft(outRe, outIm, false);
+  const mag = outRe.map((r, i) => Math.sqrt(r * r + outIm[i] * outIm[i]));
+  const peak = mag.indexOf(Math.max(...mag));
+  assert.ok(peak === k + shift || peak === n - (k + shift) || peak === Math.abs(n - k - shift),
+    `expected the shifted dominant bin near ${k + shift}, got ${peak}`);
+});

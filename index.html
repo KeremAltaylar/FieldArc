@@ -7397,6 +7397,44 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     g.blend.fade.rampTo(amt, 0.2);
   }
 
+  /* One phase-vocoder hop: read a Hann-windowed frame from `source` at `readPos` (zero-
+     padded past either end — a read position drifting near the source's edges degrades to
+     silence rather than reading whatever happens to sit past the array), FFT it, shift the
+     magnitude spectrum by `warpBins` bins (the frequency/pitch shift — "warp"), discard the
+     phase entirely and substitute `randomFn()` per bin (the one step that makes this
+     Paulstretch rather than a clean phase-coherent stretch), inverse-FFT, window again, and
+     return the frame ready to be overlap-added into an output buffer. Everything the frame
+     depends on is passed in — including fftFn and randomFn — so it can be tested
+     deterministically without needing the worklet's own random phase to be reproducible. */
+  function synthesizeHop(source, readPos, windowSize, warpBins, fftFn, randomFn) {
+    var i, srcIdx, s, w, mag, srcBin, phase;
+    var re = new Array(windowSize), im = new Array(windowSize);
+    var start = Math.floor(readPos);
+    for (i = 0; i < windowSize; i++) {
+      srcIdx = start + i;
+      s = (srcIdx >= 0 && srcIdx < source.length) ? source[srcIdx] : 0;
+      w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (windowSize - 1));
+      re[i] = s * w;
+      im[i] = 0;
+    }
+    fftFn(re, im, false);
+    mag = new Array(windowSize);
+    for (i = 0; i < windowSize; i++) { mag[i] = Math.sqrt(re[i] * re[i] + im[i] * im[i]); }
+    var outRe = new Array(windowSize), outIm = new Array(windowSize);
+    for (i = 0; i < windowSize; i++) {
+      srcBin = ((i - warpBins) % windowSize + windowSize) % windowSize;
+      phase = randomFn() * 2 * Math.PI;
+      outRe[i] = mag[srcBin] * Math.cos(phase);
+      outIm[i] = mag[srcBin] * Math.sin(phase);
+    }
+    fftFn(outRe, outIm, true);
+    for (i = 0; i < windowSize; i++) {
+      w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (windowSize - 1));
+      outRe[i] *= w;
+    }
+    return outRe;
+  }
+
   /* A slow, musical tick (A-1: the Transport, never a UI callback) for the soundscape
      bed's other Paulstretch-style qualities — each is a jitter or a drift around what
      stretch/applyStretch already establish, never a teardown (A-16), and each reads as
