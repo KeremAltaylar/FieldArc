@@ -5112,21 +5112,39 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     cols.className = "ppcols";
     var col = document.createElement("div");
     col.className = "ppcol";
+    /* updateBed() (commitQ's own last step) only re-posts fresh params to voices in its
+       "near" set — in range of pacer.pos and within BED.maxVoices — the same proximity
+       gate applyHitStretch's own comment documents working around for hits ("a setter
+       can edit a point's stretch while it happens to be out of range"). These five
+       sliders reach past that gate the same way applyHitStretch does: straight at this
+       point's own live voice, if one already exists, on every drag, not only when the
+       setter happens to be standing close enough for updateBed to notice. */
+    var commitLive = function () {
+      commitQ();
+      var v = bed && bed.voices[f.properties.id];
+      if (!v || !v.ready || !v.stretch || !v.stretch.ready) { return; }
+      v.stretch.node.port.postMessage({ type: "params", params: {
+        stretchFactor: Math.pow(200, Math.max(0, Math.min(1, q.stretch))),
+        warpBins: v._warpBins || 0,
+        morphRate: q.morph || 0
+      } });
+      applyGrit(v.grit, q.grit);
+    };
     col.appendChild(buildSoundRow({ k: "stretch", label: "stretch", min: 0, max: 1, step: 0.02,
       def: 0, hint: "extreme time-stretch, from the recording as it is to a slow granular smear" },
-      q, commitQ));
+      q, commitLive));
     col.appendChild(buildSoundRow({ k: "warp", label: "warp", min: 0, max: 1, step: 0.02,
       def: 0, hint: "a slow pitch/time wobble, like a tape losing its own speed" },
-      q, commitQ));
+      q, commitLive));
     col.appendChild(buildSoundRow({ k: "morph", label: "morph", min: 0, max: 1, step: 0.02,
       def: 0, hint: "drifts which part of the recording is being read, instead of freezing on one" },
-      q, commitQ));
+      q, commitLive));
     col.appendChild(buildSoundRow({ k: "field", label: "field", min: 0, max: 1, step: 0.02,
       def: 0, hint: "jitters grain size and overlap, widening one texture into a scattered cloud" },
-      q, commitQ));
+      q, commitLive));
     col.appendChild(buildSoundRow({ k: "grit", label: "grit", min: 0, max: 1, step: 0.02,
       def: 0, hint: "a digital-artifact wash on the warp signal, evoking phase-vocoder smear" },
-      q, commitQ));
+      q, commitLive));
     cols.appendChild(col);
     var col2 = document.createElement("div");
     col2.className = "ppcol";
@@ -7561,57 +7579,32 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   /* A slow, musical tick (A-1: the Transport, never a UI callback) for the soundscape
-     bed's other Paulstretch-style qualities — each is a jitter or a drift around what
-     stretch/applyStretch already establish, never a teardown (A-16), and each reads as
-     silent/frozen at 0 by construction: warp's random walk resets to 0, morph's window
-     widens back to the whole buffer, field's grainSize/overlap reset to stretchParams'
-     own plain values rather than being left at the last jitter. */
+     bed's warp/morph/field qualities. The worklet manages its own continuous drift and
+     random-walk internally once given target parameters (see buildPaulstretchWorkletUrl);
+     this tick's only job is to keep those targets current — warp's own slow wobble is a
+     random walk kept here (on the main thread, at a musical cadence) and forwarded as a
+     plain bin-shift target, since the worklet itself has no reason to run its own
+     independent RNG-driven drift for something this coarse. grit is unrelated to any of
+     this and is unchanged from before this plan. */
   function warpStep(time) {
     if (!bed) { return; }
     Object.keys(bed.voices).forEach(function (id) {
       var v = bed.voices[id];
-      if (!v.ready || !v.grainPlayer) { return; }
+      if (!v.ready || !v.stretch || !v.stretch.ready) { return; }
       var f = feature(id), q = f ? soundOf(f) : null;
       if (!q) { return; }
       if (q.warp > 0) {
-        v._warpDetune = Math.max(-50, Math.min(50,
-          (v._warpDetune || 0) + (Math.random() * 2 - 1) * q.warp * 12));
+        v._warpBins = Math.max(-24, Math.min(24,
+          (v._warpBins || 0) + (Math.random() * 2 - 1) * q.warp * 3));
       } else {
-        v._warpDetune = 0;
+        v._warpBins = 0;
       }
-      v.grainPlayer.detune = v._warpDetune;
-
-      var dur = (v.grainPlayer.buffer && v.grainPlayer.buffer.duration) || 0;
-      if (q.morph > 0 && dur > 1) {
-        var winLen = Math.max(1, dur * (1 - q.morph * 0.7));
-        v._morphPos = ((v._morphPos || 0) + q.morph * dur * 0.05) % Math.max(0.01, dur - winLen);
-        v.grainPlayer.loopStart = v._morphPos;
-        /* Tone's own loopEnd setter asserts 0 <= value <= buffer.duration and throws
-           otherwise — measured against the real build. The floor on (dur - winLen) above
-           protects the modulo, not this: on a very short recording (a couple of seconds)
-           near the top of the morph range, _morphPos + winLen can still land fractionally
-           past dur. Clamped rather than left to throw and abort the rest of this tick's
-           other scheduled events. */
-        v.grainPlayer.loopEnd = Math.min(dur, v._morphPos + winLen);
-      } else {
-        v.grainPlayer.loopStart = 0;
-        v.grainPlayer.loopEnd = 0;
-      }
-
-      /* Always recomputed from stretchParams' own values, on or off — a bare `if (field >
-         0)` with no reset left the GrainPlayer stranded at its last random jitter (up to
-         ±60% off) the moment field was turned back down, since neither this property
-         write nor applyStretch's own __stretchAmt memo would ever revisit it again. */
-      var sp = stretchParams(q.stretch);
-      if (q.field > 0) {
-        var j = 1 + (Math.random() * 2 - 1) * q.field * 0.6;
-        v.grainPlayer.grainSize = Math.max(0.02, sp.grainSize * j);
-        v.grainPlayer.overlap = Math.max(0.01, sp.overlap * j);
-      } else {
-        v.grainPlayer.grainSize = sp.grainSize;
-        v.grainPlayer.overlap = sp.overlap;
-      }
-
+      v.stretch.node.port.postMessage({ type: "params", params: {
+        stretchFactor: Math.pow(200, Math.max(0, Math.min(1, q.stretch))),
+        warpBins: v._warpBins,
+        morphRate: q.morph || 0,
+        synthesisHop: Math.round(1024 * (1 - (q.field || 0) * 0.6))
+      } });
       applyGrit(v.grit, q.grit);
     });
   }

@@ -235,3 +235,32 @@ test("bedStop's voice-disposal block disconnects the worklet node rather than di
   assert.match(src, /v\.stretch\.node\.disconnect\(\)/);
   assert.doesNotMatch(src, /v\.grainPlayer/);
 });
+
+test("warpStep no longer references GrainPlayer-specific properties", () => {
+  const src = slice("function warpStep(time)", "\n  }\n");
+  assert.doesNotMatch(src, /\.detune\s*=/);
+  assert.doesNotMatch(src, /\.loopStart\s*=/);
+  assert.doesNotMatch(src, /\.loopEnd\s*=/);
+  assert.doesNotMatch(src, /\.grainSize\s*=/);
+  assert.doesNotMatch(src, /\.overlap\s*=/);
+});
+
+test("warpStep still applies grit every tick, unchanged", () => {
+  const src = slice("function warpStep(time)", "\n  }\n");
+  assert.match(src, /applyGrit\(v\.grit, q\.grit\)/);
+});
+
+test("warpStep posts fresh stretch/warp/morph parameters to the worklet for every ready voice", () => {
+  const src = slice("function warpStep(time)", "\n  }\n");
+  assert.match(src, /v\.stretch\.node\.port\.postMessage\(/);
+  assert.match(src, /stretchFactor:/);
+  assert.match(src, /warpBins:/);
+  assert.match(src, /morphRate:/);
+});
+
+test("the soundscape panel's stretch/warp/morph/field/grit sliders post live updates to the worklet while dragging", () => {
+  const src = slice("function renderSoundscapePanel(f, q, commitQ, body)", "\n  }\n");
+  assert.match(src, /bed\.voices\[f\.properties\.id\]/,
+    "must reach the live voice for this point, the same way the hit-slot sliders reach " +
+    "bed.rhythms[f.properties.id]");
+});
