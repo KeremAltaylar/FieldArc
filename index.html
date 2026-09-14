@@ -4895,6 +4895,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
       delWrap.appendChild(delLab); delWrap.appendChild(delSel);
       row.appendChild(delWrap);
+      var stretchWrap = document.createElement("label");
+      stretchWrap.className = "pprow";
+      var stretchLab = document.createElement("span");
+      stretchLab.textContent = "stretch";
+      var stretchInp = document.createElement("input");
+      stretchInp.type = "range"; stretchInp.min = 0; stretchInp.max = 1; stretchInp.step = 0.02;
+      stretchInp.value = cfg.stretch;
+      stretchInp.dataset.def = defaultRhythm().voices[slot].stretch;
+      stretchInp.title = "Shift-drag for fine steps · double-click to reset";
+      var stretchOut = document.createElement("i");
+      var showStretch = function () { stretchOut.textContent = (+stretchInp.value).toFixed(2); };
+      showStretch();
+      stretchInp.addEventListener("input", function () {
+        cfg.stretch = +stretchInp.value; showStretch(); commitR();
+      });
+      stretchWrap.appendChild(stretchLab); stretchWrap.appendChild(stretchInp);
+      stretchWrap.appendChild(stretchOut);
+      row.appendChild(stretchWrap);
       var pat = document.createElement("div");
       pat.className = "rpat";
       pat.dataset.slot = slot;
@@ -5027,6 +5045,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       cfg.delayDiv = DIVISIONS[Math.floor(Math.random() * DIVISIONS.length)];
       cfg.delayFb = Math.random() * 0.4;
       cfg.delayWet = Math.random() < 0.5 ? 0 : Math.random() * 0.35;
+      cfg.stretch = Math.random() < 0.7 ? Math.random() * 0.25 : 0.25 + Math.random() * 0.5;
     });
   }
 
@@ -7185,13 +7204,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          touches one. */
       voices: {
         low:  { pulses:  8, rotate: 0,  gain: 1.00, pitch: 0,
-                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0 },
+                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0, stretch: 0 },
         mid:  { pulses: 13, rotate: 2,  gain: 0.80, pitch: 0,
-                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0 },
+                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0, stretch: 0 },
         high: { pulses: 21, rotate: 1,  gain: 0.65, pitch: 0,
-                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0 },
+                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0, stretch: 0 },
         rand: { pulses:  5, rotate: 11, gain: 0.55, pitch: 0,
-                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0 }
+                crush: 0, drive: 0, delayDiv: "8n", delayFb: 0, delayWet: 0, stretch: 0 }
       }
     };
   }
@@ -7244,6 +7263,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (v.delayDiv === undefined) { v.delayDiv = dv[k].delayDiv; }
       if (v.delayFb === undefined) { v.delayFb = dv[k].delayFb; }
       if (v.delayWet === undefined) { v.delayWet = dv[k].delayWet; }
+      if (v.stretch === undefined) { v.stretch = dv[k].stretch; }
     });
     if (!r.grains) { r.grains = defaultGrains(); }
     /* Field by field, so a point saved before a control existed gains it rather than being

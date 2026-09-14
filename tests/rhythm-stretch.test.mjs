@@ -182,3 +182,40 @@ test("ensureVoice uses applyStretch instead of its own inline reassignment", () 
   assert.doesNotMatch(src, /v\.stretchAmt/,
     "the per-node __stretchAmt bookkeeping lives on the GrainPlayer itself now, not on v");
 });
+
+test("defaultRhythm's voices carry a stretch field, off by default", () => {
+  const def = slice("function defaultRhythm()", "function ");
+  const matches = def.match(/stretch:\s*0/g) || [];
+  assert.equal(matches.length, 4, "all four voices must default stretch to 0");
+});
+
+test("rhythmOf backfills stretch without touching the other five per-voice fields", () => {
+  const of = slice("function rhythmOf(f)", "function buildRhythmFx(");
+  assert.match(of, /v\.stretch\s*===?\s*undefined/,
+    "stretch must be backfilled by absence-check, not overwritten if already set");
+  const backfillStart = of.indexOf("if (v.crush === undefined)");
+  assert.ok(backfillStart !== -1, "the per-field backfill block must exist");
+  const nextFieldOrEnd = of.slice(backfillStart).search(/\n\s*if\s*\(!r\.grains\)|\n\s*return r;/);
+  const scoped = of.slice(backfillStart, backfillStart + (nextFieldOrEnd === -1 ? of.length : nextFieldOrEnd));
+  assert.doesNotMatch(scoped, /\.pulses\s*=|\.rotate\s*=|\.gain\s*=|\.pitch\s*=/,
+    "backfilling stretch must not rewrite an existing voice's pattern or level");
+});
+
+test("randomHitFx also rolls stretch for all four voices, within range", () => {
+  const src = slice("function randomHitFx(r)", "function advanceSentence(");
+  const decl = src.slice(0, src.lastIndexOf("}") + 1);
+  const factory = new Function("HIT_SLOTS", "DIVISIONS", decl + "\nreturn randomHitFx;");
+  const randomHitFx = factory(["low", "mid", "high", "rand"], ["4n", "4n.", "8n", "8n.", "16n", "2n", "1n"]);
+  for (let i = 0; i < 20; i++) {
+    const r = { voices: { low: {}, mid: {}, high: {}, rand: {} } };
+    randomHitFx(r);
+    ["low", "mid", "high", "rand"].forEach((slot) => {
+      assert.ok(r.voices[slot].stretch >= 0 && r.voices[slot].stretch <= 1, "stretch in range");
+    });
+  }
+});
+
+test("each voice row exposes a stretch control", () => {
+  const panel = slice("function renderRhythmPanel()", "function gcd(");
+  assert.match(panel, /"stretch"/);
+});
