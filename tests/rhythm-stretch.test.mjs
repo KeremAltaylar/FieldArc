@@ -219,3 +219,53 @@ test("each voice row exposes a stretch control", () => {
   const panel = slice("function renderRhythmPanel()", "function gcd(");
   assert.match(panel, /"stretch"/);
 });
+
+test("applyHitStretch ramps each slot's warp blend and reapplies applyStretch, safely with no live R", () => {
+  const src = slice("function applyHitStretch(R, r)", "\n  }\n");
+  assert.match(src, /if\s*\(!R \|\| !R\.stretch\)\s*\{\s*return;\s*\}/,
+    "a setter editing a point currently out of range must not throw");
+  assert.match(src, /applyStretch\(/);
+  assert.match(src, /\.blend\.fade\.rampTo\(/);
+});
+
+test("ensureRhythm decodes each slot's recording once and builds both the dry player and its warp engine from the same buffer", () => {
+  const src = slice("function ensureRhythm(z)", "function disposeRhythm(");
+  assert.match(src, /R\.stretch\s*=\s*\{\}/);
+  assert.match(src, /R\.buffers\s*=\s*\{\}/);
+  assert.match(src, /new Tone\.ToneAudioBuffer\(/, "one decode per slot, not two");
+  assert.match(src, /new Tone\.Player\(\{\s*url:\s*R\.buffers\[slot\]/,
+    "the dry player must read the already-decoded buffer, not fetch the url again");
+  assert.match(src, /new Tone\.GrainPlayer\(\{\s*url:\s*R\.buffers\[slot\]/,
+    "the warp engine must read the same already-decoded buffer");
+  assert.match(src, /\.connect\(R\.fx\[slot\]\.input\)/,
+    "the blend, not either player directly, must feed the slot's insert chain");
+});
+
+test("disposeRhythm disposes each slot's buffer and warp engine, not just the player", () => {
+  const src = slice("function disposeRhythm(id)", "\n  }\n");
+  assert.match(src, /R\.buffers/);
+  assert.match(src, /R\.stretch/);
+});
+
+test("rhythmStep triggers each slot's warp engine alongside its dry hit, with pitch via detune not playbackRate", () => {
+  const step = slice("function rhythmStep(time)", "function updateBed");
+  assert.match(step, /grainPlayer\.detune\s*=/,
+    "pitch must reach the warp engine via detune — playbackRate is already the stretch amount's own knob");
+  assert.doesNotMatch(step, /grainPlayer\.playbackRate\s*=/,
+    "rhythmStep must never touch the warp engine's playbackRate directly — only applyStretch may");
+  assert.match(step, /grainPlayer\.start\(time\)/);
+});
+
+test("a stretched hit is capped to MAX_STRETCH_HIT_S regardless of how slow playbackRate makes it", () => {
+  const step = slice("function rhythmStep(time)", "function updateBed");
+  assert.match(step, /grainPlayer\.stop\(time \+ MAX_STRETCH_HIT_S\)/,
+    "a non-looping GrainPlayer at an extreme stretch would otherwise take several seconds " +
+    "to finish on its own, long after the pattern has retriggered on top of it");
+});
+
+test("rhythmStep applies each point's stretch once ready, alongside its fx, without new scheduling", () => {
+  const step = slice("function rhythmStep(time)", "function updateBed");
+  assert.match(step, /applyHitStretch\(/);
+  assert.doesNotMatch(step, /scheduleRepeat|\.clear\(/,
+    "this task must never add a new Transport scheduling call");
+});

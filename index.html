@@ -4807,6 +4807,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       save();
       renderRhythmPanel();
       applyHitFx(bed && bed.rhythms[f.properties.id], r);
+      applyHitStretch(bed && bed.rhythms[f.properties.id], r);
       toast("New effects");
     });
     mhead.appendChild(rndFx);
@@ -4909,6 +4910,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       showStretch();
       stretchInp.addEventListener("input", function () {
         cfg.stretch = +stretchInp.value; showStretch(); commitR();
+        applyHitStretch(bed && bed.rhythms[f.properties.id], r);
       });
       stretchWrap.appendChild(stretchLab); stretchWrap.appendChild(stretchInp);
       stretchWrap.appendChild(stretchOut);
@@ -7403,6 +7405,29 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   }
 
+  /* A stretched hit reads its source more slowly the more extreme the stretch — at
+     stretchParams(1)'s playbackRate (0.15), a one-second sample would otherwise take
+     roughly 6-7 seconds to traverse before a non-looping GrainPlayer stops on its own,
+     during which the pattern has long since retriggered on top of it. The design spec's
+     own "stretch engine" section calls this out directly: "a hit that never ends is not
+     a hit." This caps how long a single stretched hit is allowed to ring, independent of
+     playbackRate. */
+  var MAX_STRETCH_HIT_S = 1.5;
+
+  /* Applied once when a point's warp engines are first ready, and again whenever a setter
+     moves a slot's stretch slider — the same "one chain, apply on change" shape
+     applyHitFx already uses for crush/drive/delay. Safe with no live R: a setter can edit
+     a point's stretch while it happens to be out of range. */
+  function applyHitStretch(R, r) {
+    if (!R || !R.stretch) { return; }
+    HIT_SLOTS.forEach(function (slot) {
+      var cfg = r.voices[slot], st = R.stretch[slot];
+      if (!cfg || !st) { return; }
+      applyStretch(st.grainPlayer, cfg.stretch || 0);
+      st.blend.fade.rampTo(cfg.stretch || 0, 0.2);
+    });
+  }
+
   /* One player per slot, loaded once, kept until the point goes out of range. A pool would
      let a hit overlap itself; for percussive material a retrigger is what you want anyway,
      and it costs four nodes per point instead of a pool per slot. */
@@ -7413,6 +7438,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     R = bed.rhythms[z.id] = { ready: 0, players: {}, urls: {}, tick: 0, step: 0, recent: [],
                               gain: new Tone.Gain(0).connect(bed.rfx ? bed.rfx.input
                                                                      : bed.master) };
+    R.buffers = {};
     /* A grains point loads its one recording as a buffer rather than a player: a player
        plays a file, and what this needs is to read arbitrary slices of it at arbitrary
        times, many at once. */
@@ -7430,6 +7456,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        before any player has even started loading — the async audioBlob() calls below only
        need to connect into it, not build it. */
     R.fx = {};
+    R.stretch = {};
     HIT_SLOTS.forEach(function (slot) {
       R.fx[slot] = buildHitFx(Tone);
       R.fx[slot].output.connect(R.gain);
@@ -7439,10 +7466,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (!blob || !bed || !bed.rhythms[z.id]) { return; }
         var url = URL.createObjectURL(blob);
         R.urls[slot] = url;
-        R.players[slot] = new Tone.Player({
-          url: url, fadeOut: 0.02,
-          onload: function () { R.ready++; }
-        }).connect(R.fx[slot].input);
+        /* One decode, two readers: the dry player and this slot's own warp engine both
+           read the same already-decoded buffer rather than each fetching and decoding the
+           file a second time. */
+        R.buffers[slot] = new Tone.ToneAudioBuffer(url, function () {
+          if (!bed || !bed.rhythms[z.id]) { return; }
+          var blend = makeBlend(Tone, 0);
+          R.players[slot] = new Tone.Player({ url: R.buffers[slot], fadeOut: 0.02 })
+            .connect(blend.a);
+          var gp = new Tone.GrainPlayer({ url: R.buffers[slot], loop: false })
+            .connect(blend.b);
+          applyStretch(gp, 0);
+          blend.connect(R.fx[slot].input);
+          R.stretch[slot] = { blend: blend, grainPlayer: gp };
+          R.ready++;
+        }, function () { /* a slot that will not decode simply never fires */ });
       }).catch(function () { /* a slot that will not load simply never fires */ });
     });
     return R;
@@ -7459,6 +7497,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       HIT_SLOTS.forEach(function (slot) {
         try { if (R.players[slot]) { R.players[slot].dispose(); } } catch (e) {}
         if (R.urls[slot]) { URL.revokeObjectURL(R.urls[slot]); }
+        try { if (R.buffers[slot]) { R.buffers[slot].dispose(); } } catch (e) {}
+        var st = R.stretch && R.stretch[slot];
+        if (st) {
+          try { st.grainPlayer.dispose(); } catch (e) {}
+          try { st.blend.dispose(); } catch (e) {}
+        }
         var fx = R.fx && R.fx[slot];
         if (fx) {
           [fx.input, fx.crush, fx.crushBlend, fx.shape, fx.drivePre, fx.drivePost,
@@ -7650,6 +7694,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         });
       }
       if (!R.fxReady && R.fx) { applyHitFx(R, r); R.fxReady = true; }
+      if (!R.stretchReady && R.stretch) { applyHitStretch(R, r); R.stretchReady = true; }
       var stride = SECT_STRIDE[r.div] || 1;
       R.tick = (R.tick || 0) + 1;
       /* Bars, not the stride gate below: a phrase length is measured against a real bar,
@@ -7695,9 +7740,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
            four-bar span instead of a real bar, and no actual quarter-note would ever land
            on one. */
         var accentDb = (r.idiom || 0) * metricWeight((R.tick - 1) % 16, 16) * 4;
-        pl.volume.value = 20 * Math.log10(Math.max(0.02, (cfg.gain === undefined ? 1 : cfg.gain)))
-                        + (Math.random() - 0.5) * 1.5 + accentDb;
+        var vol = 20 * Math.log10(Math.max(0.02, (cfg.gain === undefined ? 1 : cfg.gain)))
+                + (Math.random() - 0.5) * 1.5 + accentDb;
+        pl.volume.value = vol;
         try { pl.start(time); } catch (e) { /* a retrigger inside its own fade */ }
+        /* The warp engine fires alongside the dry hit whether or not stretch is turned
+           up — the blend, not the trigger, is what makes it inaudible at 0 (A-8). Pitch
+           reaches it via detune rather than playbackRate: playbackRate is already the
+           stretch amount's own knob (grain spawn rate, owned by applyStretch), and
+           GrainPlayer keeps the two independent, which is the whole point of a granular
+           engine. */
+        var st = R.stretch[slot];
+        if (st && st.grainPlayer && st.grainPlayer.loaded) {
+          st.grainPlayer.detune = (cfg.pitch || 0) * 100;
+          st.grainPlayer.volume.value = vol;
+          try {
+            /* Capped independent of playbackRate — see MAX_STRETCH_HIT_S above. */
+            st.grainPlayer.start(time);
+            st.grainPlayer.stop(time + MAX_STRETCH_HIT_S);
+          } catch (e) { /* a retrigger inside its own fade */ }
+        }
       }
     }
   }
