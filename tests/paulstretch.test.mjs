@@ -154,13 +154,17 @@ test("synthesizeHop's warpBins shifts which bin carries the dominant magnitude",
 });
 
 test("buildPaulstretchWorkletUrl assembles fft and synthesizeHop's own real source into the module, not a hand-copied duplicate", () => {
+  const fft = extractFn("fft");
+  const synthesizeHop = extractFn("synthesizeHop");
   const src = slice("function buildPaulstretchWorkletUrl()", "\n  }\n");
-  assert.match(src, /function fft\(/, "the worklet module must embed fft's real source");
-  assert.match(src, /function synthesizeHop\(/, "the worklet module must embed synthesizeHop's real source");
   assert.match(src, /registerProcessor\(\s*["']paulstretch-processor["']/);
   assert.match(src, /class PaulstretchProcessor extends AudioWorkletProcessor/);
   assert.match(src, /new Blob\(/);
   assert.match(src, /URL\.createObjectURL\(/);
+  // Prove the worklet embeds fft.toString()/synthesizeHop.toString() calls, not
+  // hardcoded duplicates that could silently drift from the real functions later.
+  assert.match(src, /fft\.toString\(\)/, "must call fft.toString(), not embed a hardcoded duplicate");
+  assert.match(src, /synthesizeHop\.toString\(\)/, "must call synthesizeHop.toString(), not embed a hardcoded duplicate");
 });
 
 test("the worklet module never materialises the full stretched duration as one pre-rendered buffer", () => {
