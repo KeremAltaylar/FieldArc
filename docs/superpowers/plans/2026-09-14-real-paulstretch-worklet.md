@@ -273,7 +273,15 @@ git commit -m "Add a self-contained radix-2 FFT for the soundscape's Paulstretch
 ### Task 2: The hop-synthesis core
 
 **Files:**
-- Modify: `index.html` (add directly after `fft`'s closing brace)
+- Modify: `index.html` (add directly after `applyGrit`'s closing brace — **not** after
+  `fft`'s own closing brace. Task 1 found and extended an FFT that already existed in this
+  file, in the unrelated "Audio analysis" section used by `analyseAudio` — see the ruling
+  in this plan's SDD ledger. `fft` now lives far from the soundscape functions;
+  `synthesizeHop` and everything the rest of this plan adds belong together near
+  `applyGrit`/`warpStep`, where Task 1 originally intended to add a new `fft` before that
+  conflict was found. `fft.toString()`/`synthesizeHop.toString()` work regardless of
+  where in the file each is physically defined — only their being in the same top-level
+  scope matters.)
 - Test: `tests/paulstretch.test.mjs` (appended)
 
 **Interfaces:**
@@ -371,7 +379,8 @@ Expected: FAIL — `synthesizeHop` does not exist yet.
 
 - [ ] **Step 3: Add `synthesizeHop`**
 
-Add directly after `fft`'s closing brace:
+Add directly after `applyGrit`'s closing brace (not after `fft`'s own closing brace — see
+the Files note above):
 
 ```js
   /* One phase-vocoder hop: read a Hann-windowed frame from `source` at `readPos` (zero-
