@@ -54,3 +54,59 @@ test("stretchParams moves all three values monotonically and smoothly across the
     prevRate = p.playbackRate; prevGrain = p.grainSize; prevOverlap = p.overlap;
   }
 });
+
+test("soundOf backfills stretch at 0 without touching radius/gain/zoneR", () => {
+  const of = slice("function soundOf(f)", "function soundOfZone(");
+  assert.match(of, /q\.stretch\s*=\s*0/, "stretch must default to 0 on a fresh point");
+  assert.match(of, /if\s*\(q\.stretch === undefined\)\s*\{\s*q\.stretch = 0;\s*\}/,
+    "an existing point without stretch must be backfilled by absence-check, not overwritten");
+});
+
+test("soundOfZone's no-feature fallback also carries stretch", () => {
+  const zoneOf = slice("function soundOfZone(z)", "function stretchParams(");
+  assert.match(zoneOf, /stretch:\s*0/);
+});
+
+test("buildSoundRow's reset default is data-driven, so a new field doesn't reset to the wrong value", () => {
+  const row = slice("function buildSoundRow(fl, q, commitQ)", "\n  }\n");
+  assert.match(row, /fl\.def\s*===?\s*undefined/,
+    "the dataset.def lookup must consult fl.def before falling back to the three legacy cases");
+});
+
+test("renderRhythmPanel renders the soundscape panel for soundscape-mode points, before the hits-only return", () => {
+  const panel = slice("function renderRhythmPanel()", "function gcd(");
+  assert.match(panel, /audio_mode === "soundscape"/);
+  assert.match(panel, /renderSoundscapePanel\(/);
+});
+
+test("renderSoundscapePanel shows an empty state with no recording attached, and a stretch row otherwise", () => {
+  const src = slice("function renderSoundscapePanel(f, q, commitQ, body)", "\n  }\n");
+  assert.match(src, /properties\.audio/, "must check whether a recording is attached");
+  assert.match(src, /"stretch"/, "must expose the stretch field");
+  assert.match(src, /buildSoundRow\(/, "must reuse the existing row builder, not a bespoke one");
+});
+
+test("ensureVoice builds a blended GrainPlayer reading the same url as the dry player", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  assert.match(src, /new Tone\.GrainPlayer\(/);
+  assert.match(src, /stretchBlend\s*=\s*makeBlend\(Tone,\s*0\)/);
+  assert.match(src, /\.connect\(v\.stretchBlend\.a\)/, "the dry Player must feed the blend's dry side");
+  assert.match(src, /\.connect\(v\.stretchBlend\.b\)/, "the GrainPlayer must feed the blend's wet side");
+  assert.match(src, /v\.stretchBlend\.connect\(v\.filter\)/,
+    "the blend's output, not the dry player directly, must now feed the filter");
+  assert.doesNotMatch(src, /\}\)\.connect\(v\.filter\)/,
+    "the dry Player's own .connect(...) must no longer go straight to v.filter");
+});
+
+test("ensureVoice re-applies stretch on an already-ready voice, ramped like gain and filter", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  const readyBranch = src.slice(src.indexOf("if (v.ready)"), src.indexOf("v.idle = false;"));
+  assert.match(readyBranch, /stretchParams\(/);
+  assert.match(readyBranch, /v\.stretchBlend\.fade\.rampTo\(/);
+});
+
+test("the voice-disposal block also disposes grainPlayer and stretchBlend", () => {
+  const src = slice("v.player.stop(); v.player.dispose();", "v.gain.dispose();");
+  assert.match(src, /grainPlayer/);
+  assert.match(src, /stretchBlend/);
+});
