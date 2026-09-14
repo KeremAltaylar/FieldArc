@@ -7031,6 +7031,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return f ? soundOf(f) : { radius: 140, gain: 0.9, zoneR: 25 };
   }
 
+  /* One shared engine for both a per-hit stretch and the soundscape bed's own extreme warp
+     (see the design spec's 2026-09-13 addendum for why this is Tone.GrainPlayer rather than
+     the existing fireGrains/variedGrains machinery). amount=0 is the neutral triple a caller
+     never actually hears, since both call sites blend this branch out entirely at 0 (A-8) —
+     it stays a valid, playable setting anyway so nothing downstream has to special-case it. */
+  function stretchParams(amount) {
+    var a = amount < 0 ? 0 : (amount > 1 ? 1 : amount);
+    return {
+      playbackRate: 1 - a * 0.85,
+      grainSize: 0.06 + a * 0.24,
+      overlap: 0.5 + a * 0.45
+    };
+  }
+
   /* Pulses spread by the running-sum method: every step adds k and fires when it passes n.
      Same even distribution as Bjorklund's algorithm, and rotation is exposed anyway. */
   function euclid(k, n) {
