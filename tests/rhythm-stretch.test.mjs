@@ -28,11 +28,14 @@ test("stretchParams(0) and stretchParams(1) are the fixed neutral and extreme tr
   const stretchParams = extractFn("stretchParams", "function ");
   const at0 = stretchParams(0);
   assert.equal(at0.playbackRate, 1, "no stretch means normal playback speed");
-  assert.ok(at0.grainSize > 0 && at0.overlap > 0 && at0.overlap <= 1,
-    "grain settings stay valid even though the blend silences this branch at amount 0");
+  assert.ok(at0.grainSize > 0, "grain settings stay valid even though the blend silences this branch at amount 0");
+  assert.ok(at0.overlap > 0 && at0.overlap < at0.grainSize / at0.playbackRate,
+    "overlap must be a positive fraction of the grain period, never longer than the grain itself");
   const at1 = stretchParams(1);
   assert.ok(at1.playbackRate < at0.playbackRate, "full stretch plays back slower, not faster");
   assert.ok(at1.playbackRate > 0, "playbackRate must stay positive — 0 or negative breaks GrainPlayer");
+  assert.ok(at1.overlap > 0 && at1.overlap < at1.grainSize / at1.playbackRate,
+    "the same overlap-vs-period guarantee must hold at full stretch too");
 });
 
 test("stretchParams clamps out-of-range input instead of extrapolating", () => {
@@ -48,8 +51,11 @@ test("stretchParams moves all three values monotonically and smoothly across the
   let prevOverlap = stretchParams(0).overlap;
   for (let i = 1; i <= 20; i++) {
     const p = stretchParams(i / 20);
+    const period = p.grainSize / p.playbackRate;
     assert.ok(p.playbackRate <= prevRate, "playbackRate falls (or holds) as amount rises");
     assert.ok(p.grainSize >= prevGrain, "grainSize rises (or holds) as amount rises");
+    assert.ok(p.overlap > 0, "overlap must always be positive");
+    assert.ok(p.overlap < period, "overlap must never outlast the grain period it was computed from");
     assert.ok(p.overlap >= prevOverlap, "overlap rises (or holds) as amount rises, for a smoother cloud");
     prevRate = p.playbackRate; prevGrain = p.grainSize; prevOverlap = p.overlap;
   }
@@ -73,15 +79,32 @@ test("buildSoundRow's reset default is data-driven, so a new field doesn't reset
     "the dataset.def lookup must consult fl.def before falling back to the three legacy cases");
 });
 
-test("renderRhythmPanel renders the soundscape panel for soundscape-mode points, before the hits-only return", () => {
+test("renderRhythmPanel falls through to the soundscape panel for anything that isn't hits or grains", () => {
   const panel = slice("function renderRhythmPanel()", "function gcd(");
-  assert.match(panel, /audio_mode === "soundscape"/);
+  assert.match(panel, /audio_mode !== "hits"/,
+    "the soundscape branch must be the fallback for everything but hits, after grains is checked");
+  assert.doesNotMatch(panel, /audio_mode === "soundscape"/,
+    "must not gate on a literal audio_mode === \"soundscape\" check — a fresh point never has " +
+    "audio_mode set at all, and is treated as soundscape everywhere else via that same fallback");
   assert.match(panel, /renderSoundscapePanel\(/);
+});
+
+test("a point with no audio_mode set still gets the soundscape panel, not silently nothing", () => {
+  const panel = slice("function renderRhythmPanel()", "function gcd(");
+  const grainsIdx = panel.indexOf('audio_mode === "grains"');
+  const soundscapeIdx = panel.indexOf('audio_mode !== "hits"');
+  assert.ok(grainsIdx !== -1 && soundscapeIdx !== -1 && grainsIdx < soundscapeIdx,
+    "grains must be checked before the soundscape fallback runs");
+  const fallthrough = panel.slice(soundscapeIdx, panel.indexOf("return;", soundscapeIdx) + "return;".length);
+  assert.match(fallthrough, /renderSoundscapePanel\(/,
+    "an undefined audio_mode (a brand-new point) is neither \"grains\" nor \"hits\", so it must " +
+    "fall into this branch and render the soundscape panel rather than returning empty-handed");
 });
 
 test("renderSoundscapePanel shows an empty state with no recording attached, and a stretch row otherwise", () => {
   const src = slice("function renderSoundscapePanel(f, q, commitQ, body)", "\n  }\n");
-  assert.match(src, /properties\.audio/, "must check whether a recording is attached");
+  assert.match(src, /properties\.has_audio/,
+    "must gate on has_audio, the same flag buildZones/updateBed actually key playback on");
   assert.match(src, /"stretch"/, "must expose the stretch field");
   assert.match(src, /buildSoundRow\(/, "must reuse the existing row builder, not a bespoke one");
 });
