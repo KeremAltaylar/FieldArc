@@ -293,3 +293,55 @@ each leaving the app working on its own:
    after either.
 
 See [[audio-quality-bar]], [[instrument-design-language]], [[studio-toolchain-plan]].
+
+## Addendum, 2026-09-13 — the stretch engine uses `Tone.GrainPlayer`, not `fireGrains`/`variedGrains`
+
+Written while planning the stretch engine's implementation, before any code was written for
+it. Parts 1 (idiom/sentences) and the per-slot bitcrush/distortion/delay inserts are
+unaffected by this addendum and implement the rest of this document as written.
+
+**What this document originally said:** build `stretchVoice(buffer, amount, opts)` on top of
+the existing `fireGrains`/`variedGrains`/grain-envelope machinery `grains`-mode points already
+use — reused, not reimplemented.
+
+**Why that doesn't hold up for the soundscape half.** `fireGrains` is pulse-triggered: a
+Euclidean pulse fires, and a burst of grains is scheduled for that one hit. That shape is a
+good fit for the hit-slot use (hits are already pulse-triggered by `rhythmStep`'s 16th-note
+grid) but has no natural fit for the soundscape ambient bed, which is not pulse-driven at
+all — `ensureVoice`'s recording loops continuously with no clock. Reusing `fireGrains` there
+would mean inventing a new artificial tick to keep re-firing grain bursts forever, which means
+a new `Tone.Transport.scheduleRepeat` call this project doesn't otherwise need — in tension
+with A-16 and with the "one shared engine" goal, since the hit-slot and soundscape call sites
+would then be driven by two different kinds of clock. The resulting texture is also wrong:
+repeated discrete bursts, not the continuous overlapping cloud a warped ambient bed should be.
+
+**Revised design.** Tone.js v15 (already loaded) ships `Tone.GrainPlayer` — a source node that
+reads a buffer and generates its own continuous, overlapping grain stream internally
+(`playbackRate`, `grainSize`, `overlap`), with no external clock required. One shared pure
+function, `stretchParams(amount)`, maps the 0–1 knob to a `{playbackRate, grainSize, overlap}`
+triple (still one function, still called from exactly two places, still nothing at `amount =
+0` — the invariant this document cares about, unchanged). It replaces `stretchVoice` as the
+shared engine:
+
+- **Per hit-slot:** a `Tone.GrainPlayer` reads the *same* slot buffer the existing
+  `Tone.Player` already plays, both triggered together at the same pulse time and both capped
+  to the same `maxDuration` (a stretched hit still ends). The two outputs are combined with
+  `makeBlend()` — exactly the primitive already used for crush/drive/delay — with the existing
+  dry `Tone.Player` on the `.a` side and the `Tone.GrainPlayer` on `.b`. `amount = 0` means
+  `blend.fade = 0`: the signal is the untouched `Tone.Player` output, bit-identical to today,
+  verified the same bypass way as A-8 already requires for crush/drive/delay.
+- **Soundscape ambient bed (`ensureVoice`):** the same shape — the existing `Tone.Player` (the
+  bed voice as it plays today) blended via `makeBlend()` against a `Tone.GrainPlayer` reading
+  the same recording, both looping, blend driven by a new field on the point's own settings
+  object (`f.properties.sound.stretch`, via `soundOf()` — the same object that already holds
+  `radius`/`gain`/`zoneR` for that point; not `f.properties.audio`, which is recording
+  metadata, not a setting).
+
+This keeps every invariant the original design protected — one engine, two call sites, a real
+off position, a capped duration for hits vs. unbounded for the soundscape bed — while fitting
+the codebase's actual audio-graph shape (build dry-and-wet once, blend by data, never
+re-schedule) instead of stretching `fireGrains` to a use it wasn't shaped for. The "Order of
+work" item 2 below now reads as: build `stretchParams` and the hit-slot `Tone.GrainPlayer`
+blend first (shorter material, faster to audition), then the soundscape call site in the same
+plan — not a deferred sibling spec, since both call sites now share the same node type and the
+same blend shape rather than one waiting on a new scheduler design.
