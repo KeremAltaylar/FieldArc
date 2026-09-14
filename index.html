@@ -5077,14 +5077,30 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     col.appendChild(buildSoundRow({ k: "stretch", label: "stretch", min: 0, max: 1, step: 0.02,
       def: 0, hint: "extreme time-stretch, from the recording as it is to a slow granular smear" },
       q, commitQ));
+    col.appendChild(buildSoundRow({ k: "warp", label: "warp", min: 0, max: 1, step: 0.02,
+      def: 0, hint: "a slow pitch/time wobble, like a tape losing its own speed" },
+      q, commitQ));
+    col.appendChild(buildSoundRow({ k: "morph", label: "morph", min: 0, max: 1, step: 0.02,
+      def: 0, hint: "drifts which part of the recording is being read, instead of freezing on one" },
+      q, commitQ));
+    col.appendChild(buildSoundRow({ k: "field", label: "field", min: 0, max: 1, step: 0.02,
+      def: 0, hint: "jitters grain size and overlap, widening one texture into a scattered cloud" },
+      q, commitQ));
+    col.appendChild(buildSoundRow({ k: "grit", label: "grit", min: 0, max: 1, step: 0.02,
+      def: 0, hint: "a digital-artifact wash on the warp signal, evoking phase-vocoder smear" },
+      q, commitQ));
     cols.appendChild(col);
     var col2 = document.createElement("div");
     col2.className = "ppcol";
     var note = document.createElement("p");
     note.className = "hint";
-    note.textContent = "At 0 the bed plays the recording as it is. Further up, it slows and " +
-      "smears into a granular wash — the same engine a hit's own stretch uses, applied " +
-      "to the whole recording instead of one hit.";
+    note.textContent = "At 0 the bed plays the recording as it is. Stretch slows and smears it " +
+      "into a granular wash — the same engine a hit's own stretch uses, applied to the " +
+      "whole recording instead of one hit. Warp, morph, field and grit are further " +
+      "Paulstretch-style qualities on top of that wash: a wobble, a drifting read " +
+      "position, a scattered grain cloud, and a digital-artifact texture — each silent " +
+      "until stretch itself is above 0, since there is nothing to warp yet at the plain " +
+      "recording.";
     col2.appendChild(note);
     cols.appendChild(col2);
     body.appendChild(cols);
@@ -5867,6 +5883,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           if (v.grainPlayer) { v.grainPlayer.stop(); v.grainPlayer.dispose(); }
           if (v.stretchBlend) { v.stretchBlend.dispose(); }
         } catch (e) {}
+        try {
+          if (v.grit) {
+            [v.grit.input, v.grit.crush, v.grit.shape, v.grit.blend].forEach(function (n) {
+              try { n.dispose(); } catch (e) {}
+            });
+          }
+        } catch (e) {}
         try { v.filter.dispose(); v.gain.dispose(); } catch (e) {}
         if (v.url) { URL.revokeObjectURL(v.url); }
       }, 300);
@@ -5938,6 +5961,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           /* One grid for every point's sequencer; each counts its own ticks against it. */
           bed.rhythmLoop = Tone.Transport.scheduleRepeat(rhythmStep, SECT_GRID);
           bed.thirdLoop = Tone.Transport.scheduleRepeat(thirdStep, SECT_GRID);
+          /* The soundscape bed's own warp/morph/field/grit tick — a quarter-note grid is
+             musical enough for a slow wobble or drift without needing its own tempo math. */
+          bed.warpLoop = Tone.Transport.scheduleRepeat(warpStep, "4n");
         }
         Tone.Transport.start();
         $("#patch-play").textContent = "Stop";
@@ -7158,6 +7184,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * prox, BED.fade);
         applyStretch(v.grainPlayer, q.stretch);
         v.stretchBlend.fade.rampTo(q.stretch, BED.fade);
+        applyGrit(v.grit, q.grit);
       }
       v.idle = false;
       return;
@@ -7200,6 +7227,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           v.stretchBlend.fade.rampTo(q2.stretch, BED.fade);
         }
       }).connect(v.stretchBlend.a);
+      v.grit = buildGrit(Tone);
+      v.grit.output.connect(v.stretchBlend.b);
       v.grainPlayer = new Tone.GrainPlayer({
         url: v.url, loop: true,
         onload: function () {
@@ -7209,8 +7238,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           }
           v.grainPlayer.start();
         }
-      }).connect(v.stretchBlend.b);
+      }).connect(v.grit.input);
       applyStretch(v.grainPlayer, q.stretch);
+      applyGrit(v.grit, q.grit);
       v.stretchBlend.connect(v.filter);
     }).catch(function () { delete bed.voices[z.id]; });
   }
@@ -7237,19 +7267,29 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function soundOf(f) {
     var q = f.properties.sound;
     if (!q) {
-      q = f.properties.sound = { radius: 140, gain: 0.9, zoneR: 25, stretch: 0 };
+      q = f.properties.sound = { radius: 140, gain: 0.9, zoneR: 25, stretch: 0,
+                                  warp: 0, morph: 0, field: 0, grit: 0 };
     }
     if (q.radius === undefined) { q.radius = 140; }
     if (q.gain === undefined) { q.gain = 0.9; }
     if (q.zoneR === undefined) { q.zoneR = 25; }
     if (q.stretch === undefined) { q.stretch = 0; }
+    /* Four more Paulstretch-style qualities on top of the plain stretch amount — a slow
+       pitch/time wobble (warp), a drifting read-window instead of a frozen loop (morph),
+       grain-size/overlap jitter (field), and a digital-artifact insert (grit). All off by
+       default: a point saved before this existed must sound identical until touched. */
+    if (q.warp === undefined) { q.warp = 0; }
+    if (q.morph === undefined) { q.morph = 0; }
+    if (q.field === undefined) { q.field = 0; }
+    if (q.grit === undefined) { q.grit = 0; }
     return q;
   }
 
   /* The zone list carries a copy so the audio path never looks a feature up per frame. */
   function soundOfZone(z) {
     var f = feature(z.id);
-    return f ? soundOf(f) : { radius: 140, gain: 0.9, zoneR: 25, stretch: 0 };
+    return f ? soundOf(f) : { radius: 140, gain: 0.9, zoneR: 25, stretch: 0,
+                               warp: 0, morph: 0, field: 0, grit: 0 };
   }
 
   /* One shared engine for both a per-hit stretch and the soundscape bed's own extreme warp
@@ -7280,6 +7320,71 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     node.grainSize = sp.grainSize;
     node.overlap = sp.overlap;
     node.__stretchAmt = amount;
+  }
+
+  /* A digital-artifact insert for the soundscape bed's own warp — bitcrush into a tanh
+     drive, the same two ingredients (and the same A-17 makeBlend, never Tone.CrossFade)
+     already used for the per-hit chain, just without that chain's own delay: grit is
+     meant to sit on the warp signal, not add a second echo. */
+  function buildGrit(Tone) {
+    var input = new Tone.Gain(1);
+    var crush = new Tone.BitCrusher(16);
+    var shape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 4); }, 2048);
+    input.connect(crush);
+    crush.connect(shape);
+    var blend = makeBlend(Tone, 0);
+    input.connect(blend.a);
+    shape.connect(blend.b);
+    return { input: input, crush: crush, shape: shape, blend: blend, output: blend };
+  }
+
+  function applyGrit(g, amount) {
+    if (!g) { return; }
+    var amt = amount || 0;
+    g.crush.bits.rampTo(Math.max(2, Math.round(16 - amt * 13)), 0.2);
+    g.blend.fade.rampTo(amt, 0.2);
+  }
+
+  /* A slow, musical tick (A-1: the Transport, never a UI callback) for the soundscape
+     bed's other Paulstretch-style qualities — each is a jitter or a drift around what
+     stretch/applyStretch already establish, never a teardown (A-16), and each reads as
+     silent/frozen at 0 by construction: warp's random walk resets to 0, morph's window
+     widens back to the whole buffer, field's jitter factor collapses to 1. */
+  function warpStep(time) {
+    if (!bed) { return; }
+    Object.keys(bed.voices).forEach(function (id) {
+      var v = bed.voices[id];
+      if (!v.ready || !v.grainPlayer) { return; }
+      var f = feature(id), q = f ? soundOf(f) : null;
+      if (!q) { return; }
+      if (q.warp > 0) {
+        v._warpDetune = Math.max(-50, Math.min(50,
+          (v._warpDetune || 0) + (Math.random() * 2 - 1) * q.warp * 12));
+      } else {
+        v._warpDetune = 0;
+      }
+      v.grainPlayer.detune = v._warpDetune;
+
+      var dur = (v.grainPlayer.buffer && v.grainPlayer.buffer.duration) || 0;
+      if (q.morph > 0 && dur > 1) {
+        var winLen = Math.max(1, dur * (1 - q.morph * 0.7));
+        v._morphPos = ((v._morphPos || 0) + q.morph * dur * 0.05) % Math.max(0.01, dur - winLen);
+        v.grainPlayer.loopStart = v._morphPos;
+        v.grainPlayer.loopEnd = v._morphPos + winLen;
+      } else {
+        v.grainPlayer.loopStart = 0;
+        v.grainPlayer.loopEnd = 0;
+      }
+
+      if (q.field > 0) {
+        var sp = stretchParams(q.stretch);
+        var j = 1 + (Math.random() * 2 - 1) * q.field * 0.6;
+        v.grainPlayer.grainSize = Math.max(0.02, sp.grainSize * j);
+        v.grainPlayer.overlap = Math.max(0.01, sp.overlap * j);
+      }
+
+      applyGrit(v.grit, q.grit);
+    });
   }
 
   /* Pulses spread by the running-sum method: every step adds k and fires when it passes n.

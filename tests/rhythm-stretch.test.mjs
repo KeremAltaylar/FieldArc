@@ -342,3 +342,99 @@ test("each slot seeds its own stretch from real, current data the moment its own
     "the blend must be ramped to the real value too — a nonzero saved stretch must not stay " +
     "silently at 0 just because this slot loaded after some other point-level gate fired");
 });
+
+test("soundOf backfills warp/morph/field/grit at 0, without touching the fields that came before them", () => {
+  const of = slice("function soundOf(f)", "function soundOfZone(");
+  ["warp", "morph", "field", "grit"].forEach((k) => {
+    assert.match(of, new RegExp("q\\." + k + "\\s*===?\\s*undefined"),
+      k + " must be backfilled by absence-check, not overwritten if already set");
+  });
+  assert.doesNotMatch(of, /\.radius\s*=\s*140;[\s\S]*\.radius\s*=/,
+    "radius's own backfill line must not be touched by this addition");
+});
+
+test("soundOfZone's no-feature fallback also carries the four new fields", () => {
+  const zoneOf = slice("function soundOfZone(z)", "function stretchParams(");
+  ["warp:", "morph:", "field:", "grit:"].forEach((k) => {
+    assert.match(zoneOf, new RegExp(k.replace(":", "") + ":\\s*0"));
+  });
+});
+
+test("buildGrit wires input through bitcrush and a tanh drive, blended via makeBlend and never Tone.CrossFade", () => {
+  const src = slice("function buildGrit(Tone)", "\n  }\n");
+  assert.match(src, /new Tone\.BitCrusher\(/);
+  assert.match(src, /new Tone\.WaveShaper\(/);
+  assert.match(src, /makeBlend\(Tone,\s*0\)/);
+  assert.doesNotMatch(src, /Tone\.CrossFade/, "A-17: makeBlend, never Tone.CrossFade");
+});
+
+test("applyGrit ramps the BitCrusher's own bit depth via its Param, not a direct assignment", () => {
+  const src = slice("function applyGrit(g, amount)", "\n  }\n");
+  assert.match(src, /if \(!g\) \{ return; \}/, "must be a safe no-op with no live grit chain");
+  assert.match(src, /g\.crush\.bits\.rampTo\(/,
+    "measured against the real Tone.js build earlier this session: BitCrusher.bits is a " +
+    "live Param — a direct assignment (.bits = n) silently orphans it from the real DSP");
+  assert.doesNotMatch(src, /g\.crush\.bits\s*=[^=]/);
+  assert.match(src, /g\.blend\.fade\.rampTo\(/);
+});
+
+test("warpStep is a safe no-op with no bed, and never writes playbackRate directly", () => {
+  const src = slice("function warpStep(time)", "\n  }\n");
+  assert.match(src, /if \(!bed\) \{ return; \}/);
+  assert.doesNotMatch(src, /grainPlayer\.playbackRate\s*=/,
+    "playbackRate is stretch's own knob, owned by applyStretch — warpStep must never touch it");
+});
+
+test("warpStep's warp resets the detune random-walk to 0 rather than freezing it at its last value", () => {
+  const src = slice("function warpStep(time)", "\n  }\n");
+  assert.match(src, /if \(q\.warp > 0\)/);
+  assert.match(src, /v\._warpDetune = 0;/);
+  assert.match(src, /v\.grainPlayer\.detune = v\._warpDetune;/);
+});
+
+test("warpStep's morph widens the loop window back to the whole buffer at 0, rather than leaving a stale narrow one", () => {
+  const src = slice("function warpStep(time)", "\n  }\n");
+  assert.match(src, /if \(q\.morph > 0 && dur > 1\)/);
+  assert.match(src, /v\.grainPlayer\.loopStart = 0;/);
+  assert.match(src, /v\.grainPlayer\.loopEnd = 0;/);
+});
+
+test("warpStep's field jitters grainSize/overlap around stretchParams' own values, not a hardcoded pair", () => {
+  const src = slice("function warpStep(time)", "\n  }\n");
+  assert.match(src, /if \(q\.field > 0\)/);
+  assert.match(src, /stretchParams\(q\.stretch\)/);
+  assert.match(src, /v\.grainPlayer\.grainSize\s*=/);
+  assert.match(src, /v\.grainPlayer\.overlap\s*=/);
+});
+
+test("warpStep applies grit every tick, through applyGrit rather than a second hand-rolled ramp", () => {
+  const src = slice("function warpStep(time)", "\n  }\n");
+  assert.match(src, /applyGrit\(v\.grit, q\.grit\)/);
+});
+
+test("bedStart schedules warpStep on the Transport, never a UI callback, only once per bed", () => {
+  const src = slice("function bedStart()", "\n  }\n");
+  assert.match(src, /bed\.warpLoop = Tone\.Transport\.scheduleRepeat\(warpStep,/);
+});
+
+test("ensureVoice routes the GrainPlayer through the grit chain before the stretch blend, not directly", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  assert.match(src, /v\.grit = buildGrit\(Tone\)/);
+  assert.match(src, /v\.grit\.output\.connect\(v\.stretchBlend\.b\)/);
+  assert.match(src, /\}\)\.connect\(v\.grit\.input\)/,
+    "the GrainPlayer's own .connect(...) must feed the grit chain, not the blend directly");
+  assert.match(src, /applyGrit\(v\.grit, q\.grit\)/,
+    "the grit chain must be seeded on construction, the same as applyStretch is");
+});
+
+test("bedStop disposes every grit-chain node, each in its own guarded segment", () => {
+  const src = slice("function bedStop()", "\n  }\n");
+  assert.match(src, /v\.grit\.input,\s*v\.grit\.crush,\s*v\.grit\.shape,\s*v\.grit\.blend/);
+});
+
+test("renderSoundscapePanel exposes warp, morph, field and grit alongside stretch", () => {
+  const src = slice("function renderSoundscapePanel(f, q, commitQ, body)", "\n  }\n");
+  ["stretch", "warp", "morph", "field", "grit"].forEach((k) => {
+    assert.match(src, new RegExp('k:\\s*"' + k + '"'));
+  });
+});
