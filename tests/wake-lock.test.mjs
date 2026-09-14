@@ -33,6 +33,20 @@ test("visibilitychange resumes the AudioContext when it isn't running, not only 
   assert.match(src, /bed\.Tone\.start\(\)/);
 });
 
+test("bedStart schedules a periodic watchdog that resumes the context independent of visibilitychange", () => {
+  /* visibilitychange only fires on a tab-hidden/tab-visible transition — a context can
+     suspend or degrade for other reasons (OS audio-focus changes, a phone call, a
+     Bluetooth switch, a power-saving heuristic) while the tab stays foregrounded and
+     visible the whole time, which visibilitychange alone would never catch. */
+  const src = slice("function bedStart()", "\n  }\n");
+  assert.match(src, /bed\.resumeLoop = Tone\.Transport\.scheduleRepeat\(/);
+  assert.match(src, /bed\.Tone\.context\.state !== "running"/);
+  assert.match(src, /bed\.Tone\.start\(\)/);
+  assert.match(src, /\},\s*5\)/,
+    "must be a fixed number of real seconds, not a musical division — this has nothing " +
+    "to do with tempo");
+});
+
 test("bedStart requests the wake lock once it actually starts building the graph", () => {
   const src = slice("function bedStart()", "\n  }\n");
   assert.match(src, /if \(!wantSound\) \{ bed\.on = false; return; \}\s*\n\s*keepAwake\(true\)/,

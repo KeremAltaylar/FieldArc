@@ -5985,6 +5985,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           /* The soundscape bed's own warp/morph/field/grit tick — a quarter-note grid is
              musical enough for a slow wobble or drift without needing its own tempo math. */
           bed.warpLoop = Tone.Transport.scheduleRepeat(warpStep, "4n");
+          /* A watchdog, not a musical tick: visibilitychange only resumes the context on
+             a tab-hidden/tab-visible transition, but a context can suspend or degrade for
+             other reasons while the tab stays foregrounded and visible the whole time —
+             an OS audio-focus change, a phone call, a Bluetooth device switching, a
+             power-saving heuristic after a long session. Any voice sharing bed.Tone.context
+             would go silent at once when that happens, whether or not it was the one just
+             being adjusted — which is why "playing for a while" was enough on its own,
+             with no tab switch and no screen lock required. Every 5 real seconds,
+             independent of tempo, since this has nothing to do with the music. */
+          bed.resumeLoop = Tone.Transport.scheduleRepeat(function () {
+            if (bed && bed.Tone && bed.Tone.context.state !== "running") {
+              bed.Tone.start().catch(function () {});
+            }
+          }, 5);
         }
         Tone.Transport.start();
         $("#patch-play").textContent = "Stop";
