@@ -399,12 +399,32 @@ test("warpStep's morph widens the loop window back to the whole buffer at 0, rat
   assert.match(src, /v\.grainPlayer\.loopEnd = 0;/);
 });
 
+test("warpStep clamps morph's loopEnd to the buffer's own duration, since Tone's setter throws past it", () => {
+  const src = slice("function warpStep(time)", "\n  }\n");
+  assert.match(src, /v\.grainPlayer\.loopEnd = Math\.min\(dur, v\._morphPos \+ winLen\);/,
+    "measured against the real Tone.js build: GrainPlayer's loopEnd setter asserts " +
+    "0 <= value <= buffer.duration and throws — on a short recording near the top of " +
+    "the morph range, _morphPos + winLen can land fractionally past dur");
+});
+
 test("warpStep's field jitters grainSize/overlap around stretchParams' own values, not a hardcoded pair", () => {
   const src = slice("function warpStep(time)", "\n  }\n");
   assert.match(src, /if \(q\.field > 0\)/);
   assert.match(src, /stretchParams\(q\.stretch\)/);
   assert.match(src, /v\.grainPlayer\.grainSize\s*=/);
   assert.match(src, /v\.grainPlayer\.overlap\s*=/);
+});
+
+test("warpStep resets grainSize/overlap to stretchParams' own values when field is 0, not just when it's above 0", () => {
+  /* The original code only ever wrote grainSize/overlap inside `if (q.field > 0)`, with
+     no else — turning field back down left the GrainPlayer stranded at its last random
+     jitter (up to ±60% off) forever, since nothing else ever revisits those two
+     properties once stretch itself stops changing. */
+  const src = slice("function warpStep(time)", "\n  }\n");
+  const fieldIfIdx = src.indexOf("if (q.field > 0)");
+  assert.ok(fieldIfIdx !== -1);
+  const afterField = src.slice(fieldIfIdx);
+  assert.match(afterField, /\} else \{\s*\n\s*v\.grainPlayer\.grainSize = sp\.grainSize;\s*\n\s*v\.grainPlayer\.overlap = sp\.overlap;\s*\n\s*\}/);
 });
 
 test("warpStep applies grit every tick, through applyGrit rather than a second hand-rolled ramp", () => {

@@ -52,3 +52,12 @@ test("stopTrack and gpsSet(false) both route through releaseAwakeIfUnneeded rath
   const gps = slice("function gpsSet(on)", "\n  }\n");
   assert.match(gps, /else \{ releaseAwakeIfUnneeded\(\); \}/);
 });
+
+test("keepAwake(true) refuses a second request while one is already held or in flight", () => {
+  const src = slice("function keepAwake(on)", "\n  }\n");
+  assert.match(src, /if \(wakeLock \|\| wakeLockPending\) \{ return; \}/,
+    "two near-simultaneous callers (e.g. Sound and GPS-follow) must not each spawn their " +
+    "own WakeLockSentinel — the second orphans the first, which is then never released");
+  assert.match(src, /wakeLockPending = true/);
+  assert.match(src, /wakeLockPending = false/);
+});

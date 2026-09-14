@@ -41,8 +41,35 @@ test("openPlaceMenu fetches the route list every time it opens, not just once", 
   assert.match(src, /renderRouteList\(/);
 });
 
+test("openPlaceMenu re-filters routes against the live search value once the fetch resolves, not a hardcoded empty string", () => {
+  const src = slice("function openPlaceMenu()", "\n  }\n");
+  assert.match(src, /renderRouteList\(foldTurkish\(\$\("#place-search"\)\.value\.trim\(\)\)\)/,
+    "a slow fetch can resolve after the user has already typed — re-filtering against a " +
+    "hardcoded \"\" would silently discard it");
+  assert.doesNotMatch(src, /renderRouteList\(""\)/);
+  assert.match(src, /if \(\$\("#place-menu"\)\.hidden\) \{ return; \}/,
+    "must also bail if the menu closed before the fetch resolved");
+});
+
 test("a route row is visually distinct from a place row but reuses the same list markup", () => {
   const src = slice("function renderRouteList(q)", "function openPlaceMenu(");
   assert.match(src, /className = "placerow"/);
   assert.match(src, /pkind">route</);
+});
+
+test("renderPlaceList calls renderRouteList unconditionally, even when no place matches the query", () => {
+  /* A route-name search (exactly what the picker's own placeholder now advertises) is not
+     a place-name search — the two lists must both re-filter on every keystroke, even the
+     ones where the place list itself comes up empty. */
+  const src = slice("function renderPlaceList()", "\n  }\n");
+  const emptyBranchStart = src.indexOf("if (!shown.length)");
+  assert.ok(emptyBranchStart !== -1);
+  const routeCallIdx = src.indexOf("renderRouteList(q)");
+  assert.ok(routeCallIdx > emptyBranchStart,
+    "renderRouteList(q) must be reachable after the empty-place branch, not only after the " +
+    "non-empty one");
+  const emptyBranchToRouteCall = src.slice(emptyBranchStart, routeCallIdx);
+  assert.doesNotMatch(emptyBranchToRouteCall, /\breturn;/,
+    "an early return between the empty-place check and renderRouteList(q) would skip the " +
+    "route re-filter whenever no place name matches the query");
 });

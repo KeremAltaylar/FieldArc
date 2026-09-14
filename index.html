@@ -3093,24 +3093,28 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       none.className = "placenone";
       none.textContent = "No forest or koru matches that.";
       ul.appendChild(none);
-      return;
+    } else {
+      shown.forEach(function (p) {
+        var li = document.createElement("li");
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "placerow";
+        b.setAttribute("aria-current", String(place && p.properties.id === place.properties.id));
+        var n = counts[p.properties.id] || 0;
+        b.innerHTML = '<span class="pkind">' + p.properties.kind + "</span>" +
+          "<span>" + p.properties.name.replace(/</g, "&lt;") + "</span>" +
+          '<span class="pmeta">' + (n ? n + " ▪ " : "") +
+          (p.properties.area_km2 >= 1 ? p.properties.area_km2.toFixed(1) + " km²"
+                                      : Math.round(p.properties.area_km2 * 100) + " ha") + "</span>";
+        b.addEventListener("click", function () { setPlace(p); });
+        li.appendChild(b);
+        ul.appendChild(li);
+      });
     }
-    shown.forEach(function (p) {
-      var li = document.createElement("li");
-      var b = document.createElement("button");
-      b.type = "button";
-      b.className = "placerow";
-      b.setAttribute("aria-current", String(place && p.properties.id === place.properties.id));
-      var n = counts[p.properties.id] || 0;
-      b.innerHTML = '<span class="pkind">' + p.properties.kind + "</span>" +
-        "<span>" + p.properties.name.replace(/</g, "&lt;") + "</span>" +
-        '<span class="pmeta">' + (n ? n + " ▪ " : "") +
-        (p.properties.area_km2 >= 1 ? p.properties.area_km2.toFixed(1) + " km²"
-                                    : Math.round(p.properties.area_km2 * 100) + " ha") + "</span>";
-      b.addEventListener("click", function () { setPlace(p); });
-      li.appendChild(b);
-      ul.appendChild(li);
-    });
+    /* Always re-filters, even when no PLACE matched — a query that names a route rather
+       than a forest (exactly what the search box's own placeholder now advertises) must
+       still update the routes underneath, not freeze it at whatever the previous
+       keystroke last rendered. */
     renderRouteList(q);
   }
 
@@ -3152,7 +3156,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#place-btn").setAttribute("aria-expanded", "true");
     $("#place-search").value = "";
     renderPlaceList();
-    fetchAllRoutes().then(function () { renderRouteList(""); });
+    fetchAllRoutes().then(function () {
+      /* Not a hardcoded "" — a slow fetch can resolve well after the first keystroke,
+         and re-rendering against a live query moments-old value would silently discard
+         whatever the user has already typed. Also bail if the menu closed meanwhile. */
+      if ($("#place-menu").hidden) { return; }
+      renderRouteList(foldTurkish($("#place-search").value.trim()));
+    });
     $("#place-search").focus();
   }
   function closePlaceMenu() {
@@ -3475,17 +3485,28 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      Point mode pins a fix. Route mode starts a live trace on the first tap and closes it on
      the second. Select mode only centres — Mark must never create something unasked. */
   var GEO = { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 };
-  var watchId = null, track = null, wakeLock = null;
+  var watchId = null, track = null, wakeLock = null, wakeLockPending = false;
 
   /* A locked screen suspends the page and the trace dies in your pocket. This is the one
      thing standing between a recorded walk and a lost one. */
   function keepAwake(on) {
     if (!("wakeLock" in navigator)) { return; }
     if (on) {
+      /* Three independent reasons (see releaseAwakeIfUnneeded below) can each call this
+         within moments of each other — a listener hitting Sound and then GPS-follow, say.
+         Without this guard, a second request() firing before the first resolves replaces
+         `wakeLock` with its own sentinel and orphans the first one: it is never released,
+         so the screen stops sleeping for the rest of the session. */
+      if (wakeLock || wakeLockPending) { return; }
+      wakeLockPending = true;
       navigator.wakeLock.request("screen").then(function (l) {
+        wakeLockPending = false;
         wakeLock = l;
         l.addEventListener("release", function () { wakeLock = null; });
-      }).catch(function () { /* denied or unsupported — tracing still works while visible */ });
+      }).catch(function () {
+        wakeLockPending = false;
+        /* denied or unsupported — tracing still works while visible */
+      });
     } else if (wakeLock) {
       wakeLock.release().catch(function () {});
       wakeLock = null;
@@ -7349,7 +7370,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      bed's other Paulstretch-style qualities — each is a jitter or a drift around what
      stretch/applyStretch already establish, never a teardown (A-16), and each reads as
      silent/frozen at 0 by construction: warp's random walk resets to 0, morph's window
-     widens back to the whole buffer, field's jitter factor collapses to 1. */
+     widens back to the whole buffer, field's grainSize/overlap reset to stretchParams'
+     own plain values rather than being left at the last jitter. */
   function warpStep(time) {
     if (!bed) { return; }
     Object.keys(bed.voices).forEach(function (id) {
@@ -7370,17 +7392,30 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var winLen = Math.max(1, dur * (1 - q.morph * 0.7));
         v._morphPos = ((v._morphPos || 0) + q.morph * dur * 0.05) % Math.max(0.01, dur - winLen);
         v.grainPlayer.loopStart = v._morphPos;
-        v.grainPlayer.loopEnd = v._morphPos + winLen;
+        /* Tone's own loopEnd setter asserts 0 <= value <= buffer.duration and throws
+           otherwise — measured against the real build. The floor on (dur - winLen) above
+           protects the modulo, not this: on a very short recording (a couple of seconds)
+           near the top of the morph range, _morphPos + winLen can still land fractionally
+           past dur. Clamped rather than left to throw and abort the rest of this tick's
+           other scheduled events. */
+        v.grainPlayer.loopEnd = Math.min(dur, v._morphPos + winLen);
       } else {
         v.grainPlayer.loopStart = 0;
         v.grainPlayer.loopEnd = 0;
       }
 
+      /* Always recomputed from stretchParams' own values, on or off — a bare `if (field >
+         0)` with no reset left the GrainPlayer stranded at its last random jitter (up to
+         ±60% off) the moment field was turned back down, since neither this property
+         write nor applyStretch's own __stretchAmt memo would ever revisit it again. */
+      var sp = stretchParams(q.stretch);
       if (q.field > 0) {
-        var sp = stretchParams(q.stretch);
         var j = 1 + (Math.random() * 2 - 1) * q.field * 0.6;
         v.grainPlayer.grainSize = Math.max(0.02, sp.grainSize * j);
         v.grainPlayer.overlap = Math.max(0.01, sp.overlap * j);
+      } else {
+        v.grainPlayer.grainSize = sp.grainSize;
+        v.grainPlayer.overlap = sp.overlap;
       }
 
       applyGrit(v.grit, q.grit);
