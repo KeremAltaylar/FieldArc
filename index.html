@@ -3761,29 +3761,46 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* ---------- Audio analysis ----------
      One decode on attach turns a blob into something the archive can be queried by. */
-  function fft(re, im) {
-    var n = re.length, i, j = 0, k, m, t, bit;
-    for (i = 1; i < n; i++) {
-      for (bit = n >> 1; j & bit; bit >>= 1) { j ^= bit; }
+  /* A minimal, self-contained radix-2 FFT — no dependency on anything outside this
+     function, since it is also assembled into the worklet's own module source (see
+     buildPaulstretchWorkletUrl below), which runs in AudioWorkletGlobalScope: no window,
+     no DOM, nothing loaded elsewhere in this file is reachable from there. re/im are
+     same-length indexable numeric arrays (Float64Array inside the worklet, a plain Array
+     in tests), modified in place; their length must be a power of 2. inverse=true runs
+     the same butterfly network with the twiddle factors' sign flipped, then scales by
+     1/n, rather than needing a second, near-duplicate function. */
+  function fft(re, im, inverse) {
+    var n = re.length, i, j, bit, tr, ti, len, ang, wr, wi, start, k, half,
+        curWr, curWi, uRe, uIm, vRe, vIm, nextWr, nextWi, m;
+    for (i = 1, j = 0; i < n; i++) {
+      bit = n >> 1;
+      for (; j & bit; bit >>= 1) { j ^= bit; }
       j ^= bit;
       if (i < j) {
-        t = re[i]; re[i] = re[j]; re[j] = t;
-        t = im[i]; im[i] = im[j]; im[j] = t;
+        tr = re[i]; re[i] = re[j]; re[j] = tr;
+        ti = im[i]; im[i] = im[j]; im[j] = ti;
       }
     }
-    for (m = 2; m <= n; m <<= 1) {
-      var ang = -2 * Math.PI / m, wr = Math.cos(ang), wi = Math.sin(ang), half = m >> 1;
-      for (i = 0; i < n; i += m) {
-        var cr = 1, ci = 0;
+    for (len = 2; len <= n; len <<= 1) {
+      ang = (inverse ? 1 : -1) * 2 * Math.PI / len;
+      wr = Math.cos(ang); wi = Math.sin(ang);
+      half = len / 2;
+      for (start = 0; start < n; start += len) {
+        curWr = 1; curWi = 0;
         for (k = 0; k < half; k++) {
-          var ur = re[i + k], ui = im[i + k];
-          var vr = re[i + k + half] * cr - im[i + k + half] * ci;
-          var vi = re[i + k + half] * ci + im[i + k + half] * cr;
-          re[i + k] = ur + vr; im[i + k] = ui + vi;
-          re[i + k + half] = ur - vr; im[i + k + half] = ui - vi;
-          var ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
+          uRe = re[start + k]; uIm = im[start + k];
+          vRe = re[start + k + half] * curWr - im[start + k + half] * curWi;
+          vIm = re[start + k + half] * curWi + im[start + k + half] * curWr;
+          re[start + k] = uRe + vRe; im[start + k] = uIm + vIm;
+          re[start + k + half] = uRe - vRe; im[start + k + half] = uIm - vIm;
+          nextWr = curWr * wr - curWi * wi;
+          nextWi = curWr * wi + curWi * wr;
+          curWr = nextWr; curWi = nextWi;
         }
       }
+    }
+    if (inverse) {
+      for (m = 0; m < n; m++) { re[m] /= n; im[m] /= n; }
     }
   }
 
