@@ -152,3 +152,33 @@ test("synthesizeHop's warpBins shifts which bin carries the dominant magnitude",
   assert.ok(peak === k + shift || peak === n - (k + shift) || peak === Math.abs(n - k - shift),
     `expected the shifted dominant bin near ${k + shift}, got ${peak}`);
 });
+
+test("buildPaulstretchWorkletUrl assembles fft and synthesizeHop's own real source into the module, not a hand-copied duplicate", () => {
+  const src = slice("function buildPaulstretchWorkletUrl()", "\n  }\n");
+  assert.match(src, /function fft\(/, "the worklet module must embed fft's real source");
+  assert.match(src, /function synthesizeHop\(/, "the worklet module must embed synthesizeHop's real source");
+  assert.match(src, /registerProcessor\(\s*["']paulstretch-processor["']/);
+  assert.match(src, /class PaulstretchProcessor extends AudioWorkletProcessor/);
+  assert.match(src, /new Blob\(/);
+  assert.match(src, /URL\.createObjectURL\(/);
+});
+
+test("the worklet module never materialises the full stretched duration as one pre-rendered buffer", () => {
+  const src = slice("function buildPaulstretchWorkletUrl()", "\n  }\n");
+  assert.doesNotMatch(src, /new Float32Array\(\s*source\.length\s*\*\s*(stretchFactor|params\.stretchFactor)/,
+    "a buffer sized by source length times the stretch factor would be exactly the " +
+    "hundreds-of-megabytes-at-200x problem this design specifically avoids");
+});
+
+test("the worklet's process() outputs silence rather than throwing before its source has arrived", () => {
+  const src = slice("function buildPaulstretchWorkletUrl()", "\n  }\n");
+  assert.match(src, /if\s*\(!this\.source\)/);
+});
+
+test("loadPaulstretchModule registers the module before anything can construct the node from it, and only once", () => {
+  const src = slice("function loadPaulstretchModule(ctx)", "\n  }\n");
+  assert.match(src, /ctx\.audioWorklet\.addModule\(\s*buildPaulstretchWorkletUrl\(\)\s*\)/);
+  assert.match(src, /if\s*\(!paulstretchModulePromise\)/,
+    "must cache the promise — addModule/registerProcessor for the same name a second " +
+    "time throws on some browsers, and every voice's ensureVoice call reaches this");
+});

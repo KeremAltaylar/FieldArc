@@ -7435,6 +7435,90 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return outRe;
   }
 
+  /* AudioWorkletProcessor runs in its own restricted global scope — no window, no DOM,
+     nothing else in this file is reachable from there — so its module has to be entirely
+     self-contained. Built once, lazily, the first time a soundscape voice needs it (see
+     ensureVoice); the resulting Blob URL is cached and reused for every voice's own
+     AudioWorkletNode, since audioWorklet.addModule() only needs to run once per context. */
+  var paulstretchWorkletUrl = null;
+  function buildPaulstretchWorkletUrl() {
+    if (paulstretchWorkletUrl) { return paulstretchWorkletUrl; }
+    var lines = [
+      "'use strict';",
+      "function fft(re, im, inverse) { var n = re.length, i, j, bit, tr, ti, len, ang, wr, wi, start, k, half, curWr, curWi, uRe, uIm, vRe, vIm, nextWr, nextWi, m; for (i = 1, j = 0; i < n; i++) { bit = n >> 1; for (; j & bit; bit >>= 1) { j ^= bit; } j ^= bit; if (i < j) { tr = re[i]; re[i] = re[j]; re[j] = tr; ti = im[i]; im[i] = im[j]; im[j] = ti; } } for (len = 2; len <= n; len <<= 1) { ang = (inverse ? 1 : -1) * 2 * Math.PI / len; wr = Math.cos(ang); wi = Math.sin(ang); half = len / 2; for (start = 0; start < n; start += len) { curWr = 1; curWi = 0; for (k = 0; k < half; k++) { uRe = re[start + k]; uIm = im[start + k]; vRe = re[start + k + half] * curWr - im[start + k + half] * curWi; vIm = re[start + k + half] * curWi + im[start + k + half] * curWr; re[start + k] = uRe + vRe; im[start + k] = uIm + vIm; re[start + k + half] = uRe - vRe; im[start + k + half] = uIm - vIm; nextWr = curWr * wr - curWi * wi; nextWi = curWr * wi + curWi * wr; curWr = nextWr; curWi = nextWi; } } } if (inverse) { for (m = 0; m < n; m++) { re[m] /= n; im[m] /= n; } } }",
+      "function synthesizeHop(source, readPos, windowSize, warpBins, fftFn, randomFn) { var i, srcIdx, s, w, mag, srcBin, phase; var re = new Array(windowSize), im = new Array(windowSize); var start = Math.floor(readPos); for (i = 0; i < windowSize; i++) { srcIdx = start + i; s = (srcIdx >= 0 && srcIdx < source.length) ? source[srcIdx] : 0; w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (windowSize - 1)); re[i] = s * w; im[i] = 0; } fftFn(re, im, false); mag = new Array(windowSize); for (i = 0; i < windowSize; i++) { mag[i] = Math.sqrt(re[i] * re[i] + im[i] * im[i]); } var outRe = new Array(windowSize), outIm = new Array(windowSize); for (i = 0; i < windowSize; i++) { srcBin = ((i - warpBins) % windowSize + windowSize) % windowSize; phase = randomFn() * 2 * Math.PI; outRe[i] = mag[srcBin] * Math.cos(phase); outIm[i] = mag[srcBin] * Math.sin(phase); } fftFn(outRe, outIm, true); for (i = 0; i < windowSize; i++) { w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (windowSize - 1)); outRe[i] *= w; } return outRe; }",
+      "class PaulstretchProcessor extends AudioWorkletProcessor {",
+      "  constructor() {",
+      "    super();",
+      "    this.source = null;",
+      "    this.readPos = 0;",
+      "    this.writeBuf = new Float32Array(8 * sampleRate);",
+      "    this.writePos = 0;",
+      "    this.readOutPos = 0;",
+      "    this.hopCounter = 0;",
+      "    this.params = { stretchFactor: 1, warpBins: 0, morphRate: 0, synthesisHop: 1024, windowSize: 4096 };",
+      "    this.port.onmessage = function(e) {",
+      "      if (e.data.type === 'source') { this.source = e.data.data; this.readPos = 0; }",
+      "      else if (e.data.type === 'params') { Object.assign(this.params, e.data.params); }",
+      "    }.bind(this);",
+      "  }",
+      "  _synthesizeOneHop() {",
+      "    var frame = synthesizeHop(this.source, this.readPos, this.params.windowSize,",
+      "      Math.round(this.params.warpBins), fft, Math.random);",
+      "    var i, idx;",
+      "    for (i = 0; i < frame.length; i++) {",
+      "      idx = (this.writePos + i) % this.writeBuf.length;",
+      "      this.writeBuf[idx] += frame[i];",
+      "    }",
+      "    var hopSeconds = this.params.synthesisHop / sampleRate;",
+      "    var advance = (hopSeconds / Math.max(1, this.params.stretchFactor)) * sampleRate;",
+      "    advance += this.params.morphRate * sampleRate * hopSeconds;",
+      "    this.readPos += advance;",
+      "    if (this.source.length > 0) {",
+      "      this.readPos = ((this.readPos % this.source.length) + this.source.length) % this.source.length;",
+      "    }",
+      "    this.writePos = (this.writePos + this.params.synthesisHop) % this.writeBuf.length;",
+      "    this.hopCounter = this.params.synthesisHop;",
+      "  }",
+      "  process(inputs, outputs) {",
+      "    var output = outputs[0][0];",
+      "    if (!output) { return true; }",
+      "    if (!this.source) { output.fill(0); return true; }",
+      "    var i;",
+      "    for (i = 0; i < output.length; i++) {",
+      "      if (this.hopCounter <= 0) { this._synthesizeOneHop(); }",
+      "      this.hopCounter--;",
+      "      var idx = (this.readOutPos + i) % this.writeBuf.length;",
+      "      output[i] = this.writeBuf[idx];",
+      "      this.writeBuf[idx] = 0;",
+      "    }",
+      "    this.readOutPos = (this.readOutPos + output.length) % this.writeBuf.length;",
+      "    return true;",
+      "  }",
+      "}",
+      "registerProcessor('paulstretch-processor', PaulstretchProcessor);"
+    ];
+    var blob = new Blob([lines.join("\n")], { type: "application/javascript" });
+    paulstretchWorkletUrl = URL.createObjectURL(blob);
+    return paulstretchWorkletUrl;
+  }
+
+  /* new AudioWorkletNode(ctx, "paulstretch-processor") throws unless this context has
+     already run audioWorklet.addModule() for a module that registered that exact name —
+     construction and registration are two separate async steps, easy to miss since
+     nothing about the AudioWorkletNode constructor itself hints a prior step was needed.
+     Cached so every soundscape voice's own ensureVoice call awaits the same promise
+     rather than re-adding the module (addModule on an already-loaded module is harmless
+     but wasteful, and registerProcessor throws if called twice for the same name on some
+     browsers). */
+  var paulstretchModulePromise = null;
+  function loadPaulstretchModule(ctx) {
+    if (!paulstretchModulePromise) {
+      paulstretchModulePromise = ctx.audioWorklet.addModule(buildPaulstretchWorkletUrl());
+    }
+    return paulstretchModulePromise;
+  }
+
   /* A slow, musical tick (A-1: the Transport, never a UI callback) for the soundscape
      bed's other Paulstretch-style qualities — each is a jitter or a drift around what
      stretch/applyStretch already establish, never a teardown (A-16), and each reads as
