@@ -5115,10 +5115,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* updateBed() (commitQ's own last step) only re-posts fresh params to voices in its
        "near" set — in range of pacer.pos and within BED.maxVoices — the same proximity
        gate applyHitStretch's own comment documents working around for hits ("a setter
-       can edit a point's stretch while it happens to be out of range"). These five
-       sliders reach past that gate the same way applyHitStretch does: straight at this
-       point's own live voice, if one already exists, on every drag, not only when the
-       setter happens to be standing close enough for updateBed to notice. */
+       can edit a point's stretch while it happens to be out of range"). warpStep already
+       refreshes every voice that has ever been created, near or not, but only once a
+       quarter-note — so an out-of-range voice a setter already created still hears a
+       drag, just up to one tick late. These five sliders close that narrower gap: they
+       reach straight at this point's own live voice, if one already exists, on every
+       drag, matching warpStep's own params shape exactly rather than leaving one field
+       to lag behind the others until the next tick. A voice that was never created (its
+       point never entered the "near" top-BED.maxVoices set at all) has nothing here to
+       reach — that case stays exactly as bounded as it always was. */
     var commitLive = function () {
       commitQ();
       var v = bed && bed.voices[f.properties.id];
@@ -5126,7 +5131,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       v.stretch.node.port.postMessage({ type: "params", params: {
         stretchFactor: Math.pow(200, Math.max(0, Math.min(1, q.stretch))),
         warpBins: v._warpBins || 0,
-        morphRate: q.morph || 0
+        morphRate: q.morph || 0,
+        synthesisHop: Math.round(1024 * (1 - (q.field || 0) * 0.6))
       } });
       applyGrit(v.grit, q.grit);
     };
