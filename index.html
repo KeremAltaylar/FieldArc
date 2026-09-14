@@ -3430,9 +3430,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       wakeLock = null;
     }
   }
-  /* Re-acquire after the tab comes back, or the lock is gone for the rest of the walk. */
+  /* Three independent reasons can each want the screen held awake — a setter's own trace,
+     a listener's live GPS-follow, or simply an active listening session — so turning any
+     ONE of them off must not release a lock another one still needs. Every "off" path
+     calls this instead of keepAwake(false) directly. */
+  function releaseAwakeIfUnneeded() {
+    if (!track && !gps.on && !(bed && bed.on)) { keepAwake(false); }
+  }
+  /* Re-acquire after the tab comes back, or the lock is gone for the rest of the walk — and
+     resume the AudioContext itself, which a backgrounded tab or a locked screen can suspend
+     independent of the wake lock (measured: most aggressive on iOS Safari, but Chrome/
+     Android can suspend a long-backgrounded tab's audio too). Tone.Transport's own clock
+     keeps ticking either way — it is not gated on the context's run state — so without this,
+     playback silently goes to a context that has stopped processing while everything else
+     (GPS fixes, the pacer) looks alive. */
   document.addEventListener("visibilitychange", function () {
-    if (document.visibilityState === "visible" && track && !wakeLock) { keepAwake(true); }
+    if (document.visibilityState !== "visible") { return; }
+    if ((track || gps.on || (bed && bed.on)) && !wakeLock) { keepAwake(true); }
+    if (bed && bed.on && bed.Tone && bed.Tone.context.state !== "running") {
+      bed.Tone.start().catch(function () {});
+    }
   });
 
   function circlePoly(lon, lat, metres, n) {
@@ -3568,10 +3585,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function stopTrack() {
-    keepAwake(false);
     if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     var t = track;
     track = null;
+    releaseAwakeIfUnneeded();
     draft = [];
     updateDraft();
     setMarkState("idle");
@@ -5634,8 +5651,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     gps.on = on;
     gps.held = null;
     $("#gps-btn").setAttribute("aria-pressed", String(on));
-    /* A trace being recorded owns the lock; releasing it here would end a walk in a pocket. */
-    if (on) { keepAwake(true); } else if (!track) { keepAwake(false); }
+    /* A trace being recorded, or an active listening session, may still own the lock;
+       releasing it here regardless would end either one in a pocket. */
+    if (on) { keepAwake(true); } else { releaseAwakeIfUnneeded(); }
     if (pacer) {
       /* One source at a time. Dragging against a live fix loses: the next fix a second later
          pulls t straight back, so the drag would read as broken rather than as override. */
@@ -5801,6 +5819,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
     bed.oneShots = [];
     bed.on = false;
+    releaseAwakeIfUnneeded();
     if (bed.Tone) { try { bed.Tone.Transport.stop(); } catch (e) {} }
     if (bed.voice) {
       try {
@@ -5839,6 +5858,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         Tone.Transport.bpm.value = patch.tempo;
         /* Stopped while the context was resuming. Do not build a graph nobody asked for. */
         if (!wantSound) { bed.on = false; return; }
+        keepAwake(true);
         if (!bed.rfx) { bed.rfx = buildRhythmFx(Tone, patch); }
         /* Built dry, then given the patch. Without this the drive stage sits at zero
            whatever the patch says, because construction only sets what the constructor
