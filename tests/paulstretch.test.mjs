@@ -186,3 +186,52 @@ test("loadPaulstretchModule registers the module before anything can construct t
     "must cache the promise — addModule/registerProcessor for the same name a second " +
     "time throws on some browsers, and every voice's ensureVoice call reaches this");
 });
+
+test("connectNativeToToneGain asserts Tone's private internals are real AudioNodes before relying on them", () => {
+  const src = slice("function connectNativeToToneGain(nativeSrc, toneGain)", "\n  }\n");
+  assert.match(src, /toneGain\._gainNode/);
+  assert.match(src, /_nativeAudioNode/);
+  assert.match(src, /instanceof AudioNode/,
+    "must check the drilled-into object is really a native AudioNode, not just present, " +
+    "so a future Tone.js version renaming these internals fails loudly rather than " +
+    "silently connecting to the wrong thing or throwing an unrelated-looking error");
+  assert.match(src, /throw new Error/);
+});
+
+test("ensureVoice constructs the worklet node from Tone's true native context, not the Tone-wrapped one", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  assert.match(src, /rawContext\._nativeAudioContext/,
+    "measured against the real build: rawContext itself fails instanceof BaseAudioContext " +
+    "and AudioWorkletNode's own constructor rejects it directly");
+  assert.match(src, /new AudioWorkletNode\(/);
+});
+
+test("ensureVoice awaits loadPaulstretchModule before constructing the AudioWorkletNode", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  assert.match(src, /loadPaulstretchModule\(/,
+    "new AudioWorkletNode(ctx, 'paulstretch-processor') throws unless addModule already " +
+    "registered that name on this context — skipping this is an easy, silent-until-runtime mistake");
+  const moduleCallIdx = src.indexOf("loadPaulstretchModule(");
+  const nodeCtorIdx = src.indexOf("new AudioWorkletNode(");
+  assert.ok(moduleCallIdx !== -1 && nodeCtorIdx !== -1 && moduleCallIdx < nodeCtorIdx,
+    "loadPaulstretchModule's promise must resolve (i.e. appear earlier in the .then chain) " +
+    "before the AudioWorkletNode constructor runs");
+});
+
+test("ensureVoice no longer references GrainPlayer or applyStretch for the soundscape voice", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  assert.doesNotMatch(src, /Tone\.GrainPlayer/);
+  assert.doesNotMatch(src, /applyStretch\(/);
+});
+
+test("ensureVoice sends the decoded recording to the worklet via a transferred Float32Array, not a copy", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  assert.match(src, /postMessage\(\s*\{\s*type:\s*["']source["']/);
+  assert.match(src, /\[\s*\w+\.buffer\s*\]/, "the second postMessage argument must transfer, not copy");
+});
+
+test("bedStop's voice-disposal block disconnects the worklet node rather than disposing a Tone object it no longer has", () => {
+  const src = slice("v.player.stop(); v.player.dispose();", "v.filter.dispose(); v.gain.dispose();");
+  assert.match(src, /v\.stretch\.node\.disconnect\(\)/);
+  assert.doesNotMatch(src, /v\.grainPlayer/);
+});

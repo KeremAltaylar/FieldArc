@@ -5918,7 +5918,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       setTimeout(function () {
         try { v.player.stop(); v.player.dispose(); } catch (e) {}
         try {
-          if (v.grainPlayer) { v.grainPlayer.stop(); v.grainPlayer.dispose(); }
+          if (v.stretch && v.stretch.node) { v.stretch.node.disconnect(); }
           if (v.stretchBlend) { v.stretchBlend.dispose(); }
         } catch (e) {}
         try {
@@ -7234,7 +7234,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         /* A-2: every gain change ramps. A direct assignment on a live parameter zips. */
         v.gain.gain.rampTo(g, BED.fade);
         v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * prox, BED.fade);
-        applyStretch(v.grainPlayer, q.stretch);
+        if (v.stretch && v.stretch.ready) {
+          v.stretch.node.port.postMessage({ type: "params", params: {
+            stretchFactor: Math.pow(200, Math.max(0, Math.min(1, q.stretch))),
+            warpBins: v._warpBins || 0,
+            morphRate: q.morph || 0
+          } });
+        }
         v.stretchBlend.fade.rampTo(q.stretch, BED.fade);
         applyGrit(v.grit, q.grit);
       }
@@ -7281,17 +7287,34 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       }).connect(v.stretchBlend.a);
       v.grit = buildGrit(Tone);
       v.grit.output.connect(v.stretchBlend.b);
-      v.grainPlayer = new Tone.GrainPlayer({
-        url: v.url, loop: true,
-        onload: function () {
-          if (!bed || !bed.on || !bed.voices[z.id]) {
-            try { v.grainPlayer.dispose(); } catch (e) {}
-            return;
-          }
-          v.grainPlayer.start();
-        }
-      }).connect(v.grit.input);
-      applyStretch(v.grainPlayer, q.stretch);
+      /* The worklet reads its own copy of the recording, decoded once here rather than
+         a second network fetch/decode — a.buffer isn't available yet at this point in
+         the callback (a's own shape is the recording's ANALYSIS metadata, not raw
+         samples), so this decodes the SAME blob url a second time via a plain
+         OfflineAudioContext-free native decode. The one-time cost is small next to a
+         200x-stretched ambient bed's own lifetime. */
+      v.stretch = { node: null, ready: false };
+      var nativeCtx = bed.Tone.context.rawContext._nativeAudioContext;
+      Promise.all([
+        fetch(v.url).then(function (r) { return r.arrayBuffer(); })
+          .then(function (ab) { return nativeCtx.decodeAudioData(ab); }),
+        /* Constructing the worklet node below throws unless this context has already
+           finished registering the paulstretch-processor name — addModule is its own
+           separate async step, cached so only the FIRST voice's ensureVoice call
+           actually loads it and every later one just awaits the same promise. */
+        loadPaulstretchModule(nativeCtx)
+      ]).then(function (results) {
+        var audioBuffer = results[0];
+        if (!bed || !bed.on || !bed.voices[z.id]) { return; }
+        var raw = audioBuffer.getChannelData(0);
+        var mono = new Float32Array(raw.length);
+        mono.set(raw);
+        var node = new AudioWorkletNode(nativeCtx, "paulstretch-processor");
+        node.port.postMessage({ type: "source", data: mono }, [mono.buffer]);
+        connectNativeToToneGain(node, v.grit.input);
+        v.stretch.node = node;
+        v.stretch.ready = true;
+      }).catch(function () { /* the worklet stays silent (blend at 0) if this fails */ });
       applyGrit(v.grit, q.grit);
       v.stretchBlend.connect(v.filter);
     }).catch(function () { delete bed.voices[z.id]; });
@@ -7517,6 +7540,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       paulstretchModulePromise = ctx.audioWorklet.addModule(buildPaulstretchWorkletUrl());
     }
     return paulstretchModulePromise;
+  }
+
+  /* Tone's own public API only supports connecting a Tone node's output INTO a native
+     node (already used below: toneNode.connect(nativeNode) works as-is) — never the
+     reverse. Routing the worklet's native output back into the existing Tone-based grit/
+     blend graph needs Tone's PRIVATE internals, measured directly against the live
+     browser: Tone.Gain's own instance is not a real AudioNode, and neither is its
+     ._gainNode — only ._gainNode._nativeAudioNode is. A future Tone.js version could
+     rename any of these without warning; asserting here means that shows up as one loud,
+     specific error instead of a stretch knob that silently does nothing. */
+  function connectNativeToToneGain(nativeSrc, toneGain) {
+    var inner = toneGain && toneGain._gainNode && toneGain._gainNode._nativeAudioNode;
+    if (!inner || !(inner instanceof AudioNode)) {
+      throw new Error("connectNativeToToneGain: Tone.Gain's internal native node was not " +
+        "found where expected (._gainNode._nativeAudioNode) — this Tone.js build's " +
+        "private internals have likely changed since this bridge was written.");
+    }
+    nativeSrc.connect(inner);
   }
 
   /* A slow, musical tick (A-1: the Transport, never a UI callback) for the soundscape

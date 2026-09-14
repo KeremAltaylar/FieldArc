@@ -109,32 +109,6 @@ test("renderSoundscapePanel shows an empty state with no recording attached, and
   assert.match(src, /buildSoundRow\(/, "must reuse the existing row builder, not a bespoke one");
 });
 
-test("ensureVoice builds a blended GrainPlayer reading the same url as the dry player", () => {
-  const src = slice("function ensureVoice(z, d)", "\n  }\n");
-  assert.match(src, /new Tone\.GrainPlayer\(/);
-  assert.match(src, /stretchBlend\s*=\s*makeBlend\(Tone,\s*0\)/);
-  assert.match(src, /\.connect\(v\.stretchBlend\.a\)/, "the dry Player must feed the blend's dry side");
-  assert.match(src, /\.connect\(v\.stretchBlend\.b\)/, "the GrainPlayer must feed the blend's wet side");
-  assert.match(src, /v\.stretchBlend\.connect\(v\.filter\)/,
-    "the blend's output, not the dry player directly, must now feed the filter");
-  assert.doesNotMatch(src, /\}\)\.connect\(v\.filter\)/,
-    "the dry Player's own .connect(...) must no longer go straight to v.filter");
-});
-
-test("ensureVoice re-applies stretch on an already-ready voice, ramped like gain and filter", () => {
-  const src = slice("function ensureVoice(z, d)", "\n  }\n");
-  const readyBranch = src.slice(src.indexOf("if (v.ready)"), src.indexOf("v.idle = false;"));
-  assert.match(readyBranch, /applyStretch\(/,
-    "the ready branch delegates to applyStretch (which itself calls stretchParams) rather than inlining it");
-  assert.match(readyBranch, /v\.stretchBlend\.fade\.rampTo\(/);
-});
-
-test("the voice-disposal block also disposes grainPlayer and stretchBlend", () => {
-  const src = slice("v.player.stop(); v.player.dispose();", "v.gain.dispose();");
-  assert.match(src, /grainPlayer/);
-  assert.match(src, /stretchBlend/);
-});
-
 test("applyStretch sets playbackRate/grainSize/overlap via the real stretchParams, tracks what it applied, and skips redundant writes", () => {
   const stretchParams = extractFn("stretchParams", "function ");
   /* applyStretch calls stretchParams internally, so the extraction has to inject the real
@@ -169,18 +143,6 @@ test("applyStretch sets playbackRate/grainSize/overlap via the real stretchParam
 test("applyStretch is a safe no-op with no node", () => {
   const src = slice("function applyStretch(node, amount)", "function euclid(");
   assert.match(src, /if\s*\(!node/);
-});
-
-test("ensureVoice uses applyStretch instead of its own inline reassignment", () => {
-  const src = slice("function ensureVoice(z, d)", "\n  }\n");
-  assert.match(src, /applyStretch\(v\.grainPlayer,\s*q\.stretch\)/,
-    "the ready branch must delegate to the shared helper");
-  assert.match(src, /applyStretch\(v\.grainPlayer,\s*q\.stretch\)/,
-    "the construction path must also delegate to the shared helper, seeding the GrainPlayer's initial values");
-  assert.doesNotMatch(src, /v\.grainPlayer\.playbackRate\s*=/,
-    "no more inline reassignment of the GrainPlayer's own properties — applyStretch owns that now");
-  assert.doesNotMatch(src, /v\.stretchAmt/,
-    "the per-node __stretchAmt bookkeeping lives on the GrainPlayer itself now, not on v");
 });
 
 test("defaultRhythm's voices carry a stretch field, off by default", () => {
@@ -435,16 +397,6 @@ test("warpStep applies grit every tick, through applyGrit rather than a second h
 test("bedStart schedules warpStep on the Transport, never a UI callback, only once per bed", () => {
   const src = slice("function bedStart()", "\n  }\n");
   assert.match(src, /bed\.warpLoop = Tone\.Transport\.scheduleRepeat\(warpStep,/);
-});
-
-test("ensureVoice routes the GrainPlayer through the grit chain before the stretch blend, not directly", () => {
-  const src = slice("function ensureVoice(z, d)", "\n  }\n");
-  assert.match(src, /v\.grit = buildGrit\(Tone\)/);
-  assert.match(src, /v\.grit\.output\.connect\(v\.stretchBlend\.b\)/);
-  assert.match(src, /\}\)\.connect\(v\.grit\.input\)/,
-    "the GrainPlayer's own .connect(...) must feed the grit chain, not the blend directly");
-  assert.match(src, /applyGrit\(v\.grit, q\.grit\)/,
-    "the grit chain must be seeded on construction, the same as applyStretch is");
 });
 
 test("bedStop disposes every grit-chain node, each in its own guarded segment", () => {
