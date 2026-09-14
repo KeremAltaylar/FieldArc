@@ -263,9 +263,34 @@ test("a stretched hit is capped to MAX_STRETCH_HIT_S regardless of how slow play
     "to finish on its own, long after the pattern has retriggered on top of it");
 });
 
-test("rhythmStep applies each point's stretch once ready, alongside its fx, without new scheduling", () => {
+test("rhythmStep no longer gates stretch behind a point-level ready latch, and adds no new scheduling", () => {
   const step = slice("function rhythmStep(time)", "function updateBed");
-  assert.match(step, /applyHitStretch\(/);
+  assert.doesNotMatch(step, /applyHitStretch\(/,
+    "rhythmStep must not apply stretch via a point-level latch — each slot seeds its " +
+    "own stretch from real data the moment its own decode finishes, in ensureRhythm");
   assert.doesNotMatch(step, /scheduleRepeat|\.clear\(/,
     "this task must never add a new Transport scheduling call");
+});
+
+test("R.stretchReady, the point-level ready latch, is fully removed rather than merely bypassed", () => {
+  assert.doesNotMatch(html, /stretchReady/,
+    "R.stretch is a synchronous {} the instant a point enters range, while R.stretch[slot] " +
+    "populates asynchronously per slot on its own decode — a point-level latch fires on the " +
+    "very first rhythmStep tick, almost always before any slot has actually decoded, and " +
+    "then never fires again, permanently skipping every slot not yet ready");
+});
+
+test("each slot seeds its own stretch from real, current data the moment its own decode finishes", () => {
+  const src = slice("function ensureRhythm(z)", "function disposeRhythm(");
+  const onloadStart = src.indexOf("R.buffers[slot] = new Tone.ToneAudioBuffer(");
+  assert.ok(onloadStart !== -1, "the per-slot decode callback must still exist");
+  const onload = src.slice(onloadStart);
+  assert.match(onload, /rhythmOf\(/,
+    "must look up this point's real current voices[slot].stretch, not assume 0 or trust a " +
+    "point-level latch that can race ahead of this very decode");
+  assert.match(onload, /applyStretch\(gp,\s*amt\)/,
+    "the warp engine's initial playbackRate/grainSize/overlap must come from the real value");
+  assert.match(onload, /blend\.fade\.rampTo\(amt,/,
+    "the blend must be ramped to the real value too — a nonzero saved stretch must not stay " +
+    "silently at 0 just because this slot loaded after some other point-level gate fired");
 });

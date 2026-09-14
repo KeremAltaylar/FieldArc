@@ -7428,9 +7428,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   }
 
-  /* One player per slot, loaded once, kept until the point goes out of range. A pool would
-     let a hit overlap itself; for percussive material a retrigger is what you want anyway,
-     and it costs four nodes per point instead of a pool per slot. */
+  /* One dry player and one warp engine per slot, built from a single shared decode, loaded
+     once and kept until the point goes out of range. A pool would let a hit overlap
+     itself; for percussive material a retrigger is what you want anyway, and it costs
+     eight nodes per point instead of a pool per slot. */
   function ensureRhythm(z) {
     var R = bed.rhythms[z.id];
     if (R) { return R; }
@@ -7476,9 +7477,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             .connect(blend.a);
           var gp = new Tone.GrainPlayer({ url: R.buffers[slot], loop: false })
             .connect(blend.b);
-          applyStretch(gp, 0);
           blend.connect(R.fx[slot].input);
           R.stretch[slot] = { blend: blend, grainPlayer: gp };
+          /* Seed this slot's warp engine with whatever stretch is already saved for it —
+             looked up fresh here rather than trusting a point-level "ready" latch, since
+             this decode (an IndexedDB/network fetch plus real audio decode) finishes on
+             its own schedule per slot, staggered and asynchronous, unlike R.fx which
+             builds synchronously for every slot before any of this runs. A point-level
+             latch fired on the first rhythmStep tick after ensureRhythm — almost always
+             before any slot had actually decoded — and then never fired again, leaving a
+             saved nonzero stretch permanently silent for anyone but the setter moving
+             their own slider. */
+          var f2 = feature(z.id), r2 = f2 && rhythmOf(f2);
+          var amt = (r2 && r2.voices[slot] && r2.voices[slot].stretch) || 0;
+          applyStretch(gp, amt);
+          blend.fade.rampTo(amt, 0.2);
           R.ready++;
         }, function () { /* a slot that will not decode simply never fires */ });
       }).catch(function () { /* a slot that will not load simply never fires */ });
@@ -7694,7 +7707,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         });
       }
       if (!R.fxReady && R.fx) { applyHitFx(R, r); R.fxReady = true; }
-      if (!R.stretchReady && R.stretch) { applyHitStretch(R, r); R.stretchReady = true; }
       var stride = SECT_STRIDE[r.div] || 1;
       R.tick = (R.tick || 0) + 1;
       /* Bars, not the stride gate below: a phrase length is measured against a real bar,
