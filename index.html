@@ -1083,8 +1083,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 /* Wide enough that sixty-four cells are still separate things. Every fourth cell carries
    a brighter ground, so you can count beats along the strip instead of guessing. */
 .rpat {
-  display: flex; gap: 1px; grid-column: 1 / -1;
-  max-width: 52rem; margin: 2px 0 var(--s-2);
+  display: flex; gap: 1px;
+  max-width: 52rem; margin: var(--s-1) 0 var(--s-2);
 }
 .rpat i {
   flex: 1 1 0; min-width: 0; height: 14px; border-radius: 1px;
@@ -1107,14 +1107,47 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   font-style: normal; text-transform: none; letter-spacing: 0;
   color: var(--dim); font-size: 10px;
 }
-/* Three label-slider-value groups on one line run together: a value sits right beside the
-   next label and reads as belonging to it. The gap between groups is wider than the gap
-   inside them, which is all it takes to separate them. */
+/* One voice, two bars: the pattern (pulses/rotate/gain — what you touch constantly) and
+   its colour (crush/drive/delay/stretch — dialed in once and mostly left alone). Nine
+   controls used to auto-wrap into one 4-column grid and collide with each other the
+   moment a label ran long; each bar now owns its own explicit column count sized for
+   what it actually holds, and stacks in a plain content column next to the name instead
+   of relying on grid auto-flow to guess where the next control belongs. */
 .rvoice {
-  display: grid; grid-template-columns: 5.4rem 1fr 1fr 1fr; align-items: center;
-  gap: var(--s-5); margin-bottom: var(--s-1);
+  display: grid; grid-template-columns: 5.4rem 1fr; align-items: start;
+  gap: 0 var(--s-5); margin-bottom: var(--s-3);
   font-family: var(--font-mono); font-size: var(--t-xs);
   letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint);
+}
+.rvoice-content { display: flex; flex-direction: column; gap: var(--s-1); min-width: 0; }
+.rvoice-main {
+  display: grid; grid-template-columns: repeat(3, 1fr); align-items: center;
+  gap: var(--s-2) var(--s-5);
+}
+/* Visually secondary — smaller and a touch dimmer than the pattern bar above it, since
+   these are reached for far less often. Three across keeps every label legible; six in
+   one row was the width the overlap bug came from. */
+.rvoice-fx {
+  display: grid; grid-template-columns: repeat(3, 1fr); align-items: center;
+  gap: var(--s-1) var(--s-3);
+  opacity: 0.82;
+}
+.rfxrow {
+  display: grid; grid-template-columns: 3.4rem 1fr 2.2rem; align-items: center;
+  gap: var(--s-1);
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.02em; text-transform: uppercase; color: var(--faint);
+}
+.rfxrow > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rfxrow i {
+  font-style: normal; text-align: right; color: var(--ink);
+  font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0;
+  white-space: nowrap;
+}
+.rfxrow input[type=range] { width: 100%; height: 12px; accent-color: #bbceb5; }
+.rfxrow select { width: 100%; padding: 0 2px; font-size: 10px; }
+@media (max-width: 900px) {
+  .rvoice-main, .rvoice-fx { grid-template-columns: repeat(2, 1fr); }
 }
 /* Explicit columns, not a multi-column flow. Multicol balances by height, so the last
    control in a column sits on a boundary and any reflow — a scrollbar appearing, a
@@ -4813,6 +4846,30 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     mhead.appendChild(rndFx);
     body.appendChild(mhead);
 
+    /* A colour-bar control, built once and reused for crush/drive/delay-fb/delay-wet/
+       stretch: same shape as buildRhythmRow/buildSoundRow, just at .rfxrow's compact
+       size — the pattern controls above stay full-size since they're what a setter
+       actually drags most. */
+    function buildFxRow(spec, cfg, slot, onChange) {
+      var wrap = document.createElement("label");
+      wrap.className = "rfxrow";
+      var lab = document.createElement("span");
+      lab.textContent = spec[0];
+      var inp = document.createElement("input");
+      inp.type = "range"; inp.min = spec[1]; inp.max = spec[2]; inp.step = spec[3];
+      inp.value = cfg[spec[0]];
+      inp.dataset.def = defaultRhythm().voices[slot][spec[0]];
+      inp.title = "Shift-drag for fine steps · double-click to reset";
+      var out = document.createElement("i");
+      var show = function () { out.textContent = (+inp.value).toFixed(2); };
+      show();
+      inp.addEventListener("input", function () {
+        cfg[spec[0]] = +inp.value; show(); onChange();
+      });
+      wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(out);
+      return wrap;
+    }
+
     HIT_SLOTS.forEach(function (slot) {
       var cfg = r.voices[slot];
       var row = document.createElement("div");
@@ -4825,6 +4882,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var nmNum = document.createElement("em");
       nm.appendChild(nmTop); nm.appendChild(nmNum);
       row.appendChild(nm);
+      var content = document.createElement("div");
+      content.className = "rvoice-content";
+      row.appendChild(content);
       /* The numbers that made the pattern, said plainly. A strip of cells shows you the
          shape; E(13,64) tells you why it is that shape and what to change. */
       var showNums = function () {
@@ -4833,6 +4893,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           (cfg.rotate ? " ↺" + cfg.rotate : "");
       };
       showNums();
+      var mainBar = document.createElement("div");
+      mainBar.className = "rvoice-main";
+      content.appendChild(mainBar);
       var stepsNow = Math.max(1, Math.min(64, r.steps | 0));
       [["pulses", 0, stepsNow, 1], ["rotate", 0, stepsNow - 1, 1],
        ["gain", 0, 1, 0.05]].forEach(function (spec) {
@@ -4854,35 +4917,28 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           cfg[spec[0]] = +inp.value; show(); showNums(); commitR(); drawPattern(slot, r);
         });
         wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(out);
-        row.appendChild(wrap);
+        mainBar.appendChild(wrap);
       });
-      [["crush", 0, 1, 0.02], ["drive", 0, 1, 0.02],
-       ["delayFb", 0, 0.85, 0.02], ["delayWet", 0, 1, 0.02]].forEach(function (spec) {
-        var wrap = document.createElement("label");
-        wrap.className = "pprow";
-        var lab = document.createElement("span");
-        lab.textContent = spec[0];
-        var inp = document.createElement("input");
-        inp.type = "range"; inp.min = spec[1]; inp.max = spec[2]; inp.step = spec[3];
-        inp.value = cfg[spec[0]];
-        inp.dataset.def = defaultRhythm().voices[slot][spec[0]];
-        inp.title = "Shift-drag for fine steps · double-click to reset";
-        var out = document.createElement("i");
-        var show = function () { out.textContent = (+inp.value).toFixed(2); };
-        show();
-        inp.addEventListener("input", function () {
-          cfg[spec[0]] = +inp.value; show(); commitR();
-          applyHitFx(bed && bed.rhythms[f.properties.id], r);
-        });
-        wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(out);
-        row.appendChild(wrap);
-      });
-      /* A musical division, not a free number — same idiom as RHYTHM_FIELDS' own "div" row
-         and the shared room's own delay-division control. */
+      /* This voice's colour, visually secondary to the pattern above it (A-8 controls,
+         mostly left at their off position): crush/drive shape the hit itself, the delay
+         trio is its own short echo, stretch is the granular warp — six controls that used
+         to auto-wrap across the pattern bar's own grid and collide with each other. */
+      var fxBar = document.createElement("div");
+      fxBar.className = "rvoice-fx";
+      content.appendChild(fxBar);
+      var onFx = function () {
+        commitR();
+        applyHitFx(bed && bed.rhythms[f.properties.id], r);
+      };
+      fxBar.appendChild(buildFxRow(["crush", 0, 1, 0.02], cfg, slot, onFx));
+      fxBar.appendChild(buildFxRow(["drive", 0, 1, 0.02], cfg, slot, onFx));
+      /* A musical division, not a free number — same idiom as RHYTHM_FIELDS' own "div"
+         row and the shared room's own delay-division control. */
       var delWrap = document.createElement("label");
-      delWrap.className = "pprow";
+      delWrap.className = "rfxrow";
       var delLab = document.createElement("span");
-      delLab.textContent = "delay time";
+      delLab.textContent = "delay";
+      delLab.title = "delay time";
       var delSel = document.createElement("select");
       DIVISIONS.forEach(function (d) {
         var op = document.createElement("option");
@@ -4891,34 +4947,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
       delSel.value = cfg.delayDiv;
       delSel.addEventListener("change", function () {
-        cfg.delayDiv = delSel.value; commitR();
-        applyHitFx(bed && bed.rhythms[f.properties.id], r);
+        cfg.delayDiv = delSel.value; onFx();
       });
       delWrap.appendChild(delLab); delWrap.appendChild(delSel);
-      row.appendChild(delWrap);
-      var stretchWrap = document.createElement("label");
-      stretchWrap.className = "pprow";
-      var stretchLab = document.createElement("span");
-      stretchLab.textContent = "stretch";
-      var stretchInp = document.createElement("input");
-      stretchInp.type = "range"; stretchInp.min = 0; stretchInp.max = 1; stretchInp.step = 0.02;
-      stretchInp.value = cfg.stretch;
-      stretchInp.dataset.def = defaultRhythm().voices[slot].stretch;
-      stretchInp.title = "Shift-drag for fine steps · double-click to reset";
-      var stretchOut = document.createElement("i");
-      var showStretch = function () { stretchOut.textContent = (+stretchInp.value).toFixed(2); };
-      showStretch();
-      stretchInp.addEventListener("input", function () {
-        cfg.stretch = +stretchInp.value; showStretch(); commitR();
+      fxBar.appendChild(delWrap);
+      fxBar.appendChild(buildFxRow(["delayFb", 0, 0.85, 0.02], cfg, slot, onFx));
+      fxBar.appendChild(buildFxRow(["delayWet", 0, 1, 0.02], cfg, slot, onFx));
+      fxBar.appendChild(buildFxRow(["stretch", 0, 1, 0.02], cfg, slot, function () {
+        commitR();
         applyHitStretch(bed && bed.rhythms[f.properties.id], r);
-      });
-      stretchWrap.appendChild(stretchLab); stretchWrap.appendChild(stretchInp);
-      stretchWrap.appendChild(stretchOut);
-      row.appendChild(stretchWrap);
+      }));
       var pat = document.createElement("div");
       pat.className = "rpat";
       pat.dataset.slot = slot;
-      row.appendChild(pat);
+      content.appendChild(pat);
       body.appendChild(row);
       drawPattern(slot, r);
     });
