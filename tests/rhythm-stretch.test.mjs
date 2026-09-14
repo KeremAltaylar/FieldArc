@@ -124,7 +124,8 @@ test("ensureVoice builds a blended GrainPlayer reading the same url as the dry p
 test("ensureVoice re-applies stretch on an already-ready voice, ramped like gain and filter", () => {
   const src = slice("function ensureVoice(z, d)", "\n  }\n");
   const readyBranch = src.slice(src.indexOf("if (v.ready)"), src.indexOf("v.idle = false;"));
-  assert.match(readyBranch, /stretchParams\(/);
+  assert.match(readyBranch, /applyStretch\(/,
+    "the ready branch delegates to applyStretch (which itself calls stretchParams) rather than inlining it");
   assert.match(readyBranch, /v\.stretchBlend\.fade\.rampTo\(/);
 });
 
@@ -132,4 +133,52 @@ test("the voice-disposal block also disposes grainPlayer and stretchBlend", () =
   const src = slice("v.player.stop(); v.player.dispose();", "v.gain.dispose();");
   assert.match(src, /grainPlayer/);
   assert.match(src, /stretchBlend/);
+});
+
+test("applyStretch sets playbackRate/grainSize/overlap via the real stretchParams, tracks what it applied, and skips redundant writes", () => {
+  const stretchParams = extractFn("stretchParams", "function ");
+  /* applyStretch calls stretchParams internally, so the extraction has to inject the real
+     one rather than leave it as an undefined free variable — same shape
+     tests/rhythm-hit-fx.test.mjs already uses to inject HIT_SLOTS/DIVISIONS into
+     randomHitFx. The end marker must land AFTER applyStretch's own closing brace (not
+     coincide with it) so the whole "function applyStretch(node, amount) { ... }"
+     declaration survives intact for the factory to declare-and-return by name —
+     "function euclid(" is the real next top-level function once this task's edit lands,
+     and applyStretch's own body has no nested "function" keyword to collide with it. */
+  const src = slice("function applyStretch(node, amount)", "function euclid(");
+  const decl = src.slice(0, src.lastIndexOf("}") + 1);
+  const factory = new Function("stretchParams", decl + "\nreturn applyStretch;");
+  const applyStretch = factory(stretchParams);
+
+  const node = {};
+  applyStretch(node, 0.5);
+  const expected = stretchParams(0.5);
+  assert.equal(node.playbackRate, expected.playbackRate);
+  assert.equal(node.grainSize, expected.grainSize);
+  assert.equal(node.overlap, expected.overlap);
+  assert.equal(node.__stretchAmt, 0.5, "must record what it applied, for the next call to compare against");
+
+  node.playbackRate = -1; // simulate something else having touched the node meanwhile
+  applyStretch(node, 0.5); // same amount again
+  assert.equal(node.playbackRate, -1, "an unchanged amount must not touch the node again");
+
+  applyStretch(node, 0.9);
+  assert.notEqual(node.playbackRate, -1, "a changed amount must update the node");
+});
+
+test("applyStretch is a safe no-op with no node", () => {
+  const src = slice("function applyStretch(node, amount)", "function euclid(");
+  assert.match(src, /if\s*\(!node/);
+});
+
+test("ensureVoice uses applyStretch instead of its own inline reassignment", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  assert.match(src, /applyStretch\(v\.grainPlayer,\s*q\.stretch\)/,
+    "the ready branch must delegate to the shared helper");
+  assert.match(src, /applyStretch\(v\.grainPlayer,\s*q\.stretch\)/,
+    "the construction path must also delegate to the shared helper, seeding the GrainPlayer's initial values");
+  assert.doesNotMatch(src, /v\.grainPlayer\.playbackRate\s*=/,
+    "no more inline reassignment of the GrainPlayer's own properties — applyStretch owns that now");
+  assert.doesNotMatch(src, /v\.stretchAmt/,
+    "the per-node __stretchAmt bookkeeping lives on the GrainPlayer itself now, not on v");
 });

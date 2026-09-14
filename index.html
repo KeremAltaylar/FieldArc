@@ -7012,20 +7012,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         /* A-2: every gain change ramps. A direct assignment on a live parameter zips. */
         v.gain.gain.rampTo(g, BED.fade);
         v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * prox, BED.fade);
-        /* playbackRate/grainSize/overlap are plain properties on this Tone.js build's
-           GrainPlayer, not AudioParams — there is no live audio-rate signal to ramp, only
-           how future grains are scheduled, so a direct assignment is correct here (A-2
-           governs gain changes, not grain-scheduling parameters). Only the dry/wet blend
-           between the two players is a gain and gets ramped. Guarded on an actual change
-           so a long walk doesn't keep re-appending to the grain clock's own automation
-           timeline every position tick with the same value. */
-        if (v.stretchAmt !== q.stretch) {
-          var sp = stretchParams(q.stretch);
-          v.grainPlayer.playbackRate = sp.playbackRate;
-          v.grainPlayer.grainSize = sp.grainSize;
-          v.grainPlayer.overlap = sp.overlap;
-          v.stretchAmt = q.stretch;
-        }
+        applyStretch(v.grainPlayer, q.stretch);
         v.stretchBlend.fade.rampTo(q.stretch, BED.fade);
       }
       v.idle = false;
@@ -7060,7 +7047,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             return;
           }
           v.ready = true;
-          v.stretchAmt = q.stretch;
           v.player.start();
           var dd = segment(pacer ? pacer.pos : z.lonlat, z.lonlat);
           var q2 = soundOfZone(z);
@@ -7070,10 +7056,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           v.stretchBlend.fade.rampTo(q2.stretch, BED.fade);
         }
       }).connect(v.stretchBlend.a);
-      var sp = stretchParams(q.stretch);
       v.grainPlayer = new Tone.GrainPlayer({
-        url: v.url, loop: true, playbackRate: sp.playbackRate, grainSize: sp.grainSize,
-        overlap: sp.overlap,
+        url: v.url, loop: true,
         onload: function () {
           if (!bed || !bed.on || !bed.voices[z.id]) {
             try { v.grainPlayer.dispose(); } catch (e) {}
@@ -7082,6 +7066,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           v.grainPlayer.start();
         }
       }).connect(v.stretchBlend.b);
+      applyStretch(v.grainPlayer, q.stretch);
       v.stretchBlend.connect(v.filter);
     }).catch(function () { delete bed.voices[z.id]; });
   }
@@ -7138,6 +7123,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       grainSize: grainSize,
       overlap: period * (0.35 + a * 0.4)
     };
+  }
+
+  /* Applies a stretch amount to a live GrainPlayer, skipping the write when nothing
+     changed since the last call on this same node — every caller that owns a GrainPlayer
+     (the soundscape bed's own warp, and each hit slot's) shares this rather than
+     repeating the three-property dance and its own unchanged-guard. */
+  function applyStretch(node, amount) {
+    if (!node || node.__stretchAmt === amount) { return; }
+    var sp = stretchParams(amount);
+    node.playbackRate = sp.playbackRate;
+    node.grainSize = sp.grainSize;
+    node.overlap = sp.overlap;
+    node.__stretchAmt = amount;
   }
 
   /* Pulses spread by the running-sum method: every step adds k and fires when it passes n.
