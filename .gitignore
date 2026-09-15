@@ -19,3 +19,6 @@ archive-export.geojson
 
 # Isolated workspaces for subagent-driven plan execution.
 .worktrees/
+
+# Scratch mockups and SDD workspaces from Superpowers skills — not build output.
+.superpowers/

@@ -1846,6 +1846,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function mergeRemote(rows) {
     var have = {};
     fc.features.forEach(function (f) { have[f.properties.id] = true; });
+    /* A merged (_remote) feature's own deletion can never reach Publish — authoredFeatures()
+       excludes _remote features from the pending manifest on purpose, so the server row
+       this device just deleted locally is never told to go anywhere. The local trash
+       (deleteFeature, TRASH_DAYS) is the only record that this device asked for this id to
+       be gone; without checking it here, the very next load re-fetches the still-live row
+       and silently undoes the delete. */
+    trash().forEach(function (e) { have[e.feature.properties.id] = true; });
     rows.forEach(function (row) {
       if (have[row.id]) { return; }
       fc.features.push(rowToFeature(row));

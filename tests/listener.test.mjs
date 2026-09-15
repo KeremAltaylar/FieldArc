@@ -11,6 +11,29 @@ test("mergeRemote adds a feature the archive does not already have", () => {
   assert.match(src, /_remote\s*:\s*true/, "a merged feature is marked remote, not local");
 });
 
+/* A merged (_remote) feature's deletion can never reach Publish — authoredFeatures()
+   excludes _remote features from the pending manifest on purpose (see the
+   "merged remote features cannot enter the publish-pending manifest" test below), so a
+   deleted server row is never told to go away. The local 30-day trash (deleteFeature,
+   TRASH_DAYS) is the only record of "this device asked for this id to be gone" — mergeRemote
+   MUST consult it, or the very next load (fetchPublished or the offline getPlaceSnapshot
+   fallback, both of which funnel through mergeRemote) silently un-deletes it. This is
+   real: deleting an already-published point in the setter and reloading brought it right
+   back, with nothing in the UI suggesting the delete had failed. */
+test("mergeRemote skips any row still sitting in the local trash, so a deleted point or route does not reappear on the next load", () => {
+  const src = html.slice(html.indexOf("function mergeRemote("),
+                         html.indexOf("function fetchPublished("));
+  const trashIdx = src.search(/trash\(\)\.forEach/);
+  const rowsForEachIdx = src.indexOf("rows.forEach(");
+  assert.ok(trashIdx !== -1,
+    "mergeRemote must consult the local trash before deciding which rows to re-add");
+  assert.ok(rowsForEachIdx !== -1 && trashIdx < rowsForEachIdx,
+    "the trash check must seed the skip-set BEFORE rows are walked, not after");
+  assert.match(src,
+    /trash\(\)\.forEach\(function \(e\) \{ have\[e\.feature\.properties\.id\] = true; \}\);/,
+    "each trashed entry's own feature id must join the same skip-set fc.features already seeds");
+});
+
 test("save() never writes a remote feature to localStorage", () => {
   const src = html.slice(html.indexOf("function save() {"), html.indexOf("function save() {") + 600);
   assert.match(src, /_remote/, "save() must filter remote features before persisting");
