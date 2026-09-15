@@ -5254,6 +5254,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         stretchFactor: Math.pow(200, Math.max(0, Math.min(1, q.stretch))),
         warpBins: v._warpBins || 0,
         morphRate: q.morph || 0,
+        pitchRatio: stretchPitchRatio(q.stretch).ratio,
         /* Clamped so an out-of-range field (imported/synced data, or any future caller
            that bypasses the slider's own 0-1 clamp) can never drive this to zero or
            negative — inside the worklet that would stop hopCounter from ever counting
@@ -7446,7 +7447,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           v.stretch.node.port.postMessage({ type: "params", params: {
             stretchFactor: Math.pow(200, Math.max(0, Math.min(1, q.stretch))),
             warpBins: v._warpBins || 0,
-            morphRate: q.morph || 0
+            morphRate: q.morph || 0,
+            pitchRatio: stretchPitchRatio(q.stretch).ratio
           } });
           v.stretchBlend.fade.rampTo(q.stretch, BED.fade);
         } else {
@@ -7876,6 +7878,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         stretchFactor: Math.pow(200, Math.max(0, Math.min(1, q.stretch))),
         warpBins: v._warpBins,
         morphRate: q.morph || 0,
+        pitchRatio: stretchPitchRatio(q.stretch).ratio,
         /* See commitLive's own copy of this clamp above for why. */
         synthesisHop: Math.max(64, Math.round(1024 * (1 - (q.field || 0) * 0.6)))
       } });

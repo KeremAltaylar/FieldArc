@@ -607,6 +607,19 @@ test("ensureVoice only ramps stretchBlend.fade toward q.stretch when the worklet
     "the existing-voice branch must ramp toward q.stretch only inside the v.stretch.ready guard, and to 0 otherwise");
 });
 
+test("all three sites that post stretch params to the worklet (ensureVoice's ready branch, warpStep, commitLive) also post pitchRatio, derived from stretchPitchRatio", () => {
+  const ensureVoiceSrc = slice("function ensureVoice(z, d)", "\n  }\n");
+  const readyBranch = ensureVoiceSrc.slice(0, ensureVoiceSrc.indexOf("v = bed.voices[z.id] = { ready: false"));
+  const warpStepSrc = slice("function warpStep(time)", "\n  }\n");
+  const commitLiveSrc = slice("var commitLive = function ()", "\n    };\n");
+
+  [["ensureVoice's ready branch", readyBranch], ["warpStep", warpStepSrc], ["commitLive", commitLiveSrc]]
+    .forEach(([label, src]) => {
+      assert.match(src, /pitchRatio:\s*stretchPitchRatio\(q\.stretch\)\.ratio/,
+        `${label} must post pitchRatio: stretchPitchRatio(q.stretch).ratio alongside stretchFactor`);
+    });
+});
+
 test("ensureVoice guards the nativeCtx lookup and logs+toasts loudly on any stretch-init failure, instead of an uncaught throw or a silent no-op catch", () => {
   const src = slice("function ensureVoice(z, d)", "\n  }\n");
   assert.match(src, /if\s*\(!nativeCtx\)\s*\{\s*throw new Error/,
