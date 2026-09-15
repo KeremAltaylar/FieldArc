@@ -201,10 +201,14 @@ test("synthesizeHop's pitchRatio zero-fills past the spectrum's edge instead of 
   // wrapping were happening instead of zero-filling, energy from the source's own top bin
   // would reappear here via modulo arithmetic.
   // Threshold is 1e-3, not an idealized 0 — a Hann-windowed analysis/synthesis pair leaks a
-  // small amount of energy into neighboring bins for any real signal (measured leakage here
-  // tops out around 2e-4). A real wrap-around bug instead reflects a large fraction of the
-  // peak's own energy into this range (measured ~0.19-0.37, three orders of magnitude above
-  // both the leakage floor and this threshold), so 1e-3 still cleanly tells them apart.
+  // small amount of energy into neighboring bins for any real signal (measured max leakage
+  // in this exact range: 1.91e-4, at bin 10). A real wrap-around bug instead measures
+  // ~0.19-0.37 at most bins in this range, but its two weakest bins (10 and 14, the edges of
+  // the wrapped-in region) measure only ~2.07e-4 — so the margin that actually matters is
+  // ~4.8x (1e-3 vs. that weakest wrap value), not the ~190x a comparison against the wrap
+  // scenario's biggest bins would suggest. Still enough: those two edge bins are outnumbered
+  // by the rest of the loop (bins 11-13, 15), which violate 1e-3 by 190x-370x under a wrap
+  // regression, so the test as a whole still reliably fails when wrapping happens.
   for (let i = Math.ceil(n / 4) + 2; i < n / 2; i++) {
     assert.ok(mag[i] < 1e-3,
       `bin ${i} (source lookup ${4 * i}, out of the [0,${n}) range) carries ${mag[i]} — ` +

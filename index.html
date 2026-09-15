@@ -7704,11 +7704,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        which is what warpBins is for). Zero-filled past the spectrum's edge: a downward pitch
        shift has nothing to put in the vacated high end, not a wrapped copy from the opposite
        end of the spectrum — wrapping here would be a distinct, physically wrong artifact,
-       not a softer version of the real thing. */
+       not a softer version of the real thing. Bounded to [0, windowSize/2], not
+       [0, windowSize): the source frame is real-valued, so only bins up to Nyquist
+       (windowSize/2) carry independent content — the upper half is an exact conjugate-mirror
+       duplicate of the lower half. Allowing the lookup into that mirror half would read back
+       a full-amplitude, frequency-reversed copy of the source's own spectrum for any
+       pitchRatio < 1 — the same category of spurious-high-frequency-content bug as wrapping,
+       just arriving through mirror symmetry instead of modulo arithmetic. */
     pitchMag = new Array(windowSize);
     for (i = 0; i < windowSize; i++) {
       pitchBin = Math.round(i / pitchRatio);
-      pitchMag[i] = (pitchBin >= 0 && pitchBin < windowSize) ? mag[pitchBin] : 0;
+      pitchMag[i] = (pitchBin >= 0 && pitchBin <= windowSize / 2) ? mag[pitchBin] : 0;
     }
     var outRe = new Array(windowSize), outIm = new Array(windowSize);
     for (i = 0; i < windowSize; i++) {
