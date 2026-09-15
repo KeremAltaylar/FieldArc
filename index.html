@@ -5121,6 +5121,38 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return { factor: factor, seconds: seconds };
   }
 
+  /* The waveform never gets shorter or narrower as stretch rises — that read as the
+     recording shrinking, the opposite of what x200 slower means. Instead the SAME peaks,
+     still spanning the full width, blur from tight wiggles into broad, soft humps: a
+     moving average whose window grows with stretch. This isn't only a picture trick —
+     the real phase vocoder's own spectral smearing genuinely turns sharp transients into
+     continuous swells at high stretch, so a softer shape here is honest about what the
+     sound is actually doing, not just a more intuitive one.
+
+     0.12 (the smoothing window's max size, as a fraction of the peak count, at
+     stretch=1) is inlined rather than a named constant above this function: extractFn's
+     test technique runs this function standalone via `new Function`, which only sees
+     its own body, not this file's outer closure — every other pure function tested that
+     way (fft, synthesizeHop, stretchedDurationInfo, fmtLongDuration) is self-contained
+     for the same reason. Tuned by eye: wide enough that max stretch reads as a clearly
+     different, softer shape than stretch=0, narrow enough that the recording's own
+     silhouette is still recognisable rather than a flat smudge. */
+  function smoothedPeaksForStretch(peaks, stretch) {
+    var n = peaks.length;
+    var s = Math.max(0, Math.min(1, stretch || 0));
+    var half = Math.round(s * n * 0.12 / 2);
+    if (half <= 0) { return peaks; }
+    var out = new Array(n);
+    for (var i = 0; i < n; i++) {
+      var sum = 0, count = 0;
+      for (var j = Math.max(0, i - half); j <= Math.min(n - 1, i + half); j++) {
+        sum += peaks[j]; count++;
+      }
+      out[i] = sum / count;
+    }
+    return out;
+  }
+
   /* The soundscape panel: today just the warp knob. C-5's empty state applies the same way
      the grains panel already handles no attached recording — a warp control is meaningless
      with nothing to warp. */
@@ -5146,14 +5178,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     mhead.appendChild(h);
     body.appendChild(mhead);
 
-    /* The waveform is the recording as it is — drawn once, never re-stretched itself —
-       so what moves as you drag is only the caption underneath it: the same recording,
-       but how long one pass actually takes once stretch (and morph) are applied. This is
-       not a dry/wet loudness reading; it is the real playback length, the way Paulstretch
-       or a DAW's own warp view shows a clip growing as you raise its stretch amount. */
+    /* The waveform itself answers "is this stretched" at a glance: the same peaks, always
+       spanning the full width, blur from tight wiggles into broad, soft humps as stretch
+       rises (soundscapeWaveDraw/smoothedPeaksForStretch) — it never shrinks into a corner,
+       which would read as the recording getting SHORTER, the opposite of what stretch
+       does. A moving yellow line marks the worklet's own real read position while a bed
+       voice for this point is actually playing (soundscapeWaveTick's redraw loop), so
+       crawling glacially at x200 versus briskly at x1 is something you watch, not just a
+       number. The caption underneath carries the precise duration this picture only
+       gestures at. */
     var wave = document.createElement("canvas");
     wave.className = "ppwave";
-    wave.title = "The recording, and how long one pass takes at the current stretch.";
+    wave.title = "The recording, softening as stretch rises, with a live cursor while it plays.";
     body.appendChild(wave);
     var waveCaption = document.createElement("p");
     waveCaption.className = "hint";
@@ -5246,23 +5282,59 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     /* Drawn last, once wave is already laid out inside the (already visible) #rp-body —
        clientWidth/Height read the real box the same way grainWaveDraw's own measurement
-       does. Static: the recording itself never changes shape, only the caption above
-       reflects the live stretch amount, so there is nothing here that needs redrawing
-       on every drag the way the grain panel's live position marks do. */
-    var ww = wave.clientWidth, wh = wave.clientHeight;
-    if (ww && wh) {
-      var dpr = Math.min(2, window.devicePixelRatio || 1);
-      wave.width = Math.round(ww * dpr); wave.height = Math.round(wh * dpr);
-      var wctx = wave.getContext("2d");
-      wctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      var peaks = (f.properties.audio || {}).peaks;
-      if (peaks && peaks.length) {
-        paintWave(wctx, peaks, ww, wh);
-      } else {
-        wctx.fillStyle = "rgba(186,206,181,0.25)";
-        wctx.fillRect(0, wh / 2, ww, 1);
-      }
+       does. soundscapeWaveStart then keeps it live for the cursor, the same way
+       grainWaveStart does for the grain panel's own marks. */
+    soundscapeWaveDraw();
+    soundscapeWaveStart();
+  }
+
+  /* soundscapeWaveDraw's own counterpart to grainWaveDraw/grainWaveTick/grainWaveStart —
+     same shape, same reason: re-derives everything from live state (feature(selected),
+     soundOf(f), bed.voices) rather than closing over renderSoundscapePanel's own locals,
+     so a stale closure from a previous render can never draw into a panel that has since
+     moved on to a different point. */
+  function soundscapeWaveDraw() {
+    var cv = document.querySelector("#rp-body .ppwave");
+    if (!cv) { return; }
+    var f = feature(selected);
+    if (!f || !f.properties.has_audio) { return; }
+    var w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) { return; }
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (cv.width !== Math.round(w * dpr)) {
+      cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
     }
+    var ctx = cv.getContext("2d");
+    if (!ctx) { return; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    var q = soundOf(f);
+    var peaks = (f.properties.audio || {}).peaks;
+    if (peaks && peaks.length) {
+      paintWave(ctx, smoothedPeaksForStretch(peaks, q.stretch), w, h);
+    } else {
+      ctx.fillStyle = "rgba(186,206,181,0.25)";
+      ctx.fillRect(0, h / 2, w, 1);
+    }
+    var v = bed && bed.voices[f.properties.id];
+    if (v && v.stretch && v.stretch.ready && v.stretch.sourceLength) {
+      var frac = Math.max(0, Math.min(1, v.stretch.readPos / v.stretch.sourceLength));
+      ctx.fillStyle = "#eae08a";
+      ctx.fillRect(Math.max(0, Math.round(frac * w) - 1), 0, 2, h);
+    }
+  }
+
+  var swRAF = null;
+  function soundscapeWaveTick() {
+    if ($("#rhythmpanel").hidden || !document.querySelector("#rp-body .ppwave")) {
+      swRAF = null; return;
+    }
+    swRAF = requestAnimationFrame(soundscapeWaveTick);
+    if (document.hidden) { return; }
+    soundscapeWaveDraw();
+  }
+  function soundscapeWaveStart() {
+    if (!swRAF) { swRAF = requestAnimationFrame(soundscapeWaveTick); }
   }
 
   /* Not four uniform draws. Each voice keeps to a density that suits its register — a low
@@ -7455,6 +7527,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var mono = new Float32Array(raw.length);
           mono.set(raw);
           var node = new AudioWorkletNode(nativeCtx, "paulstretch-processor");
+          /* The only thing the worklet ever sends back (throttled inside process() itself,
+             not on every audio callback) — where it actually is in the source right now.
+             Stored on v.stretch, not fired into a redraw directly, since nothing here knows
+             whether the soundscape panel is even open for this point; the panel's own
+             draw loop reads this passively whenever it happens to be running. */
+          node.port.onmessage = function (e) {
+            if (e.data.type === "pos") {
+              v.stretch.readPos = e.data.readPos;
+              v.stretch.sourceLength = e.data.sourceLength;
+            }
+          };
           node.port.postMessage({ type: "source", data: mono }, [mono.buffer]);
           connectNativeToToneGain(node, v.grit.input);
           v.stretch.node = node;
@@ -7636,6 +7719,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "    this.writePos = 0;",
       "    this.readOutPos = 0;",
       "    this.hopCounter = 0;",
+      "    this.posReportCounter = 0;",
       "    this.params = { stretchFactor: 1, warpBins: 0, morphRate: 0, synthesisHop: 1024, windowSize: 4096 };",
       "    this.port.onmessage = function(e) {",
       "      if (e.data.type === 'source') { this.source = e.data.data; this.readPos = 0; }",
@@ -7673,6 +7757,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "      this.writeBuf[idx] = 0;",
       "    }",
       "    this.readOutPos = (this.readOutPos + output.length) % this.writeBuf.length;",
+      "    this.posReportCounter += output.length;",
+      "    if (this.posReportCounter >= 2048) {",
+      "      this.posReportCounter = 0;",
+      "      this.port.postMessage({ type: 'pos', readPos: this.readPos, sourceLength: this.source.length });",
+      "    }",
       "    return true;",
       "  }",
       "}",

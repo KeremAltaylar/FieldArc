@@ -387,6 +387,54 @@ test("_synthesizeOneHop never produces a non-finite readPos, even with warpBins 
     `readPos ${proc.readPos} left the source's own [0, length) range`);
 });
 
+/* ---------- Live cursor: the worklet reports its own real position ---------- */
+
+test("process() posts its own read position back over the port, throttled rather than on every callback, so a live cursor doesn't flood the main thread", () => {
+  const Processor = loadPaulstretchProcessorClass();
+  const proc = new Processor();
+  const posted = [];
+  proc.port.postMessage = (msg) => posted.push(msg);
+  proc.source = new Float32Array(50000).map((_, i) => Math.sin(i * 0.05));
+  proc.params.stretchFactor = 1;
+  proc.params.synthesisHop = 1024;
+  proc.params.windowSize = 64;
+
+  const blockSize = 128, callCount = 100; // 12800 samples total across many small callbacks
+  for (let i = 0; i < callCount; i++) {
+    proc.process([], [[new Float32Array(blockSize)]]);
+  }
+
+  const posMessages = posted.filter((m) => m.type === "pos");
+  assert.ok(posMessages.length > 0, "process() never posted a position update");
+  assert.ok(posMessages.length < callCount,
+    "position updates must be throttled, not sent on every process() callback " +
+    `(got ${posMessages.length} messages over ${callCount} callbacks)`);
+  // Each message is a snapshot taken mid-stream, so it can't be compared to the FINAL
+  // readPos after every callback has run (more advancing happens after the last message
+  // fires) — instead confirm the messages themselves are real, moving snapshots: finite,
+  // never past the processor's own eventual position, and advancing over time (not a
+  // frozen 0 or a stale duplicate value).
+  posMessages.forEach((m) => {
+    assert.ok(Number.isFinite(m.readPos), `readPos ${m.readPos} is not finite`);
+    assert.ok(m.readPos >= 0 && m.readPos <= proc.readPos,
+      `readPos ${m.readPos} is outside [0, ${proc.readPos}]`);
+    assert.equal(m.sourceLength, proc.source.length);
+  });
+  const first = posMessages[0], last = posMessages[posMessages.length - 1];
+  assert.ok(last.readPos > first.readPos,
+    "readPos must actually advance between the first and last reported snapshot");
+});
+
+test("process() posts no position update before a source has arrived", () => {
+  const Processor = loadPaulstretchProcessorClass();
+  const proc = new Processor();
+  const posted = [];
+  proc.port.postMessage = (msg) => posted.push(msg);
+  for (let i = 0; i < 50; i++) { proc.process([], [[new Float32Array(128)]]); }
+  assert.equal(posted.filter((m) => m.type === "pos").length, 0,
+    "no source means nothing is playing — a position update here would be meaningless");
+});
+
 /* Pulls the exact `synthesisHop: Math.max(...)` expression out of each computation site
    and evaluates it for real (balanced-paren extraction, not a regex over the whole
    thing, since the expression nests Math.round(...) and (...) groups inside it) — so a
@@ -466,6 +514,23 @@ test("ensureVoice's Promise.all callback checks the resolved voice is still THIS
     "worklet into a disposed v.grit.input");
 });
 
+test("ensureVoice listens for the worklet's own 'pos' messages and stores them on v.stretch, so the panel's live cursor has somewhere to read a real position from", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  const nodeIdx = src.indexOf("var node = new AudioWorkletNode(");
+  const readyIdx = src.indexOf("v.stretch.ready = true;");
+  assert.ok(nodeIdx !== -1 && readyIdx !== -1 && nodeIdx < readyIdx,
+    "expected the worklet node construction before the ready flag is set");
+  const between = src.slice(nodeIdx, readyIdx);
+  assert.match(between, /node\.port\.onmessage\s*=\s*function/,
+    "ensureVoice must listen on the worklet's own port, not just send to it");
+  assert.match(between, /e\.data\.type === ['"]pos['"]/,
+    "the listener must recognise the worklet's 'pos' message type");
+  assert.match(between, /v\.stretch\.readPos\s*=\s*e\.data\.readPos/,
+    "the reported readPos must be stored on v.stretch, where the panel's redraw loop reads it");
+  assert.match(between, /v\.stretch\.sourceLength\s*=\s*e\.data\.sourceLength/,
+    "the reported sourceLength must be stored too — the panel needs it to compute a fraction");
+});
+
 test("the soundscape panel's copy describes the real phase-vocoder engine, not the deleted GrainPlayer one", () => {
   const src = slice("function renderSoundscapePanel(f, q, commitQ, body)", "\n  }\n");
   assert.doesNotMatch(src, /jitters grain size and overlap/,
@@ -524,6 +589,55 @@ test("fmtLongDuration formats seconds, minutes and hours the way a person actual
   assert.equal(fmtLongDuration(7200), "2h");
   assert.equal(fmtLongDuration(-5), "0s");
   assert.equal(fmtLongDuration(NaN), "0s");
+});
+
+/* ---------- The waveform elongates instead of shrinking ---------- */
+
+test("smoothedPeaksForStretch is a no-op at stretch=0 — the waveform must look exactly like the plain recording until stretch actually does something", () => {
+  const smoothedPeaksForStretch = extractFn("smoothedPeaksForStretch");
+  const peaks = [0.1, 0.9, 0.2, 0.8, 0.3, 0.7, 0.1, 0.9];
+  assert.deepEqual(smoothedPeaksForStretch(peaks, 0), peaks);
+});
+
+test("smoothedPeaksForStretch keeps the same length and spreads a sharp peak into a softer, broader hump as stretch rises — never shrinks the recording into a smaller picture", () => {
+  const smoothedPeaksForStretch = extractFn("smoothedPeaksForStretch");
+  const n = 200;
+  const impulse = new Array(n).fill(0);
+  impulse[100] = 1;
+
+  const half = smoothedPeaksForStretch(impulse, 0.5);
+  const max = smoothedPeaksForStretch(impulse, 1);
+  assert.equal(half.length, n, "stretch must never change how many points the waveform draws");
+  assert.equal(max.length, n, "stretch must never change how many points the waveform draws");
+
+  // The peak's own value must be averaged DOWN (a sharp spike softening into a hump) —
+  // more so at stretch=1 than at stretch=0.5.
+  assert.ok(max[100] < half[100], "max stretch must soften the peak more than half stretch");
+  assert.ok(half[100] < impulse[100], "any smoothing must reduce the sharp peak's own value");
+
+  // A box average's total "energy" is conserved, so a wider window flattens the peak's
+  // own height — but it must reach further outward with non-zero influence, which is
+  // the actual "hump spreading" a person sees: the width of the softened bump, not its
+  // height at one fixed point.
+  function reach(arr) {
+    var maxDist = 0;
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i] > 1e-9) { maxDist = Math.max(maxDist, Math.abs(i - 100)); }
+    }
+    return maxDist;
+  }
+  assert.ok(reach(max) > reach(half) && reach(half) > 0,
+    "the hump's reach must widen further outward at higher stretch, not stay pinned to the original spike");
+});
+
+test("smoothedPeaksForStretch clamps out-of-range stretch instead of producing NaN or throwing", () => {
+  const smoothedPeaksForStretch = extractFn("smoothedPeaksForStretch");
+  const peaks = [0.1, 0.9, 0.2, 0.8, 0.3, 0.7, 0.1, 0.9];
+  [-1, 5, NaN, undefined].forEach((s) => {
+    const out = smoothedPeaksForStretch(peaks, s);
+    assert.equal(out.length, peaks.length);
+    out.forEach((v) => assert.ok(Number.isFinite(v), `stretch=${s} produced a non-finite value`));
+  });
 });
 
 test("renderSoundscapePanel draws a waveform and a stretched-length caption above the sliders, and the caption updates on every commitLive drag, not just at first render", () => {
