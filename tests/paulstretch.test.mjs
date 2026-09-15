@@ -172,18 +172,75 @@ test("synthesizeHop's pitchRatio shifts the dominant bin multiplicatively — ha
     `expected the pitch-shifted dominant bin at ${expected} (or its mirror), got ${peak}`);
 });
 
-test("synthesizeHop's pitchRatio at 1 is a provable no-op: identical output to the same call before pitchRatio existed", () => {
+test("synthesizeHop's pitchRatio at 1 is a provable no-op: matches an independent reference implementation of the pre-pitchRatio resynthesis path", () => {
   const fft = extractFn("fft");
   const synthesizeHop = extractFn("synthesizeHop");
-  const n = 32;
-  const source = Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * 5 * i / n));
-  const withRatio = synthesizeHop(source, 0, n, 3, 1, fft, () => 0.5);
-  const withoutRatioEquivalent = synthesizeHop(source, 0, n, 3, 1, fft, () => 0.5);
-  for (let i = 0; i < n; i++) {
-    assert.ok(Math.abs(withRatio[i] - withoutRatioEquivalent[i]) < 1e-9,
-      `frame[${i}] differs — pitchRatio=1 must be bit-identical to itself across calls, and ` +
-      "by construction (round(i/1) === i for every i) identical to no pitch lookup at all");
+
+  /* Independent reference for the pre-pitch-lookup resynthesis path: windowing -> fft ->
+     magnitude -> warpBins' existing additive offset -> random phase -> ifft -> re-window —
+     the exact shape synthesizeHop had before this whole plan added pitchRatio, with no
+     pitch lookup at all. At pitchRatio=1, round(i/1) === i for every i, so the shipped
+     pitch lookup must reduce to exactly this. Written independently here, not derived from
+     or copy-pasted out of synthesizeHop itself, so it can actually catch a regression —
+     unlike the self-comparison this test used to be, which compared synthesizeHop only to
+     itself with identical arguments and could never fail. That self-comparison form is
+     exactly what let fix round 1's real regression (silently zeroing the upper half of the
+     spectrum at pitchRatio=1) through undetected. Measured separation between correct code
+     and that round-1 regression: worst per-sample diff here is ~2.5e-16 against this
+     reference, vs. ~2.15e-1 against the round-1 bug reconstructed the same way — about 14
+     orders of magnitude, decisive at any reasonable tolerance. */
+  function referenceSynthesizeHop(source, readPos, windowSize, warpBins, fftFn, randomFn) {
+    var i, srcIdx, s, w, mag, srcBin, phase;
+    var re = new Array(windowSize), im = new Array(windowSize);
+    var start = Math.floor(readPos);
+    for (i = 0; i < windowSize; i++) {
+      srcIdx = start + i;
+      s = (srcIdx >= 0 && srcIdx < source.length) ? source[srcIdx] : 0;
+      w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (windowSize - 1));
+      re[i] = s * w;
+      im[i] = 0;
+    }
+    fftFn(re, im, false);
+    mag = new Array(windowSize);
+    for (i = 0; i < windowSize; i++) { mag[i] = Math.sqrt(re[i] * re[i] + im[i] * im[i]); }
+    var outRe = new Array(windowSize), outIm = new Array(windowSize);
+    for (i = 0; i < windowSize; i++) {
+      srcBin = ((i - warpBins) % windowSize + windowSize) % windowSize;
+      phase = randomFn() * 2 * Math.PI;
+      outRe[i] = mag[srcBin] * Math.cos(phase);
+      outIm[i] = mag[srcBin] * Math.sin(phase);
+    }
+    fftFn(outRe, outIm, true);
+    for (i = 0; i < windowSize; i++) {
+      w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (windowSize - 1));
+      outRe[i] *= w;
+    }
+    return outRe;
   }
+
+  // Sweep a few (windowSize, warpBins) combinations, not just one.
+  [
+    { n: 16, warpBins: 0 },
+    { n: 16, warpBins: 3 },
+    { n: 32, warpBins: 0 },
+    { n: 32, warpBins: -2 },
+    { n: 64, warpBins: 5 },
+    { n: 64, warpBins: 0 },
+  ].forEach(({ n, warpBins }) => {
+    const source = Array.from({ length: n }, (_, i) =>
+      Math.sin(2 * Math.PI * 5 * i / n) + 0.3 * Math.cos(2 * Math.PI * 3 * i / n));
+    let c1 = 0;
+    const rnd1 = () => { c1++; return (c1 % 7) / 7; };
+    let c2 = 0;
+    const rnd2 = () => { c2++; return (c2 % 7) / 7; };
+    const shipped = synthesizeHop(source, 0, n, warpBins, 1, fft, rnd1);
+    const reference = referenceSynthesizeHop(source, 0, n, warpBins, fft, rnd2);
+    for (let i = 0; i < n; i++) {
+      assert.ok(Math.abs(shipped[i] - reference[i]) < 1e-9,
+        `n=${n} warpBins=${warpBins} frame[${i}] differs from the independent reference: ` +
+        `${shipped[i]} vs ${reference[i]}`);
+    }
+  });
 });
 
 test("synthesizeHop's pitchRatio zero-fills past the spectrum's edge instead of wrapping — a downward pitch shift must not pull spurious high-frequency content back in from the opposite end", () => {
@@ -202,7 +259,8 @@ test("synthesizeHop's pitchRatio zero-fills past the spectrum's edge instead of 
   // would reappear here via modulo arithmetic.
   // Threshold is 1e-3, not an idealized 0 — a Hann-windowed analysis/synthesis pair leaks a
   // small amount of energy into neighboring bins for any real signal (measured max leakage
-  // in this exact range: 1.91e-4, at bin 10). A real wrap-around bug instead measures
+  // in this exact range: 3.82e-4, at bin 10 — a ~2.6x margin under the 1e-3 threshold, the
+  // loop's own weakest legitimate case). A real wrap-around bug instead measures
   // ~0.19-0.37 at bins 11-13 (a 190x-370x margin over 1e-3 — comfortably caught), but its
   // weakest bins are uneven: bins 10 and 14 (the edges of the wrapped-in region) measure
   // only ~2.07e-4 (a ~4.8x margin — still below 1e-3, so those two alone wouldn't catch
