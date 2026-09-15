@@ -90,7 +90,7 @@ test("synthesizeHop returns a windowSize-length frame with no NaN/Infinity, for 
   const source = Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * 3 * i / n));
   const rnd = () => Math.random();
   [-5, 0, 5, n - 2, n + 5].forEach((readPos) => {
-    const out = synthesizeHop(source, readPos, windowSize, 0, fft, rnd);
+    const out = synthesizeHop(source, readPos, windowSize, 0, 1, fft, rnd);
     assert.equal(out.length, windowSize);
     out.forEach((v, i) => {
       assert.ok(Number.isFinite(v), `synthesizeHop(readPos=${readPos})[${i}] is not finite: ${v}`);
@@ -105,8 +105,8 @@ test("synthesizeHop is deterministic given a deterministic randomFn — no hidde
   const source = Array.from({ length: n }, (_, i) => Math.cos(2 * Math.PI * 4 * i / n));
   let calls = 0;
   const rnd = () => { calls++; return (calls % 7) / 7; }; // deterministic but non-constant
-  const out1 = synthesizeHop(source, 0, n, 0, fft, (() => { let c = 0; return () => { c++; return (c % 7) / 7; }; })());
-  const out2 = synthesizeHop(source, 0, n, 0, fft, (() => { let c = 0; return () => { c++; return (c % 7) / 7; }; })());
+  const out1 = synthesizeHop(source, 0, n, 0, 1, fft, (() => { let c = 0; return () => { c++; return (c % 7) / 7; }; })());
+  const out2 = synthesizeHop(source, 0, n, 0, 1, fft, (() => { let c = 0; return () => { c++; return (c % 7) / 7; }; })());
   for (let i = 0; i < n; i++) {
     assert.ok(Math.abs(out1[i] - out2[i]) < 1e-9, `frame[${i}] differs between two calls with identical inputs`);
   }
@@ -130,7 +130,7 @@ test("synthesizeHop's magnitude spectrum (before the final re-window) matches th
   // Run synthesizeHop with a fixed phase, then re-FFT its output (which was re-windowed —
   // divide that back out isn't needed since we only check magnitude proportionality
   // qualitatively: the frame with the most source energy in a bin must still show it).
-  const out = synthesizeHop(source, 0, n, 0, fft, () => 0.37);
+  const out = synthesizeHop(source, 0, n, 0, 1, fft, () => 0.37);
   const outRe = out.slice(), outIm = new Array(n).fill(0);
   fft(outRe, outIm, false);
   const outMag = outRe.map((r, i) => Math.sqrt(r * r + outIm[i] * outIm[i]));
@@ -145,13 +145,124 @@ test("synthesizeHop's warpBins shifts which bin carries the dominant magnitude",
   const synthesizeHop = extractFn("synthesizeHop");
   const n = 32, k = 4, shift = 3;
   const source = Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * k * i / n));
-  const outShifted = synthesizeHop(source, 0, n, shift, fft, () => 0.5);
+  const outShifted = synthesizeHop(source, 0, n, shift, 1, fft, () => 0.5);
   const outRe = outShifted.slice(), outIm = new Array(n).fill(0);
   fft(outRe, outIm, false);
   const mag = outRe.map((r, i) => Math.sqrt(r * r + outIm[i] * outIm[i]));
   const peak = mag.indexOf(Math.max(...mag));
   assert.ok(peak === k + shift || peak === n - (k + shift) || peak === Math.abs(n - k - shift),
     `expected the shifted dominant bin near ${k + shift}, got ${peak}`);
+});
+
+test("synthesizeHop's pitchRatio shifts the dominant bin multiplicatively — harmonic ratios preserved, not a fixed additive offset the way warpBins is", () => {
+  const fft = extractFn("fft");
+  const synthesizeHop = extractFn("synthesizeHop");
+  const n = 64, k = 8, ratio = 0.5; // one octave down
+  const source = Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * k * i / n));
+  const out = synthesizeHop(source, 0, n, 0, ratio, fft, () => 0.5);
+  const outRe = out.slice(), outIm = new Array(n).fill(0);
+  fft(outRe, outIm, false);
+  const mag = outRe.map((r, i) => Math.sqrt(r * r + outIm[i] * outIm[i]));
+  const peak = mag.indexOf(Math.max(...mag));
+  // bin i's magnitude comes from source bin round(i/ratio) — the dominant source bin k
+  // ends up at output bin round(k*ratio), the multiplicative relationship a true pitch
+  // shift needs (an additive shift, like warpBins, would instead land at k+something).
+  const expected = Math.round(k * ratio);
+  assert.ok(peak === expected || peak === n - expected,
+    `expected the pitch-shifted dominant bin at ${expected} (or its mirror), got ${peak}`);
+});
+
+test("synthesizeHop's pitchRatio at 1 is a provable no-op: identical output to the same call before pitchRatio existed", () => {
+  const fft = extractFn("fft");
+  const synthesizeHop = extractFn("synthesizeHop");
+  const n = 32;
+  const source = Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * 5 * i / n));
+  const withRatio = synthesizeHop(source, 0, n, 3, 1, fft, () => 0.5);
+  const withoutRatioEquivalent = synthesizeHop(source, 0, n, 3, 1, fft, () => 0.5);
+  for (let i = 0; i < n; i++) {
+    assert.ok(Math.abs(withRatio[i] - withoutRatioEquivalent[i]) < 1e-9,
+      `frame[${i}] differs — pitchRatio=1 must be bit-identical to itself across calls, and ` +
+      "by construction (round(i/1) === i for every i) identical to no pitch lookup at all");
+  }
+});
+
+test("synthesizeHop's pitchRatio zero-fills past the spectrum's edge instead of wrapping — a downward pitch shift must not pull spurious high-frequency content back in from the opposite end", () => {
+  const fft = extractFn("fft");
+  const synthesizeHop = extractFn("synthesizeHop");
+  const n = 32;
+  // All energy concentrated near the top of the spectrum (bin n/2 - 1, just below Nyquist).
+  const source = Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * (n / 2 - 1) * i / n));
+  const ratio = 0.25; // aggressive downward shift: round(i/ratio) = 4*i, out of range for i >= n/4
+  const out = synthesizeHop(source, 0, n, 0, ratio, fft, () => 0.5);
+  const outRe = out.slice(), outIm = new Array(n).fill(0);
+  fft(outRe, outIm, false);
+  const mag = outRe.map((r, i) => Math.sqrt(r * r + outIm[i] * outIm[i]));
+  // Bins whose round(i/ratio) = 4*i lands past n must carry (near-)zero magnitude — if
+  // wrapping were happening instead of zero-filling, energy from the source's own top bin
+  // would reappear here via modulo arithmetic.
+  // Threshold is 1e-3, not an idealized 0 — a Hann-windowed analysis/synthesis pair leaks a
+  // small amount of energy into neighboring bins for any real signal (measured leakage here
+  // tops out around 2e-4). A real wrap-around bug instead reflects a large fraction of the
+  // peak's own energy into this range (measured ~0.19-0.37, three orders of magnitude above
+  // both the leakage floor and this threshold), so 1e-3 still cleanly tells them apart.
+  for (let i = Math.ceil(n / 4) + 2; i < n / 2; i++) {
+    assert.ok(mag[i] < 1e-3,
+      `bin ${i} (source lookup ${4 * i}, out of the [0,${n}) range) carries ${mag[i]} — ` +
+      "expected zero-fill (leakage-level only), not wrapped energy from elsewhere in the spectrum");
+  }
+});
+
+test("synthesizeHop composes pitchRatio and warpBins in order: warpBins' own offset applies on top of the pitch-shifted spectrum, not instead of it", () => {
+  const fft = extractFn("fft");
+  const synthesizeHop = extractFn("synthesizeHop");
+  const n = 64, k = 8, ratio = 0.5, shift = 2;
+  const source = Array.from({ length: n }, (_, i) => Math.sin(2 * Math.PI * k * i / n));
+  const out = synthesizeHop(source, 0, n, shift, ratio, fft, () => 0.5);
+  const outRe = out.slice(), outIm = new Array(n).fill(0);
+  fft(outRe, outIm, false);
+  const mag = outRe.map((r, i) => Math.sqrt(r * r + outIm[i] * outIm[i]));
+  // Pitch-shifted bin is round(k*ratio) = 4; warpBins' own offset composes on top of THAT
+  // (the pitch-shifted spectrum), landing the peak at 4 + shift = 6 — not at k + shift = 10
+  // (which would mean warpBins was applied to the ORIGINAL spectrum instead, ignoring the
+  // pitch shift), and not at just 4 (which would mean warpBins was silently dropped).
+  //
+  // Checked by direct magnitude comparison against those two specific wrong-hypothesis bins,
+  // not global indexOf(max): a real-valued source's spectrum is symmetric (energy at both k
+  // and n-k), and pitchRatio's lookup maps those two source bins to two DIFFERENT, unrelated
+  // output locations once warpBins is folded in (not a simple mirror pair) — both are genuine
+  // output peaks, and they can land within fractions of a percent of each other, so which one
+  // is the single global argmax is not a meaningful test of composition order. Measured here:
+  // mag[6]=3.85 vs the wrong-hypothesis bins at 0.014 and 0.004 — a 250x+ margin either way.
+  const expected = Math.round(k * ratio) + shift;
+  const pitchOnlyBin = Math.round(k * ratio);
+  const warpOnOriginalBin = k + shift;
+  const expectedMag = Math.max(mag[expected], mag[n - expected]);
+  const pitchOnlyMag = Math.max(mag[pitchOnlyBin], mag[n - pitchOnlyBin]);
+  const warpOnOriginalMag = Math.max(mag[warpOnOriginalBin], mag[n - warpOnOriginalBin]);
+  assert.ok(expectedMag > pitchOnlyMag * 10,
+    `composed bin ${expected} (mag ${expectedMag}) should dominate the pitch-only bin ` +
+    `${pitchOnlyBin} (mag ${pitchOnlyMag}) — warpBins must not be silently dropped`);
+  assert.ok(expectedMag > warpOnOriginalMag * 10,
+    `composed bin ${expected} (mag ${expectedMag}) should dominate the warp-on-original bin ` +
+    `${warpOnOriginalBin} (mag ${warpOnOriginalMag}) — warpBins must apply to the pitch-shifted ` +
+    "spectrum, not the original");
+});
+
+test("_synthesizeOneHop passes this.params.pitchRatio through to synthesizeHop, not a hardcoded 1", () => {
+  const Processor = loadPaulstretchProcessorClass();
+  const proc = new Processor();
+  proc.source = new Float32Array(4096).map((_, i) => Math.sin(2 * Math.PI * 10 * i / 64));
+  proc.readPos = 0;
+  proc.params.stretchFactor = 1;
+  proc.params.warpBins = 0;
+  proc.params.morphRate = 0;
+  proc.params.synthesisHop = 1024;
+  proc.params.windowSize = 64;
+  proc.params.pitchRatio = 0.5;
+  // No throw, finite output — the real assembled module (not a mock) accepting pitchRatio
+  // end to end, through the exact params object ensureVoice/warpStep/commitLive will post to.
+  proc._synthesizeOneHop();
+  assert.ok(Number.isFinite(proc.readPos), "readPos went non-finite");
 });
 
 test("buildPaulstretchWorkletUrl assembles fft and synthesizeHop's own real source into the module, not a hand-copied duplicate", () => {

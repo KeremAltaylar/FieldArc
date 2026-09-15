@@ -7684,8 +7684,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      return the frame ready to be overlap-added into an output buffer. Everything the frame
      depends on is passed in — including fftFn and randomFn — so it can be tested
      deterministically without needing the worklet's own random phase to be reproducible. */
-  function synthesizeHop(source, readPos, windowSize, warpBins, fftFn, randomFn) {
-    var i, srcIdx, s, w, mag, srcBin, phase;
+  function synthesizeHop(source, readPos, windowSize, warpBins, pitchRatio, fftFn, randomFn) {
+    var i, srcIdx, s, w, mag, pitchMag, pitchBin, srcBin, phase;
     var re = new Array(windowSize), im = new Array(windowSize);
     var start = Math.floor(readPos);
     for (i = 0; i < windowSize; i++) {
@@ -7698,12 +7698,28 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     fftFn(re, im, false);
     mag = new Array(windowSize);
     for (i = 0; i < windowSize; i++) { mag[i] = Math.sqrt(re[i] * re[i] + im[i] * im[i]); }
+    /* Multiplicative, unlike warpBins' own additive offset below — every partial's frequency
+       scaled by the same ratio, which is what preserves harmonic relationships (a real pitch
+       shift) rather than moving every partial by the same fixed amount (a detuning wobble,
+       which is what warpBins is for). Zero-filled past the spectrum's edge: a downward pitch
+       shift has nothing to put in the vacated high end, not a wrapped copy from the opposite
+       end of the spectrum — wrapping here would be a distinct, physically wrong artifact,
+       not a softer version of the real thing. */
+    pitchMag = new Array(windowSize);
+    for (i = 0; i < windowSize; i++) {
+      pitchBin = Math.round(i / pitchRatio);
+      pitchMag[i] = (pitchBin >= 0 && pitchBin < windowSize) ? mag[pitchBin] : 0;
+    }
     var outRe = new Array(windowSize), outIm = new Array(windowSize);
     for (i = 0; i < windowSize; i++) {
+      /* warpBins' own wrap-around offset composes on top of the pitch-shifted spectrum
+         above, not the original — warp must still audibly do its own job at every
+         non-zero stretch, on top of whatever pitchRatio already did, not be computed
+         against the unshifted spectrum and discarded. */
       srcBin = ((i - warpBins) % windowSize + windowSize) % windowSize;
       phase = randomFn() * 2 * Math.PI;
-      outRe[i] = mag[srcBin] * Math.cos(phase);
-      outIm[i] = mag[srcBin] * Math.sin(phase);
+      outRe[i] = pitchMag[srcBin] * Math.cos(phase);
+      outIm[i] = pitchMag[srcBin] * Math.sin(phase);
     }
     fftFn(outRe, outIm, true);
     for (i = 0; i < windowSize; i++) {
@@ -7735,7 +7751,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "    this.readOutPos = 0;",
       "    this.hopCounter = 0;",
       "    this.posReportCounter = 0;",
-      "    this.params = { stretchFactor: 1, warpBins: 0, morphRate: 0, synthesisHop: 1024, windowSize: 4096 };",
+      "    this.params = { stretchFactor: 1, warpBins: 0, morphRate: 0, synthesisHop: 1024, windowSize: 4096, pitchRatio: 1 };",
       "    this.port.onmessage = function(e) {",
       "      if (e.data.type === 'source') { this.source = e.data.data; this.readPos = 0; }",
       "      else if (e.data.type === 'params') { Object.assign(this.params, e.data.params); }",
@@ -7743,7 +7759,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "  }",
       "  _synthesizeOneHop() {",
       "    var frame = synthesizeHop(this.source, this.readPos, this.params.windowSize,",
-      "      Math.round(this.params.warpBins), fft, Math.random);",
+      "      Math.round(this.params.warpBins), this.params.pitchRatio, fft, Math.random);",
       "    var i, idx;",
       "    for (i = 0; i < frame.length; i++) {",
       "      idx = (this.writePos + i) % this.writeBuf.length;",
