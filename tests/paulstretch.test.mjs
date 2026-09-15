@@ -203,12 +203,13 @@ test("synthesizeHop's pitchRatio zero-fills past the spectrum's edge instead of 
   // Threshold is 1e-3, not an idealized 0 — a Hann-windowed analysis/synthesis pair leaks a
   // small amount of energy into neighboring bins for any real signal (measured max leakage
   // in this exact range: 1.91e-4, at bin 10). A real wrap-around bug instead measures
-  // ~0.19-0.37 at most bins in this range, but its two weakest bins (10 and 14, the edges of
-  // the wrapped-in region) measure only ~2.07e-4 — so the margin that actually matters is
-  // ~4.8x (1e-3 vs. that weakest wrap value), not the ~190x a comparison against the wrap
-  // scenario's biggest bins would suggest. Still enough: those two edge bins are outnumbered
-  // by the rest of the loop (bins 11-13, 15), which violate 1e-3 by 190x-370x under a wrap
-  // regression, so the test as a whole still reliably fails when wrapping happens.
+  // ~0.19-0.37 at bins 11-13 (a 190x-370x margin over 1e-3 — comfortably caught), but its
+  // weakest bins are uneven: bins 10 and 14 (the edges of the wrapped-in region) measure
+  // only ~2.07e-4 (a ~4.8x margin — still below 1e-3, so those two alone wouldn't catch
+  // it), and bin 15 measures ~1.94e-3 (only a ~1.9x margin over 1e-3 — the loop's weakest
+  // actual catch). The test as a whole still reliably fails under a wrap regression because
+  // bins 11-13 and 15 all individually violate 1e-3, even though bins 10 and 14 wouldn't on
+  // their own.
   for (let i = Math.ceil(n / 4) + 2; i < n / 2; i++) {
     assert.ok(mag[i] < 1e-3,
       `bin ${i} (source lookup ${4 * i}, out of the [0,${n}) range) carries ${mag[i]} — ` +

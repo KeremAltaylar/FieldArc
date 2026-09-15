@@ -7685,7 +7685,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      depends on is passed in — including fftFn and randomFn — so it can be tested
      deterministically without needing the worklet's own random phase to be reproducible. */
   function synthesizeHop(source, readPos, windowSize, warpBins, pitchRatio, fftFn, randomFn) {
-    var i, srcIdx, s, w, mag, pitchMag, pitchBin, srcBin, phase;
+    var i, srcIdx, s, w, mag, pitchMag, pitchBin, outFreqBin, srcBin, phase;
     var re = new Array(windowSize), im = new Array(windowSize);
     var start = Math.floor(readPos);
     for (i = 0; i < windowSize; i++) {
@@ -7710,10 +7710,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        duplicate of the lower half. Allowing the lookup into that mirror half would read back
        a full-amplitude, frequency-reversed copy of the source's own spectrum for any
        pitchRatio < 1 — the same category of spurious-high-frequency-content bug as wrapping,
-       just arriving through mirror symmetry instead of modulo arithmetic. */
+       just arriving through mirror symmetry instead of modulo arithmetic.
+       Each OUTPUT bin i is first folded to its own independent-half equivalent
+       (outFreqBin) before the lookup, not looked up directly by i — an output bin in the
+       upper/mirror half (i > windowSize/2) is not itself independent content, so pitch-
+       shifting it by its own raw index would silently zero it out at pitchRatio=1 (nothing
+       above Nyquist would ever be <= windowSize/2) instead of correctly mirroring its own
+       lower-half counterpart, the way mag[]'s natural Hermitian symmetry already did for
+       free before this pitch lookup existed. */
     pitchMag = new Array(windowSize);
     for (i = 0; i < windowSize; i++) {
-      pitchBin = Math.round(i / pitchRatio);
+      outFreqBin = (i <= windowSize / 2) ? i : (windowSize - i);
+      pitchBin = Math.round(outFreqBin / pitchRatio);
       pitchMag[i] = (pitchBin >= 0 && pitchBin <= windowSize / 2) ? mag[pitchBin] : 0;
     }
     var outRe = new Array(windowSize), outIm = new Array(windowSize);
