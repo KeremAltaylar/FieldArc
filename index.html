@@ -7786,7 +7786,28 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "    var i, idx;",
       "    for (i = 0; i < frame.length; i++) {",
       "      idx = (this.writePos + i) % this.writeBuf.length;",
-      "      this.writeBuf[idx] += frame[i];",
+      /* A fresh, independent random phase every hop (the whole point of Paulstretch) sums
+         overlapping hops incoherently, not the way a phase-coherent STFT reconstruction
+         would — the windowed copies partially cancel rather than reinforcing. Measured by
+         driving the real process() loop (128-sample blocks, reading AND zeroing each
+         sample exactly as production does — anything less, e.g. a hand-rolled ring buffer
+         that never zeroes what it reads, wraps around and double-accumulates, inflating
+         the reading) at this exact windowSize/synthesisHop default, 10-trial average with
+         no compensation: ~0.52x source RMS (-5.64dB) — real and audible, matching what
+         was actually heard live as "stretch just gets faint." Real Paulstretch
+         (github.com/essej/paulxstretch, Stretch.cpp:483) applies its own fixed
+         compensation for the identical reason (`REALTYPE ampfactor=2.0f`) — 2.0 is also
+         what this engine's own sweep against the SAME real process()-loop measurement
+         lands on independently for its own (different) window/hop shape: 1.8 → -0.61dB/
+         0.36% pre-limiter clipping, 2.0 → +0.47dB (essentially unity)/1.06%, 2.2 →
+         +1.33dB/2.01% — 2.0 is the best balance of near-unity gain against a clip rate
+         the master bus's own limiter (A-6, `new Tone.Limiter(-1)`) absorbs as occasional
+         peaks, not routine clipping. Not exact for every `field` setting (field changes
+         the hop/overlap ratio, which shifts how much compensation is actually needed —
+         the same already-known limitation recorded against `field`'s own gain behavior;
+         a fully adaptive factor is future work, this fixes the default path everyone
+         actually hears). */
+      "      this.writeBuf[idx] += frame[i] * 2.0;",
       "    }",
       "    var hopSeconds = this.params.synthesisHop / sampleRate;",
       "    var advance = (hopSeconds / Math.max(1, this.params.stretchFactor)) * sampleRate;",

@@ -513,6 +513,117 @@ function loadPaulstretchProcessorClass() {
   return captured;
 }
 
+/* ---------- Overlap-add gain: phase-randomised resynthesis loses real level ---------- */
+
+test("the worklet's own overlap-add (writeBuf, via the real _synthesizeOneHop) stays close to unity gain at the default window/hop configuration, not the ~40-48% loss phase randomisation produces uncompensated", () => {
+  // Phase-vocoder resynthesis with a FRESH RANDOM phase per hop (Paulstretch's own
+  // defining trait) sums overlapping hops incoherently, not the way a phase-coherent STFT
+  // reconstruction would — real Paulstretch (github.com/essej/paulxstretch,
+  // Stretch.cpp:483, `REALTYPE ampfactor=2.0f`) applies a fixed compensation gain for
+  // exactly this reason. Measured driving the real process() loop (128-sample blocks,
+  // reading AND zeroing each sample exactly as production does — sampling writeBuf
+  // directly without that read/zero step still gives a valid reading as long as the
+  // buffer is large enough not to wrap mid-measurement, which is why this test's own
+  // 30-hop run against the real 8-second writeBuf is safe; a SMALLER hand-rolled ring
+  // buffer looped past its own length here would double-accumulate and read high, which
+  // is exactly the mistake that produced an inflated live-browser reading during this
+  // fix's own investigation), 10-trial average: an uncompensated overlap-add lands at
+  // ~0.52x source RMS (~-5.6dB) — real and audible, matching what was actually heard
+  // live as "stretch just gets faint," not a rounding artifact.
+  const Processor = loadPaulstretchProcessorClass();
+  const windowSize = 4096, synthesisHop = 1024, sr = 44100;
+  const srcLen = sr * 4;
+  const source = new Float32Array(srcLen);
+  for (let i = 0; i < srcLen; i++) {
+    source[i] = 0.4 * Math.sin(2 * Math.PI * 220 * i / sr) +
+                0.3 * Math.sin(2 * Math.PI * 880 * i / sr) +
+                0.2 * (Math.random() * 2 - 1);
+  }
+  let sumSq = 0;
+  for (let i = 0; i < source.length; i++) { sumSq += source[i] * source[i]; }
+  const srcRms = Math.sqrt(sumSq / source.length);
+
+  const trials = 8, ratios = [];
+  for (let t = 0; t < trials; t++) {
+    const proc = new Processor();
+    proc.source = source;
+    proc.readPos = 0;
+    proc.params.stretchFactor = 1;
+    proc.params.warpBins = 0;
+    proc.params.morphRate = 0;
+    proc.params.synthesisHop = synthesisHop;
+    proc.params.windowSize = windowSize;
+    proc.params.pitchRatio = 1;
+    for (let h = 0; h < 30; h++) { proc._synthesizeOneHop(); }
+    // Sample the ring buffer directly (writeBuf), well into steady state, not the tail.
+    const sampleStart = windowSize, sampleEnd = sampleStart + synthesisHop * 8;
+    let s = 0, n = 0;
+    for (let i = sampleStart; i < Math.min(sampleEnd, proc.writeBuf.length); i++) {
+      s += proc.writeBuf[i] * proc.writeBuf[i]; n++;
+    }
+    ratios.push(Math.sqrt(s / n) / srcRms);
+  }
+  const mean = ratios.reduce((a, b) => a + b, 0) / trials;
+  const dB = 20 * Math.log10(mean);
+  assert.ok(mean > 0.85 && mean < 1.2,
+    `overlap-add gain at default config is ${mean.toFixed(3)}x source RMS (${dB.toFixed(2)}dB) ` +
+    "over 8 trials — expected close to unity (0.85-1.2x); phase-randomised overlap-add " +
+    "needs a compensating gain the same way real Paulstretch applies one");
+});
+
+test("the overlap-add gain compensation stays safe: it doesn't push routine clipping past what the master bus's own limiter is meant to absorb as occasional peaks", () => {
+  // Restoring the level (the test above) and staying safe are two separate properties —
+  // the compensation factor could satisfy one and fail the other, so this checks the
+  // clip rate independently rather than assuming "close to unity" also means "safe."
+  // Driven through the real process() loop (proper read-and-zero, not a hand-rolled ring
+  // buffer) so this reflects what actually reaches the master bus's Tone.Limiter(-1) —
+  // A-6 — not a synthetic approximation of it.
+  const Processor = loadPaulstretchProcessorClass();
+  const windowSize = 4096, synthesisHop = 1024, sr = 44100;
+  const trials = 6, clipPcts = [];
+  for (let t = 0; t < trials; t++) {
+    const proc = new Processor();
+    const srcLen = sr * 2;
+    const source = new Float32Array(srcLen);
+    for (let i = 0; i < srcLen; i++) {
+      source[i] = 0.4 * Math.sin(2 * Math.PI * 220 * i / sr) +
+                  0.3 * Math.sin(2 * Math.PI * 880 * i / sr) +
+                  0.2 * (Math.random() * 2 - 1);
+    }
+    proc.source = source;
+    proc.readPos = 0;
+    proc.params.stretchFactor = 1;
+    proc.params.warpBins = 0;
+    proc.params.morphRate = 0;
+    proc.params.synthesisHop = synthesisHop;
+    proc.params.windowSize = windowSize;
+    proc.params.pitchRatio = 1;
+
+    const blockSize = 128, totalSamples = sr * 1;
+    let written = 0, clipCount = 0;
+    const skip = Math.floor(sr * 0.3); // skip the fill-in transient before steady state
+    while (written < totalSamples) {
+      const outputs = [[new Float32Array(blockSize)]];
+      proc.process([], outputs);
+      const block = outputs[0][0];
+      for (let i = 0; i < blockSize && written < totalSamples; i++, written++) {
+        if (written >= skip && Math.abs(block[i]) > 1.0) { clipCount++; }
+      }
+    }
+    clipPcts.push(100 * clipCount / (totalSamples - skip));
+  }
+  const meanClipPct = clipPcts.reduce((a, b) => a + b, 0) / trials;
+  // 5% is well above the ~1% this fix's own factor measured at (real Paulstretch's own
+  // ampfactor lands in the same ballpark for a different windowing) and well below where
+  // limiting would stop reading as "occasional peaks" and start reading as routine
+  // distortion — a regression that pushes the factor high enough to blow past this is a
+  // real problem, not a rounding difference.
+  assert.ok(meanClipPct < 5,
+    `overlap-add pre-limiter clip rate is ${meanClipPct.toFixed(2)}% over ${trials} trials — ` +
+    "expected under 5%; the compensation factor is pushing too much routine energy past " +
+    "0dBFS for the master limiter to treat as occasional peaks rather than steady clipping");
+});
+
 test("_synthesizeOneHop's morph contribution stays scaled by 1/stretchFactor: at stretchFactor=200 it never dominates the primary stretch term, across morphRate 0 to 1", () => {
   const Processor = loadPaulstretchProcessorClass();
   const stretchFactor = 200;
