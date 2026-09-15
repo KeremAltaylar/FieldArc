@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import vm from "node:vm";
 
 const html = readFileSync("index.html", "utf8").replace(/\r\n/g, "\n");
 
@@ -263,4 +264,221 @@ test("the soundscape panel's stretch/warp/morph/field/grit sliders post live upd
   assert.match(src, /bed\.voices\[f\.properties\.id\]/,
     "must reach the live voice for this point, the same way the hit-slot sliders reach " +
     "bed.rhythms[f.properties.id]");
+});
+
+/* ---------- Final-review fix round: morph formula + synthesisHop clamp ----------
+   These two are singled out (final-review-fix-brief.md) as the easiest to silently
+   regress: the morph fix is a one-character-looking change to an arithmetic formula
+   buried inside a string-assembled worklet module, and the clamp is a bare Math.max
+   easy to "clean up" away later. Both get real, executed coverage below rather than
+   pattern-matching alone. */
+
+/* Raw source text of a top-level "function NAME(...) { ... }" declaration, exactly as
+   written in the file — i.e. what fft.toString()/synthesizeHop.toString() themselves
+   return in the real browser. Deliberately NOT extractFn(): extractFn hands back a
+   `new Function(...)`-built function, whose own .toString() prints "function anonymous"
+   rather than the real name, which would silently strip the "synthesizeHop"/"fft"
+   identifiers the worklet's own class methods call by name. */
+function extractRawFnSource(name) {
+  const startNeedle = "function " + name + "(";
+  const start = html.indexOf(startNeedle);
+  assert.ok(start !== -1, `function not found: ${name}`);
+  const closeParen = html.indexOf(")", start + startNeedle.length - 1);
+  const bodyStart = html.indexOf("{", closeParen);
+  let depth = 0, i = bodyStart;
+  for (; i < html.length; i++) {
+    if (html[i] === "{") { depth++; }
+    else if (html[i] === "}") { depth--; if (depth === 0) { break; } }
+  }
+  return html.slice(start, i + 1);
+}
+
+/* Assembles the SAME module source buildPaulstretchWorkletUrl() would — the literal
+   `lines` array text straight from the file, with its two fft.toString()/
+   synthesizeHop.toString() calls swapped for the real, raw source text those calls
+   would themselves produce — without needing Blob/URL.createObjectURL, which Node's
+   test runner doesn't reliably provide. */
+function buildWorkletModuleSource() {
+  const fnSrc = slice("function buildPaulstretchWorkletUrl()", "\n  }\n");
+  const linesStart = fnSrc.indexOf("var lines = [");
+  assert.ok(linesStart !== -1, "buildPaulstretchWorkletUrl's lines array not found");
+  const blobIdx = fnSrc.indexOf("var blob = new Blob(");
+  assert.ok(blobIdx !== -1, "buildPaulstretchWorkletUrl's Blob construction not found");
+  // The array's own elements include strings like "frame[i];", which itself contains
+  // "];" — indexOf from the start would stop there instead of at the array's real
+  // close. lastIndexOf scanning backward from the Blob construction lands on the
+  // actual closing "];" immediately before it, regardless of what's embedded earlier.
+  const linesEnd = fnSrc.lastIndexOf("];", blobIdx) + 2;
+  assert.ok(linesEnd > linesStart + "var lines = [".length,
+    "could not locate the lines array's own closing bracket");
+  let linesSrc = fnSrc.slice(linesStart, linesEnd);
+  assert.ok(linesSrc.includes("fft.toString()") && linesSrc.includes("synthesizeHop.toString()"),
+    "expected exactly the two known .toString() calls in the lines array");
+  linesSrc = linesSrc.replace("fft.toString()", JSON.stringify(extractRawFnSource("fft")));
+  linesSrc = linesSrc.replace("synthesizeHop.toString()",
+    JSON.stringify(extractRawFnSource("synthesizeHop")));
+  const buildLines = new Function(linesSrc + "\nreturn lines;");
+  const lines = buildLines();
+  return lines.join("\n");
+}
+
+/* Runs the assembled module in a real V8 context (not a regex) with the minimal native
+   surface an AudioWorkletProcessor needs (sampleRate, a base class with a .port,
+   registerProcessor), and hands back the actual class the module registers — so tests
+   below call the real _synthesizeOneHop(), not a description of it. */
+function loadPaulstretchProcessorClass() {
+  const sandbox = { sampleRate: 44100 };
+  sandbox.AudioWorkletProcessor = class {
+    constructor() { this.port = { onmessage: null, postMessage() {} }; }
+  };
+  let captured = null;
+  sandbox.registerProcessor = function (name, cls) { captured = cls; };
+  vm.createContext(sandbox);
+  vm.runInContext(buildWorkletModuleSource(), sandbox);
+  assert.ok(captured, "registerProcessor was never called by the assembled worklet module");
+  return captured;
+}
+
+test("_synthesizeOneHop's morph contribution stays scaled by 1/stretchFactor: at stretchFactor=200 it never dominates the primary stretch term, across morphRate 0 to 1", () => {
+  const Processor = loadPaulstretchProcessorClass();
+  const stretchFactor = 200;
+  const synthesisHop = 1024;
+  const primaryAdvance = synthesisHop / stretchFactor; // samples/hop from the stretch alone
+  [0, 0.02, 0.25, 0.5, 1.0].forEach((morphRate) => {
+    const proc = new Processor();
+    proc.source = new Float32Array(200000); // long enough that readPos never wraps below
+    proc.readPos = 1000;
+    proc.params.stretchFactor = stretchFactor;
+    proc.params.morphRate = morphRate;
+    proc.params.synthesisHop = synthesisHop;
+    proc.params.windowSize = 64; // any power of 2; only the advance math is under test
+    proc._synthesizeOneHop();
+    const advance = proc.readPos - 1000;
+    const expected = primaryAdvance * (1 + morphRate);
+    assert.ok(Math.abs(advance - expected) < 1e-6,
+      `morphRate=${morphRate}: expected advance ~${expected}, got ${advance}`);
+    // The bug this guards against: morph's term applied at an unstretched rate, which at
+    // morphRate=0.02 already ran ~4x the primary term and by morphRate=1.0 erased the
+    // stretch entirely. The fixed formula can add at most one more primary term.
+    assert.ok(advance <= primaryAdvance * 2 + 1e-9,
+      `morphRate=${morphRate}: advance ${advance} exceeds twice the primary stretch term ` +
+      `(${primaryAdvance}) — morph is dominating the stretch again`);
+    // Even at morph's maximum, the read position must still crawl far slower than one
+    // synthesis hop per hop — proof the 200x stretch survives, not just "some advance".
+    assert.ok(advance < synthesisHop / 10,
+      `morphRate=${morphRate}: advance ${advance} is no longer small next to synthesisHop ` +
+      `(${synthesisHop}) — the extreme stretch has collapsed`);
+  });
+});
+
+test("_synthesizeOneHop never produces a non-finite readPos, even with warpBins active alongside morph", () => {
+  const Processor = loadPaulstretchProcessorClass();
+  const proc = new Processor();
+  proc.source = new Float32Array(4096).map((_, i) => Math.sin(i * 0.1));
+  proc.readPos = 0;
+  proc.params.stretchFactor = 200;
+  proc.params.morphRate = 1.0;
+  proc.params.warpBins = 7;
+  proc.params.synthesisHop = 1024;
+  proc.params.windowSize = 64;
+  for (let i = 0; i < 5; i++) { proc._synthesizeOneHop(); }
+  assert.ok(Number.isFinite(proc.readPos), `readPos went non-finite: ${proc.readPos}`);
+  assert.ok(proc.readPos >= 0 && proc.readPos < proc.source.length,
+    `readPos ${proc.readPos} left the source's own [0, length) range`);
+});
+
+/* Pulls the exact `synthesisHop: Math.max(...)` expression out of each computation site
+   and evaluates it for real (balanced-paren extraction, not a regex over the whole
+   thing, since the expression nests Math.round(...) and (...) groups inside it) — so a
+   regression that changes the clamp's floor, or drops it, fails on real numbers. */
+function extractSynthesisHopFn(fnSrc, label) {
+  const marker = "synthesisHop: ";
+  const idx = fnSrc.indexOf(marker);
+  assert.ok(idx !== -1, `${label}: synthesisHop assignment not found`);
+  const exprStart = idx + marker.length;
+  assert.ok(fnSrc.slice(exprStart).startsWith("Math.max("),
+    `${label}: synthesisHop must be clamped via Math.max(...)`);
+  const parenStart = fnSrc.indexOf("(", exprStart);
+  let depth = 0, i = parenStart;
+  for (; i < fnSrc.length; i++) {
+    if (fnSrc[i] === "(") { depth++; }
+    else if (fnSrc[i] === ")") { depth--; if (depth === 0) { break; } }
+  }
+  assert.ok(depth === 0, `${label}: synthesisHop expression's parens never balanced`);
+  const expr = fnSrc.slice(exprStart, i + 1);
+  return new Function("q", "return " + expr + ";");
+}
+
+test("synthesisHop is clamped to a safe positive floor in both warpStep and commitLive, so an out-of-range field (imported/synced data, or any future non-slider caller) can never drive the worklet's hopCounter to zero or negative", () => {
+  const warpStepSrc = slice("function warpStep(time)", "\n  }\n");
+  const commitLiveSrc = slice("var commitLive = function ()", "\n    };\n");
+  const warpStepHop = extractSynthesisHopFn(warpStepSrc, "warpStep");
+  const commitLiveHop = extractSynthesisHopFn(commitLiveSrc, "commitLive");
+
+  [0, 0.5, 1, 1.0001, 5, 100, -1, -100, NaN].forEach((field) => {
+    [["warpStep", warpStepHop], ["commitLive", commitLiveHop]].forEach(([label, fn]) => {
+      const hop = fn({ field: field });
+      assert.ok(Number.isFinite(hop) && hop >= 64,
+        `${label} field=${field}: synthesisHop ${hop} fell to or below the safe floor — ` +
+        "this is exactly the condition that locks hopCounter and the audio thread with it");
+    });
+  });
+
+  // The normal slider range (field 0 to 1) must stay exactly as before this fix.
+  assert.equal(warpStepHop({ field: 0 }), 1024);
+  assert.equal(warpStepHop({ field: 1 }), 410);
+  assert.equal(commitLiveHop({ field: 0 }), 1024);
+  assert.equal(commitLiveHop({ field: 1 }), 410);
+});
+
+/* ---------- Final-review fix round: the remaining three findings ---------- */
+
+test("ensureVoice only ramps stretchBlend.fade toward q.stretch when the worklet is actually ready, at both ready-branch call sites — otherwise a failed/loading worklet fades toward a wet side with nothing feeding it, which is quieter, not silent", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  const onloadSrc = slice("onload: function () {", "\n        }\n      }).connect(v.stretchBlend.a);");
+  assert.match(onloadSrc, /\(v\.stretch\s*&&\s*v\.stretch\.ready\)\s*\?\s*q2\.stretch\s*:\s*0/,
+    "the onload branch must gate its blend ramp on v.stretch.ready");
+  const existingVoiceSrc = src.slice(0, src.indexOf("v = bed.voices[z.id] = { ready: false"));
+  assert.match(existingVoiceSrc, /if\s*\(v\.stretch\s*&&\s*v\.stretch\.ready\)\s*\{[\s\S]*?v\.stretchBlend\.fade\.rampTo\(q\.stretch, BED\.fade\);[\s\S]*?\}\s*else\s*\{[\s\S]*?v\.stretchBlend\.fade\.rampTo\(0, BED\.fade\);/,
+    "the existing-voice branch must ramp toward q.stretch only inside the v.stretch.ready guard, and to 0 otherwise");
+});
+
+test("ensureVoice guards the nativeCtx lookup and logs+toasts loudly on any stretch-init failure, instead of an uncaught throw or a silent no-op catch", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  assert.match(src, /if\s*\(!nativeCtx\)\s*\{\s*throw new Error/,
+    "a missing/renamed Tone internal must throw a caught, loud error rather than an " +
+    "uncaught throw that leaks the already-built dry player/filter/grit/blend");
+  const catchCount = (src.match(/console\.error\(\s*"Paulstretch worklet failed to initialize/g) || []).length;
+  assert.ok(catchCount >= 2,
+    "both the synchronous nativeCtx guard and the async Promise.all catch must log loudly");
+  assert.match(src, /toast\(\s*"Extreme stretch unavailable/,
+    "the failure must also reach the person using the app via toast(), not just the console");
+  assert.doesNotMatch(src, /the worklet stays silent \(blend at 0\)/,
+    "the old, now-inaccurate silent-catch comment must be gone");
+});
+
+test("ensureVoice's Promise.all callback checks the resolved voice is still THIS closure's own v, not merely that some voice exists at that id — a stop/start race during decode must abort the stale continuation", () => {
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  const promiseAllThen = src.slice(src.indexOf("Promise.all(["), src.indexOf("connectNativeToToneGain("));
+  assert.match(promiseAllThen, /bed\.voices\[z\.id\]\s*!==\s*v/,
+    "must compare identity against the closure's own v, not just truthiness — a replacement " +
+    "voice under the same id must abort this stale continuation rather than wiring a live " +
+    "worklet into a disposed v.grit.input");
+});
+
+test("the soundscape panel's copy describes the real phase-vocoder engine, not the deleted GrainPlayer one", () => {
+  const src = slice("function renderSoundscapePanel(f, q, commitQ, body)", "\n  }\n");
+  assert.doesNotMatch(src, /jitters grain size and overlap/,
+    "field is a direct function of the slider, not a per-tick jitter, and it no longer " +
+    "touches grain size/overlap — that GrainPlayer property doesn't exist in this engine");
+  assert.doesNotMatch(src, /granular wash/i,
+    "the bed's own engine is a phase vocoder (spectral), not granular");
+  assert.doesNotMatch(src, /the same engine a hit's own stretch uses/,
+    "false since this plan: hit-slot stretch still uses Tone.GrainPlayer, only the " +
+    "soundscape bed moved to the worklet");
+  assert.doesNotMatch(src, /scattered grain cloud/,
+    "field no longer produces a grain cloud — it widens/narrows the phase vocoder's own " +
+    "synthesis-hop overlap density");
+  assert.match(src, /phase vocoder/i,
+    "the copy should name the actual engine somewhere in the panel");
 });
