@@ -5121,6 +5121,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return { factor: factor, seconds: seconds };
   }
 
+  /* Tied to the same stretch knob, not to stretchFactor itself: literal tape-style
+     pitch/stretchFactor would put a typical field recording's content below or at the
+     bottom edge of human hearing well before stretch=1 (x200) — the exact failure the
+     phase vocoder was built pitch-preserving to avoid (see the worklet's own spec). -2400
+     cents (two octaves) at stretch=1 is a bounded, musical cap instead: audible and
+     characterful across the whole knob range. Cents is the same unit the reference
+     implementation (github.com/essej/paulxstretch, ProcessedStretch.h's pitch_shift.cents)
+     uses for exactly this kind of control. -2400 is tuned by ear, not load-bearing; every
+     consumer calls this function rather than hardcoding it, so it stays a one-line retune. */
+  function stretchPitchRatio(stretch) {
+    var cents = (-2400 * Math.max(0, Math.min(1, stretch || 0))) + 0;
+    var ratio = Math.pow(2, cents / 1200);
+    return { cents: cents, ratio: ratio };
+  }
+
   /* The waveform never gets shorter or narrower as stretch rises — that read as the
      recording shrinking, the opposite of what x200 slower means. Instead the SAME peaks,
      still spanning the full width, blur from tight wiggles into broad, soft humps: a

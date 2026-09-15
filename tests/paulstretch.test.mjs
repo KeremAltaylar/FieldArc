@@ -579,6 +579,38 @@ test("stretchedDurationInfo clamps stretch and morph the same way the worklet's 
   assert.equal(stretchedDurationInfo(0, 1, 0).seconds, 0);
 });
 
+test("stretchPitchRatio: at stretch=0 there is no pitch shift at all", () => {
+  const stretchPitchRatio = extractFn("stretchPitchRatio");
+  const info = stretchPitchRatio(0);
+  assert.equal(info.cents, 0);
+  assert.equal(info.ratio, 1);
+});
+
+test("stretchPitchRatio: at stretch=1 pitch drops exactly two octaves (-2400 cents, ratio 0.25) — the capped amount, not tape-style pitch/stretchFactor", () => {
+  const stretchPitchRatio = extractFn("stretchPitchRatio");
+  const info = stretchPitchRatio(1);
+  assert.equal(info.cents, -2400);
+  assert.ok(Math.abs(info.ratio - 0.25) < 1e-9, `expected ratio ~0.25, got ${info.ratio}`);
+});
+
+test("stretchPitchRatio is linear in stretch between the two endpoints", () => {
+  const stretchPitchRatio = extractFn("stretchPitchRatio");
+  const info = stretchPitchRatio(0.5);
+  assert.equal(info.cents, -1200);
+  assert.ok(Math.abs(info.ratio - 0.5) < 1e-9, `expected ratio ~0.5 (one octave down), got ${info.ratio}`);
+});
+
+test("stretchPitchRatio clamps out-of-range stretch instead of producing NaN or an unbounded drop", () => {
+  const stretchPitchRatio = extractFn("stretchPitchRatio");
+  assert.equal(stretchPitchRatio(-1).cents, 0);
+  assert.equal(stretchPitchRatio(5).cents, -2400);
+  [NaN, undefined, -1, 5].forEach((s) => {
+    const info = stretchPitchRatio(s);
+    assert.ok(Number.isFinite(info.cents), `stretch=${s}: cents is not finite`);
+    assert.ok(Number.isFinite(info.ratio), `stretch=${s}: ratio is not finite`);
+  });
+});
+
 test("fmtLongDuration formats seconds, minutes and hours the way a person actually reads an extreme-stretch length, not fmtTime's m:ss", () => {
   const fmtLongDuration = extractFn("fmtLongDuration");
   assert.equal(fmtLongDuration(0), "0s");
