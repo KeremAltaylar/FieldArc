@@ -482,3 +482,77 @@ test("the soundscape panel's copy describes the real phase-vocoder engine, not t
   assert.match(src, /phase vocoder/i,
     "the copy should name the actual engine somewhere in the panel");
 });
+
+/* ---------- The soundscape panel's waveform + stretched-length readout ---------- */
+
+test("stretchedDurationInfo: at stretch=0 the recording's own length comes back untouched, matching the panel's own \"played as it is\" claim", () => {
+  const stretchedDurationInfo = extractFn("stretchedDurationInfo");
+  const info = stretchedDurationInfo(4.2, 0, 0);
+  assert.equal(info.factor, 1);
+  assert.equal(info.seconds, 4.2);
+});
+
+test("stretchedDurationInfo: at stretch=1 one pass takes the full 200x — the actual motivating case, not some partial blend", () => {
+  const stretchedDurationInfo = extractFn("stretchedDurationInfo");
+  const info = stretchedDurationInfo(3, 1, 0);
+  assert.equal(info.factor, 200);
+  assert.equal(info.seconds, 600);
+});
+
+test("stretchedDurationInfo: morph shortens the reported pass length by exactly the same 1/(1+morphRate) the worklet's own advance formula applies, so the readout can never drift from what's actually heard", () => {
+  const stretchedDurationInfo = extractFn("stretchedDurationInfo");
+  const info = stretchedDurationInfo(3, 1, 1);
+  assert.equal(info.factor, 200);
+  assert.equal(info.seconds, 300);
+});
+
+test("stretchedDurationInfo clamps stretch and morph the same way the worklet's own params do, so out-of-range callers can't produce a negative or absurd readout", () => {
+  const stretchedDurationInfo = extractFn("stretchedDurationInfo");
+  assert.equal(stretchedDurationInfo(3, -1, 0).factor, 1);
+  assert.equal(stretchedDurationInfo(3, 5, 0).factor, 200);
+  assert.equal(stretchedDurationInfo(3, 0, -1).seconds, 3);
+  assert.equal(stretchedDurationInfo(0, 1, 0).seconds, 0);
+});
+
+test("fmtLongDuration formats seconds, minutes and hours the way a person actually reads an extreme-stretch length, not fmtTime's m:ss", () => {
+  const fmtLongDuration = extractFn("fmtLongDuration");
+  assert.equal(fmtLongDuration(0), "0s");
+  assert.equal(fmtLongDuration(45), "45s");
+  assert.equal(fmtLongDuration(90), "1m 30s");
+  assert.equal(fmtLongDuration(120), "2m");
+  assert.equal(fmtLongDuration(3720), "1h 2m");
+  assert.equal(fmtLongDuration(7200), "2h");
+  assert.equal(fmtLongDuration(-5), "0s");
+  assert.equal(fmtLongDuration(NaN), "0s");
+});
+
+test("renderSoundscapePanel draws a waveform and a stretched-length caption above the sliders, and the caption updates on every commitLive drag, not just at first render", () => {
+  const src = slice("function renderSoundscapePanel(f, q, commitQ, body)", "\n  }\n");
+  const waveIdx = src.indexOf("ppwave");
+  const colsIdx = src.indexOf("var cols = document.createElement");
+  assert.ok(waveIdx !== -1, "the panel must create a .ppwave canvas");
+  assert.ok(waveIdx < colsIdx,
+    "the waveform must be built before the slider columns, so it renders above them");
+  assert.match(src, /updateWaveCaption\(\);\s*\n\s*\n\s*var cols/,
+    "the caption must be populated once at initial render, before the sliders exist");
+  const commitLiveSrc = src.slice(src.indexOf("var commitLive = function ()"),
+    src.indexOf("col.appendChild(buildSoundRow({ k: \"stretch\""));
+  assert.match(commitLiveSrc, /updateWaveCaption\(\);/,
+    "every commitLive drag (stretch, warp, morph, field, grit all call it) must refresh " +
+    "the caption, not just the worklet's own params");
+  /* Regression coverage for a real bug caught by live testing (not by this suite): the
+     caption update was originally placed AFTER commitLive's live-voice guard
+     ("if (!v || !v.ready...) { return; }"), so it silently never ran while editing in the
+     setter with no bed voice currently playing — the common case, not the exception. The
+     caption is pure arithmetic on q/durationS and must run unconditionally, before that
+     guard, same as commitQ() itself. */
+  const guardIdx = commitLiveSrc.search(/if\s*\(!v\s*\|\|\s*!v\.ready/);
+  const captionIdx = commitLiveSrc.indexOf("updateWaveCaption();");
+  assert.ok(guardIdx !== -1, "commitLive's live-voice guard must still be present");
+  assert.ok(captionIdx < guardIdx,
+    "updateWaveCaption() must run before the live-voice guard, not after it — otherwise " +
+    "the caption never updates unless a bed voice happens to be playing right now");
+  assert.match(src, /q\.stretch > 0/,
+    "at stretch=0 the caption must say the recording plays as it is, matching the rest " +
+    "of the panel's own dry-at-zero language, not report a meaningless ×1 stretch");
+});
