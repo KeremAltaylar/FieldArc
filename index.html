@@ -1138,12 +1138,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .pxpower:focus-visible { outline: 2px solid var(--lamp); outline-offset: 1px; }
 .pxratio { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--s-3); }
 .pxratio .pprow { grid-template-columns: 1.8rem 1fr 3rem; }
+.pxtwo { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--s-5); align-items: start; }
+.pxtwo > div { min-width: 0; }
+.ppwave.short { height: 32px; }
 .pptabs {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: grid; grid-template-columns: repeat(var(--tabs, 3), minmax(0, 1fr));
   border: 1px solid var(--bdr); border-radius: 2px; overflow: hidden; margin: var(--s-2) 0;
 }
 .pptabs button {
   border: 0; border-radius: 0; min-width: 0;
+  padding-left: var(--s-1); padding-right: var(--s-1); letter-spacing: 0.06em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pptabs button + button { border-left: 1px solid var(--bdr); }
@@ -5516,6 +5520,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       body.appendChild(none);
       return;
     }
+    /* renderRhythmPanel has already put the "This point" block in; tabbed, it becomes a tab. */
+    var pointBlock = body.firstElementChild;
     var mhead = document.createElement("div");
     mhead.className = "pphead";
     var h = document.createElement("h2");
@@ -5576,6 +5582,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     };
     var heading = function (t) { var h2 = document.createElement("h2"); h2.textContent = t; return h2; };
     var R = function (spec, obj) { return buildPxRow(spec, obj, commitLive); };
+    var extrasHeading = heading("Extras");
 
     var colStretch = [
       heading("Stretch"),
@@ -5597,7 +5604,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         hint: "where in the recording the loop ends" }, x),
       R({ label: "loop xfade", k: "xfade", min: 0, max: 1, step: 0.001, def: 0.01, fmt: fx.sec,
         hint: "how long the end of the loop fades into its start" }, x),
-      heading("Extras"),
+      extrasHeading,
       R({ label: "warp", k: "warp", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
         hint: "FieldArc's own: the whole spectrum drifts slowly, up to ±300 Hz" }, q),
       R({ label: "morph", k: "morph", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
@@ -5634,7 +5641,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       ], commitLive),
       buildPxModule("Spread", x.spread, [
         R({ label: "spread", k: "bw", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.two }, x.spread)
-      ], commitLive),
+      ], commitLive)
+    ];
+    /* Filter and Compressor sit in the third column for height, not for order: at 1428x729 the
+       whole chain in one column scrolled by 68 px. The chain note gives the real order. */
+    var colTail = [
       buildPxModule("Filter", x.filter, [
         R({ label: "low", k: "low", min: 20, max: 20000, def: 20, log: true, fmt: fx.hz }, x.filter),
         R({ label: "high", k: "high", min: 20, max: 20000, def: 20000, log: true, fmt: fx.hz }, x.filter),
@@ -5657,7 +5668,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       return row;
     });
     var colRatios = [
-      buildPxModule("Ratios", x.ratios, ratioRows, commitLive),
+      buildPxModule("Ratios", x.ratios, ratioRows, commitLive)
+    ].concat(colTail, [
       buildPxModule("Binaural beats", x.binaural, [
         R({ label: "power", k: "power", min: 0, max: 1, step: 0.01, def: 0.5, fmt: fx.two,
           hint: "how much the two channels are mixed before the beat is applied" }, x.binaural),
@@ -5665,30 +5677,51 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           fmt: function (v) { return v.toFixed(2) + " Hz"; } }, x.binaural),
         buildPxSelect("mode", x.binaural, "mode", ["left-right", "right-left", "symmetric"], commitLive)
       ], commitLive)
-    ];
+    ]);
 
     var note = document.createElement("p");
     note.className = "hint";
     note.textContent = "Always heard through the PaulXStretch engine. Stretch ×1 plays at the " +
       "recording's own speed with randomised phase; the spectrum chain and ratios act on every " +
       "frame; extras are FieldArc's own.";
-    colRatios.push(note);
+    colStretch.push(note);
 
-    /* One screen, always (C-8): three columns where there is room, three tabs where there is
-       not. A rotated phone is short, not narrow, so height decides too. */
-    var sections = [
+    /* One screen, always (C-8): three columns where there is room, tabs where there is not. A
+       rotated phone is short, not narrow, so height decides too. Measured at 501x695 with three
+       tabs, every tab still scrolled (23/53/100 px) under the shared "This point" block, so
+       tabbed mode takes that block into a tab of its own, splits Ratios from the output stage,
+       and gives each tab two fixed sub-columns when the screen is wide enough. Splits are fixed
+       indexes, not CSS columns: a control must not move column while it is being dragged. */
+    var tabbed = innerWidth < 1000 || innerHeight < 700;
+    var twoUp = tabbed && innerWidth >= 700;
+    /* A phone on its side (measured 832x390): the waveform shrinks and its heading goes — the
+       waveform and the tab bar already say what this is. Spectrum overflowed by 20 px without. */
+    if (tabbed && innerHeight < 500) { wave.classList.add("short"); mhead.hidden = true; }
+    var sections = tabbed ? [
+      { title: "Point", nodes: pointBlock ? [pointBlock] : [], split: 0 },
+      { title: "Stretch", nodes: colStretch, split: colStretch.indexOf(extrasHeading) },
+      { title: "Spectrum", nodes: colSpectrum, split: 3 },
+      { title: "Ratios", nodes: [colRatios[0]], split: 0 },
+      { title: "Output", nodes: colRatios.slice(1), split: 2 }
+    ] : [
       { title: "Stretch", nodes: colStretch },
       { title: "Spectrum", nodes: colSpectrum },
-      { title: "Ratios · binaural", nodes: colRatios }
+      { title: "Ratios", nodes: colRatios }
     ];
-    var tabbed = innerWidth < 1000 || innerHeight < 700;
     var cols = document.createElement("div");
     cols.className = "ppcols";
     cols.style.setProperty("--ppcols", tabbed ? 1 : 3);
     var panes = sections.map(function (s) {
       var col = document.createElement("div");
       col.className = "ppcol";
-      s.nodes.forEach(function (n) { col.appendChild(n); });
+      if (twoUp && s.split > 0) {
+        col.classList.add("pxtwo");
+        var a = document.createElement("div"), b2 = document.createElement("div");
+        s.nodes.forEach(function (n, i) { (i < s.split ? a : b2).appendChild(n); });
+        col.appendChild(a); col.appendChild(b2);
+      } else {
+        s.nodes.forEach(function (n) { col.appendChild(n); });
+      }
       cols.appendChild(col);
       return col;
     });
@@ -5696,6 +5729,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var tabs = document.createElement("div");
       tabs.className = "pptabs";
       tabs.setAttribute("role", "tablist");
+      tabs.style.setProperty("--tabs", sections.length);
       var pick = function (k) {
         pxTab = k;
         panes.forEach(function (pane, i) { pane.hidden = i !== k; });
@@ -5765,7 +5799,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
-  var swRAF = null, pxTab = 0;
+  var swRAF = null, pxTab = 1;   /* tabbed panels open on Stretch */
   function soundscapeWaveTick() {
     if ($("#rhythmpanel").hidden || !document.querySelector("#rp-body .ppwave")) {
       swRAF = null; return;

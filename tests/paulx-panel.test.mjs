@@ -50,9 +50,14 @@ test("log sliders keep the stored value in real units", () => {
 });
 
 test("narrow or short screens get tabs, not a scrolling panel", () => {
+  /* Measured: 1428x729 three columns, 501x695 five tabs, 832x390 five tabs with two sub-columns
+     — every one 0 px of panel scroll. Three tabs had scrolled 23-168 px. */
   const p = src("renderSoundscapePanel");
   assert.match(p, /setAttribute\("role", "tablist"\)/);
   assert.match(p, /innerWidth < 1000 \|\| innerHeight < 700/);
+  ["Point", "Stretch", "Spectrum", "Ratios", "Output"].forEach((t) => assert.match(p, new RegExp('title: "' + t + '"')));
+  assert.match(p, /twoUp = tabbed && innerWidth >= 700/);
+  assert.match(p, /innerHeight < 500\) \{ wave\.classList\.add\("short"\); mhead\.hidden = true; \}/);
 });
 
 test("every drag updates the caption first, whether or not a voice is playing, then posts pxParams", () => {
