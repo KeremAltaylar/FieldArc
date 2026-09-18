@@ -82,6 +82,19 @@ test("the stretched-length readout uses 1024^s and the play range", () => {
   assert.equal(info.seconds, 5 * 1024);
 });
 
+test("the worklet text runs inside a function body, as Tone's standardized-audio-context loads it", () => {
+  /* Measured in Chrome, 2026-09-18: addAudioWorkletModule re-evaluates the module text inside
+     a wrapper function, so a top-level `export` threw "Unexpected token 'export'" and every
+     point would have fallen back to the plain recording. */
+  const text = readFileSync("src/paulx-worklet.js", "utf8");
+  assert.doesNotMatch(text, /^\s*(export|import)\b/m);
+  let registered = null;
+  class AWP { constructor() { this.port = { postMessage() {}, onmessage: null }; } }
+  const wrapped = new Function("registerProcessor", "AudioWorkletProcessor", "sampleRate", text);
+  wrapped((name) => { registered = name; }, AWP, 48000);
+  assert.equal(registered, "paulx-processor");
+});
+
 test("the worklet is precached for offline walks", () => {
   assert.match(sw, /"\.\/src\/paulx-worklet\.js"/);
 });

@@ -5582,7 +5582,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       R({ label: "stretch", k: "stretch", min: 0, max: 1, step: 0.005, def: 0,
         fmt: function (v) { return fx.x(Math.pow(1024, v)); },
         hint: "×1 plays at the recording's own speed; ×1024 is PaulXStretch's maximum" }, q),
-      R({ label: "fft size", k: "fft", min: 0, max: 1, step: 0.01, def: 0.7,
+      /* Capped at 0.9 (hop 65536, a 2.7 s window) where the plugin goes to 1.0: measured in
+         Chrome, hop 131072 with a stereo recording overran the 2.67 ms render quantum in 93 of
+         10464 quanta; at 0.9 it was 5. */
+      R({ label: "fft size", k: "fft", min: 0, max: 0.9, step: 0.01, def: 0.7,
         fmt: function (v) { return String(pxBufsize(v)); },
         hint: "the hop in samples; each frame is twice this — larger is smoother and slower to react" }, x),
       R({ label: "onset", k: "onset", min: 0, max: 1, step: 0.01, def: 0, fmt: fx.two,

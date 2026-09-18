@@ -6,7 +6,8 @@ let Proc = null;
 globalThis.sampleRate = 48000;
 globalThis.AudioWorkletProcessor = class { constructor() { this.port = { postMessage() {}, onmessage: null }; } };
 globalThis.registerProcessor = (name, cls) => { if (name === "paulx-processor") { Proc = cls; } };
-const PX = await import("../src/paulx-worklet.js");
+await import("../src/paulx-worklet.js");
+const PX = globalThis.PaulX;
 
 const SR = 48000;
 const params = (o = {}) => Object.assign({ stretch: 1, bufsize: 2048, freeze: false, onset: 0, start: 0, end: 1,
@@ -48,14 +49,27 @@ test("a large hop's work is spread: each quantum runs a small fraction of it", (
   assert.ok(s.budget < s.est / 4, "budget " + s.budget + " of " + s.est + " steps per quantum");
 });
 
-test("the spread job produces the same audio as computing each hop at once", () => {
-  const a = run(params({ bufsize: 1024 }), 300).L;
-  const rd = new PX.PxReader(tone(SR * 4, 440), SR), st = new PX.PxStretcher(1024, SR, 0x5eed), hop = new Float64Array(1024);
+test("the spread job produces the same audio as computing each hop at once, one hop later", () => {
+  /* The processor never computes a hop inside build(), so its first hop is silence and the
+     stepped audio arrives one hop behind the synchronous reference. */
+  const b = 1024, a = run(params({ bufsize: b }), 300).L;
+  for (let i = 0; i < b; i++) { assert.equal(a[i], 0, "first hop is silence"); }
+  const rd = new PX.PxReader(tone(SR * 4, 440), SR), st = new PX.PxStretcher(b, SR, 0x5eed), hop = new Float64Array(b);
   rd.setRange(0, 1, 0.01);
   st.prime(rd);
   const ref = [];
-  for (let h = 0; h < 37; h++) { PX.pxRun(st.hopJob(rd, params({ bufsize: 1024 }), hop)); ref.push(...hop); }
-  for (let i = 0; i < 37 * 1024; i++) { assert.ok(Math.abs(a[i] - ref[i]) < 1e-6, "sample " + i); }
+  for (let h = 0; h < 36; h++) { PX.pxRun(st.hopJob(rd, params({ bufsize: b }), hop)); ref.push(...hop); }
+  for (let i = 0; i < 36 * b; i++) { assert.ok(Math.abs(a[b + i] - ref[i]) < 1e-6, "sample " + i); }
+});
+
+test("no quantum drains a job synchronously once the processor is running", () => {
+  const pr = start(params({ bufsize: 16384, mods: { harmonics: { on: true, n: 100, freq: 60, bw: 200, gauss: false },
+    tonal: { on: true, bw: 0.74, preserve: 0.5 }, spread: { on: true, bw: 0.3 } } }), [tone(SR * 8, 440), tone(SR * 8, 660)]);
+  let drained = 0;
+  const orig = pr.swap.bind(pr);
+  pr.swap = (s) => { if (s.job) { drained++; } orig(s); };
+  for (let i = 0; i < 1500; i++) { quantum(pr); }
+  assert.equal(drained, 0, drained + " hops were late and drained inside one quantum");
 });
 
 test("changing the FFT size rebuilds without a click", () => {
