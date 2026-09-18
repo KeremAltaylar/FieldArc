@@ -801,14 +801,16 @@ test("synthesisHop is clamped to a safe positive floor in both warpStep and comm
 
 /* ---------- Final-review fix round: the remaining three findings ---------- */
 
-test("ensureVoice only ramps stretchBlend.fade toward q.stretch when the worklet is actually ready, at both ready-branch call sites — otherwise a failed/loading worklet fades toward a wet side with nothing feeding it, which is quieter, not silent", () => {
+test("the soundscape is always the stretch engine: stretch is never a dry/wet amount, and the plain recording is heard only if the engine failed", () => {
+  /* Kerem, 2026-09-18: "the signal should always be wet so 0 means 0 stretch". The blend is
+     a failure fallback now, not a control. */
   const src = slice("function ensureVoice(z, d)", "\n  }\n");
-  const onloadSrc = slice("onload: function () {", "\n        }\n      }).connect(v.stretchBlend.a);");
-  assert.match(onloadSrc, /\(v\.stretch\s*&&\s*v\.stretch\.ready\)\s*\?\s*q2\.stretch\s*:\s*0/,
-    "the onload branch must gate its blend ramp on v.stretch.ready");
-  const existingVoiceSrc = src.slice(0, src.indexOf("v = bed.voices[z.id] = { ready: false"));
-  assert.match(existingVoiceSrc, /if\s*\(v\.stretch\s*&&\s*v\.stretch\.ready\)\s*\{[\s\S]*?v\.stretchBlend\.fade\.rampTo\(q\.stretch, BED\.fade\);[\s\S]*?\}\s*else\s*\{[\s\S]*?v\.stretchBlend\.fade\.rampTo\(0, BED\.fade\);/,
-    "the existing-voice branch must ramp toward q.stretch only inside the v.stretch.ready guard, and to 0 otherwise");
+  assert.doesNotMatch(src, /stretchBlend\.fade\.rampTo\(\s*q2?\.stretch/,
+    "the stretch amount must never drive the dry/wet blend");
+  assert.match(src, /v\.stretchBlend = makeBlend\(Tone, 1\)/, "wet from the first moment");
+  assert.match(src, /stretchBlend\.fade\.rampTo\(v\.stretch\.failed \? 0 : 1, BED\.fade\)/);
+  const failures = (src.match(/v\.stretch\.failed = true;/g) || []).length;
+  assert.ok(failures >= 2, "both the async and the synchronous failure paths must fall back to dry");
 });
 
 test("all three sites that post stretch params to the worklet (ensureVoice's ready branch, warpStep, commitLive) also post pitchRatio, derived from stretchPitchRatio", () => {

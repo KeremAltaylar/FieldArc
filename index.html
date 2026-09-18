@@ -5597,13 +5597,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     col2.className = "ppcol";
     var note = document.createElement("p");
     note.className = "hint";
-    note.textContent = "At 0 the bed plays the recording as it is. Stretch slows and smears it " +
-      "into a Paulstretch-style spectral wash — a real phase vocoder, running just for " +
-      "this bed; a hit's own stretch still uses a separate, granular engine. Warp, " +
-      "morph, field and grit are further qualities on top of that wash: a pitch wobble, " +
-      "a drifting read position, how densely the spectral frames overlap, and a " +
-      "digital-artifact texture — each silent until stretch itself is above 0, since " +
-      "there is nothing to warp yet at the plain recording.";
+    note.textContent = "The bed is always heard through the Paulstretch engine — a real phase " +
+      "vocoder with randomised phase. At 0 it runs at the recording's own speed; stretch " +
+      "slows it up to x200 and smears it into a spectral wash. A hit's own stretch still " +
+      "uses a separate, granular engine. Warp, morph, field and grit act on the engine at " +
+      "any stretch: a pitch wobble, a drifting read position, how densely the spectral " +
+      "frames overlap, and a digital-artifact texture.";
     col2.appendChild(note);
     cols.appendChild(col2);
     body.appendChild(cols);
@@ -7762,15 +7761,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             morphRate: q.morph || 0,
             pitchRatio: stretchPitchRatio(q.stretch).ratio
           } });
-          v.stretchBlend.fade.rampTo(q.stretch, BED.fade);
-        } else {
-          /* The worklet never became ready (still loading, or its init failed and was
-             already logged/toasted below) — ramping the blend toward q.stretch here would
-             fade toward a wet side whose input has nothing feeding it, which is quieter,
-             not louder, than the dry signal alone. Hold at 0 so a missing worklet falls
-             back to the plain recording at full level instead of a fading-out one. */
-          v.stretchBlend.fade.rampTo(0, BED.fade);
         }
+        v.stretchBlend.fade.rampTo(v.stretch.failed ? 0 : 1, BED.fade);
         applyGrit(v.grit, q.grit);
       }
       v.idle = false;
@@ -7788,13 +7780,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          actually does. A dull recording stays dull however close you stand. */
       v.cutoffHi = Math.max(600, Math.min(14000, (a.centroid_hz || 2000) * 2.2));
       v.cutoffLo = 300;
-      /* The dry player and the warp engine read the same file and blend via makeBlend()
-         (A-17) rather than Tone.CrossFade — at stretch=0 the blend routes 100% dry, so an
-         existing point sounds exactly as it did before this plan (A-8). They are not
-         phase-locked to each other, which is fine: this is a blend of two independently
-         playing copies of the same material, the same way a dry/effected blend anywhere
-         else in this file works, not a stereo pair that needs sample alignment. */
-      v.stretchBlend = makeBlend(Tone, 0);
+      /* A soundscape is always heard through the stretch engine — stretch 0 is the engine at
+         x1, never a dry/wet amount (Kerem, 2026-09-18). The plain player survives only as the
+         fallback for a device where the worklet fails to start; the blend is that switch. */
+      v.stretchBlend = makeBlend(Tone, 1);
       v.player = new Tone.Player({
         url: v.url, loop: true, fadeIn: 0.05, fadeOut: 0.1,
         onload: function () {
@@ -7811,11 +7800,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var pr = Math.max(0, 1 - dd / q2.radius);
           v.gain.gain.rampTo(Math.pow(pr, 1.5) * q2.gain, BED.fade);
           v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * pr, BED.fade);
-          /* Same rule as the existing-voice branch above: only blend toward the wet side
-             once the worklet is actually ready to feed it. The worklet's own init is still
-             in flight at this point almost every time (it awaits its own fetch/decode/
-             addModule chain below), so this normally holds at 0 until a later tick. */
-          v.stretchBlend.fade.rampTo((v.stretch && v.stretch.ready) ? q2.stretch : 0, BED.fade);
+          v.stretchBlend.fade.rampTo(v.stretch.failed ? 0 : 1, BED.fade);
         }
       }).connect(v.stretchBlend.a);
       v.grit = buildGrit(Tone);
@@ -7864,15 +7849,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           v.stretch.node = node;
           v.stretch.ready = true;
         }).catch(function (err) {
-          /* The worklet never became ready — the blend stays at 0 (see the two
-             stretchBlend.fade guards above), so this falls back to the plain dry
-             recording at full level rather than a quieter, half-wet blend. Loud on
-             purpose: the person turning the stretch knob should learn why it did
-             nothing, not have it fail in silence. */
+          /* The one case the plain recording is heard: the engine could not start. Loud on
+             purpose — the person turning the stretch knob should learn why it does nothing. */
+          v.stretch.failed = true;
+          v.stretchBlend.fade.rampTo(0, BED.fade);
           console.error("Paulstretch worklet failed to initialize for voice " + z.id + ":", err);
           toast("Extreme stretch unavailable for this recording — playing it as recorded.");
         });
       } catch (err) {
+        v.stretch.failed = true;
+        v.stretchBlend.fade.rampTo(0, BED.fade);
         console.error("Paulstretch worklet failed to initialize for voice " + z.id + ":", err);
         toast("Extreme stretch unavailable for this recording — playing it as recorded.");
       }
