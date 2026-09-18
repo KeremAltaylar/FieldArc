@@ -1,7 +1,8 @@
 // tests/paulx-engine.test.mjs — the stretch engine, ported from PaulXStretch's Stretch.cpp.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as PX from "../src/paulx-worklet.js";
+await import("../src/paulx-worklet.js");
+const PX = globalThis.PaulX;
 
 const SR = 48000;
 const rms = (a) => Math.sqrt(a.reduce((s, x) => s + x * x, 0) / a.length);

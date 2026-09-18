@@ -1,7 +1,8 @@
 // tests/paulx-modules.test.mjs — the spectral modules, ported from PaulXStretch's ProcessedStretch.h.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as PX from "../src/paulx-worklet.js";
+await import("../src/paulx-worklet.js");
+const PX = globalThis.PaulX;
 
 const N = 1024, SR = 48000;
 const arr = (f) => Float64Array.from({ length: N }, (_, i) => f(i));
