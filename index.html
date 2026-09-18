@@ -1111,6 +1111,47 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   background: color-mix(in oklch, var(--sunk) 60%, transparent);
   border: 1px solid var(--bdr); border-radius: 2px;
 }
+/* ---- PaulXStretch modules ----
+   A module's heading is its power switch, as in the original: a lamp dot that lights when on.
+   Off, the rows dim but stay live, so a setting can be dialled in before it is heard. */
+.pxmod { margin-bottom: var(--s-2); }
+.pxmod.off .pprow { opacity: 0.45; }
+.pxmod h2 { margin: var(--s-2) 0 var(--s-1); }
+.pxmod h2::after { display: none; }
+.pxpower {
+  position: relative; width: 100%; text-align: left;
+  padding: 2px 0 2px 1.3rem; border: 0; border-radius: 0; background: transparent;
+  font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase; color: var(--faint);
+}
+.pxpower::before {
+  content: ""; position: absolute; left: 0.15rem; top: 50%;
+  width: 0.62rem; height: 0.62rem; margin-top: -0.31rem;
+  border-radius: 50%; border: 1px solid var(--faint);
+}
+.pxpower[aria-pressed="true"] { color: var(--ink); background: transparent; }
+.pxpower[aria-pressed="true"]::before {
+  background: var(--lamp); border-color: var(--lamp);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--lamp) 18%, transparent);
+}
+.pxpower:hover { color: var(--ink); background: transparent; }
+.pxpower:focus-visible { outline: 2px solid var(--lamp); outline-offset: 1px; }
+.pxratio { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--s-3); }
+.pxratio .pprow { grid-template-columns: 1.8rem 1fr 3rem; }
+.pxtwo { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--s-5); align-items: start; }
+.pxtwo > div { min-width: 0; }
+.ppwave.short { height: 32px; }
+.pptabs {
+  display: grid; grid-template-columns: repeat(var(--tabs, 3), minmax(0, 1fr));
+  border: 1px solid var(--bdr); border-radius: 2px; overflow: hidden; margin: var(--s-2) 0;
+}
+.pptabs button {
+  border: 0; border-radius: 0; min-width: 0;
+  padding-left: var(--s-1); padding-right: var(--s-1); letter-spacing: 0.06em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pptabs button + button { border-left: 1px solid var(--bdr); }
+.pptabs button[aria-selected="true"] { color: var(--sunk); background: var(--accent); }
 .recmode button { border: 0; border-radius: 0; }
 .recmode button + button { border-left: 1px solid var(--bdr); }
 /* Two by two rather than four rows. Four hits is a small set and stacking them cost the
@@ -5419,30 +5460,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     markPattern();
   }
 
-  /* The real length one pass takes once stretch (and morph, which speeds the read past
-     stretch's own rate — see _synthesizeOneHop's advance formula) are applied. Kept as one
-     function, not duplicated arithmetic at each call site, so the panel's own readout can
-     never drift from what the worklet actually computes: at stretch=0 this is exactly
-     durationS (morph does nothing yet either, since nothing is warped to speed through). */
-  function stretchedDurationInfo(durationS, stretch, morph) {
-    var factor = Math.pow(200, Math.max(0, Math.min(1, stretch || 0)));
-    var seconds = (durationS || 0) * factor / (1 + Math.max(0, morph || 0));
+  /* How long one pass through the play range takes: the range length times the stretch
+     factor, shortened by morph, which reads faster than the stretch alone (the worklet advances
+     (1 + morph) / stretch chunks per hop). */
+  function stretchedDurationInfo(durationS, stretch, morph, start, end) {
+    var factor = Math.pow(1024, Math.max(0, Math.min(1, stretch || 0)));
+    var a = start === undefined ? 0 : start, b = end === undefined ? 1 : end;
+    var seconds = (durationS || 0) * Math.abs(b - a) * factor / (1 + Math.max(0, morph || 0));
     return { factor: factor, seconds: seconds };
-  }
-
-  /* Tied to the same stretch knob, not to stretchFactor itself: literal tape-style
-     pitch/stretchFactor would put a typical field recording's content below or at the
-     bottom edge of human hearing well before stretch=1 (x200) — the exact failure the
-     phase vocoder was built pitch-preserving to avoid (see the worklet's own spec). -2400
-     cents (two octaves) at stretch=1 is a bounded, musical cap instead: audible and
-     characterful across the whole knob range. Cents is the same unit the reference
-     implementation (github.com/essej/paulxstretch, ProcessedStretch.h's pitch_shift.cents)
-     uses for exactly this kind of control. -2400 is tuned by ear, not load-bearing; every
-     consumer calls this function rather than hardcoding it, so it stays a one-line retune. */
-  function stretchPitchRatio(stretch) {
-    var cents = (-2400 * Math.max(0, Math.min(1, stretch || 0))) + 0;
-    var ratio = Math.pow(2, cents / 1200);
-    return { cents: cents, ratio: ratio };
   }
 
   /* The waveform never gets shorter or narrower as stretch rises — that read as the
@@ -5495,6 +5520,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       body.appendChild(none);
       return;
     }
+    /* renderRhythmPanel has already put the "This point" block in; tabbed, it becomes a tab. */
+    var pointBlock = body.firstElementChild;
     var mhead = document.createElement("div");
     mhead.className = "pphead";
     var h = document.createElement("h2");
@@ -5521,91 +5548,206 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var durationS = (f.properties.audio || {}).duration_s || 0;
     var updateWaveCaption = function () {
       if (!durationS) { waveCaption.textContent = ""; return; }
-      if (!(q.stretch > 0)) {
-        waveCaption.textContent = fmtLongDuration(durationS) + " recording, played as it is.";
-        return;
-      }
-      var info = stretchedDurationInfo(durationS, q.stretch, q.morph);
+      var info = stretchedDurationInfo(durationS, q.stretch, q.morph, q.px.start, q.px.end);
       var factorLabel = info.factor >= 10 ? Math.round(info.factor) : info.factor.toFixed(1);
-      var octaves = Math.abs(stretchPitchRatio(q.stretch).cents) / 1200;
+      var hop = pxBufsize(q.px.fft), sr = (bed && bed.Tone) ? bed.Tone.getContext().sampleRate : 48000;
       waveCaption.textContent = fmtLongDuration(durationS) + " recording → " +
-        fmtLongDuration(info.seconds) + " per pass (×" + factorLabel + "), dropping pitch by " +
-        octaves.toFixed(1) + " octaves at this stretch.";
+        fmtLongDuration(info.seconds) + " per pass (×" + factorLabel + ") · window " +
+        (2 * hop / sr).toFixed(2) + " s";
     };
     updateWaveCaption();
 
-    var cols = document.createElement("div");
-    cols.className = "ppcols";
-    var col = document.createElement("div");
-    col.className = "ppcol";
-    /* updateBed() (commitQ's own last step) only re-posts fresh params to voices in its
-       "near" set — in range of pacer.pos and within BED.maxVoices — the same proximity
-       gate applyHitStretch's own comment documents working around for hits ("a setter
-       can edit a point's stretch while it happens to be out of range"). warpStep already
-       refreshes every voice that has ever been created, near or not, but only once a
-       quarter-note — so an out-of-range voice a setter already created still hears a
-       drag, just up to one tick late. These five sliders close that narrower gap: they
-       reach straight at this point's own live voice, if one already exists, on every
-       drag, matching warpStep's own params shape exactly rather than leaving one field
-       to lag behind the others until the next tick. A voice that was never created (its
-       point never entered the "near" top-BED.maxVoices set at all) has nothing here to
-       reach — that case stays exactly as bounded as it always was. */
+    /* A drag reaches this point's live voice directly, if it has one: updateBed() only
+       re-posts to voices near the walker, and warpStep only once a quarter-note. The caption
+       is pure arithmetic and updates first, whether or not anything is playing — editing in the
+       setter usually has no live voice. */
     var commitLive = function () {
       commitQ();
-      /* Unconditional, unlike the worklet postMessage below: the caption is pure
-         arithmetic on q and durationS, true whether or not a bed voice happens to be
-         playing right now. Editing in the setter usually has no live voice at all — the
-         common case, not the exception — so gating this behind the same live-voice check
-         the postMessage needs would leave the caption frozen at its initial reading for
-         every drag that isn't also a live listen. */
       updateWaveCaption();
       var v = bed && bed.voices[f.properties.id];
       if (!v || !v.ready || !v.stretch || !v.stretch.ready) { return; }
-      v.stretch.node.port.postMessage({ type: "params", params: {
-        stretchFactor: Math.pow(200, Math.max(0, Math.min(1, q.stretch))),
-        warpBins: v._warpBins || 0,
-        morphRate: q.morph || 0,
-        pitchRatio: stretchPitchRatio(q.stretch).ratio,
-        /* Clamped so an out-of-range field (imported/synced data, or any future caller
-           that bypasses the slider's own 0-1 clamp) can never drive this to zero or
-           negative — inside the worklet that would stop hopCounter from ever counting
-           back up past 0, locking process() into calling _synthesizeOneHop() on every
-           sample. 64 stays comfortably clear of that while leaving the normal
-           1024-at-field-0 down to 410-at-field-1 slider range untouched. */
-        synthesisHop: Math.max(64, Math.round(1024 * (1 - (q.field || 0) * 0.6)))
-      } });
+      v.stretch.node.port.postMessage({ type: "params", params: pxParams(q, v) });
       applyGrit(v.grit, q.grit);
     };
-    col.appendChild(buildSoundRow({ k: "stretch", label: "stretch", min: 0, max: 1, step: 0.02,
-      def: 0, hint: "extreme time-stretch, from the recording as it is to a slow spectral smear, " +
-        "dropping pitch by up to two octaves as it slows" },
-      q, commitLive));
-    col.appendChild(buildSoundRow({ k: "warp", label: "warp", min: 0, max: 1, step: 0.02,
-      def: 0, hint: "a slow pitch/time wobble, like a tape losing its own speed" },
-      q, commitLive));
-    col.appendChild(buildSoundRow({ k: "morph", label: "morph", min: 0, max: 1, step: 0.02,
-      def: 0, hint: "drifts which part of the recording is being read, instead of freezing on one" },
-      q, commitLive));
-    col.appendChild(buildSoundRow({ k: "field", label: "field", min: 0, max: 1, step: 0.02,
-      def: 0, hint: "widens or narrows how densely the spectral frames overlap, from a tight, smooth wash to a looser, grainier one" },
-      q, commitLive));
-    col.appendChild(buildSoundRow({ k: "grit", label: "grit", min: 0, max: 1, step: 0.02,
-      def: 0, hint: "a digital-artifact wash — bitcrush and drive — layered on top of the stretched signal" },
-      q, commitLive));
-    cols.appendChild(col);
-    var col2 = document.createElement("div");
-    col2.className = "ppcol";
+
+    var x = q.px;
+    var fx = {
+      x: function (v) { return "×" + (v >= 10 ? Math.round(v) : v.toFixed(1)); },
+      hz: function (v) { return (Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + " k" : Math.round(v) + " ") + "Hz"; },
+      st: function (v) { return (v > 0 ? "+" : "") + v.toFixed(1) + " st"; },
+      pct: function (v) { return Math.round(v * 100) + " %"; },
+      two: function (v) { return v.toFixed(2); },
+      sec: function (v) { return v.toFixed(2) + " s"; },
+      int: function (v) { return String(Math.round(v)); }
+    };
+    var heading = function (t) { var h2 = document.createElement("h2"); h2.textContent = t; return h2; };
+    var R = function (spec, obj) { return buildPxRow(spec, obj, commitLive); };
+    var extrasHeading = heading("Extras");
+
+    var colStretch = [
+      heading("Stretch"),
+      R({ label: "stretch", k: "stretch", min: 0, max: 1, step: 0.005, def: 0,
+        fmt: function (v) { return fx.x(Math.pow(1024, v)); },
+        hint: "×1 plays at the recording's own speed; ×1024 is PaulXStretch's maximum" }, q),
+      /* Capped at 0.9 (hop 65536, a 2.7 s window) where the plugin goes to 1.0: measured in
+         Chrome, hop 131072 with a stereo recording overran the 2.67 ms render quantum in 93 of
+         10464 quanta; at 0.9 it was 5. */
+      R({ label: "fft size", k: "fft", min: 0, max: 0.9, step: 0.01, def: 0.7,
+        fmt: function (v) { return String(pxBufsize(v)); },
+        hint: "the hop in samples; each frame is twice this — larger is smoother and slower to react" }, x),
+      R({ label: "onset", k: "onset", min: 0, max: 1, step: 0.01, def: 0, fmt: fx.two,
+        hint: "lets attacks through: a detected transient jumps ahead, and the time is paid back after" }, x),
+      buildPxToggle("freeze", x, "freeze", commitLive),
+      R({ label: "start", k: "start", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.pct,
+        hint: "where in the recording the loop begins" }, x),
+      R({ label: "end", k: "end", min: 0, max: 1, step: 0.001, def: 1, fmt: fx.pct,
+        hint: "where in the recording the loop ends" }, x),
+      R({ label: "loop xfade", k: "xfade", min: 0, max: 1, step: 0.001, def: 0.01, fmt: fx.sec,
+        hint: "how long the end of the loop fades into its start" }, x),
+      extrasHeading,
+      R({ label: "warp", k: "warp", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
+        hint: "FieldArc's own: the whole spectrum drifts slowly, up to ±300 Hz" }, q),
+      R({ label: "morph", k: "morph", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
+        hint: "FieldArc's own: reads through the recording faster than the stretch alone" }, q),
+      R({ label: "field", k: "field", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
+        hint: "FieldArc's own: each frame is taken from a wandering position around the true one" }, q),
+      R({ label: "grit", k: "grit", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
+        hint: "FieldArc's own: bitcrush and drive on the stretched signal" }, q)
+    ];
+
+    var chainNote = document.createElement("p");
+    chainNote.className = "hint";
+    chainNote.textContent = "Applied in order: harmonics → tonal/noise → frequency → pitch → " +
+      "ratios → spread → filter → compressor.";
+    var colSpectrum = [
+      heading("Spectrum"), chainNote,
+      buildPxModule("Harmonics", x.harmonics, [
+        R({ label: "count", k: "n", min: 1, max: 100, step: 1, def: 10, fmt: fx.int }, x.harmonics),
+        R({ label: "base", k: "freq", min: 1, max: 5000, def: 128, log: true, fmt: fx.hz }, x.harmonics),
+        R({ label: "bandwidth", k: "bw", min: 0.1, max: 200, step: 0.01, def: 25,
+          fmt: function (v) { return v.toFixed(1) + " ¢"; } }, x.harmonics),
+        buildPxToggle("gaussian", x.harmonics, "gauss", commitLive)
+      ], commitLive),
+      buildPxModule("Tonal vs noise", x.tonal, [
+        R({ label: "bandwidth", k: "bw", min: 0.74, max: 1, step: 0.001, def: 0.74, fmt: fx.two }, x.tonal),
+        R({ label: "preserve", k: "preserve", min: -1, max: 1, step: 0.001, def: 0.5, fmt: fx.two,
+          hint: "above 0 keeps the tones, below 0 keeps the noise" }, x.tonal)
+      ], commitLive),
+      buildPxModule("Frequency shift", x.fshift, [
+        R({ label: "shift", k: "hz", min: -1000, max: 1000, step: 1, def: 0, fmt: fx.hz }, x.fshift)
+      ], commitLive),
+      buildPxModule("Pitch shift", x.pitch, [
+        R({ label: "pitch", k: "st", min: -24, max: 24, step: 0.1, def: 0, fmt: fx.st }, x.pitch)
+      ], commitLive),
+      buildPxModule("Spread", x.spread, [
+        R({ label: "spread", k: "bw", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.two }, x.spread)
+      ], commitLive)
+    ];
+    /* Filter and Compressor sit in the third column for height, not for order: at 1428x729 the
+       whole chain in one column scrolled by 68 px. The chain note gives the real order. */
+    var colTail = [
+      buildPxModule("Filter", x.filter, [
+        R({ label: "low", k: "low", min: 20, max: 20000, def: 20, log: true, fmt: fx.hz }, x.filter),
+        R({ label: "high", k: "high", min: 20, max: 20000, def: 20000, log: true, fmt: fx.hz }, x.filter),
+        buildPxToggle("stop band", x.filter, "stop", commitLive)
+      ], commitLive),
+      buildPxModule("Compressor", x.compress, [
+        R({ label: "amount", k: "power", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.two }, x.compress)
+      ], commitLive)
+    ];
+
+    var RATIO_DEF = [0.25, 0.5, 1, 2, 3, 4, 1.5, 1 / 1.5];
+    var ratioRows = x.ratios.r.map(function (_, i) {
+      var row = document.createElement("div");
+      row.className = "pxratio";
+      row.appendChild(R({ label: String(i + 1), min: 0.125, max: 8, def: RATIO_DEF[i], log: true,
+        get: function (o) { return o.r[i]; }, set: function (o, v) { o.r[i] = v; },
+        fmt: function (v) { return "×" + v.toFixed(2); } }, x.ratios));
+      row.appendChild(R({ label: "lvl", min: 0, max: 1, step: 0.001, def: i === 2 ? 1 : 0,
+        get: function (o) { return o.l[i]; }, set: function (o, v) { o.l[i] = v; }, fmt: fx.two }, x.ratios));
+      return row;
+    });
+    var colRatios = [
+      buildPxModule("Ratios", x.ratios, ratioRows, commitLive)
+    ].concat(colTail, [
+      buildPxModule("Binaural beats", x.binaural, [
+        R({ label: "power", k: "power", min: 0, max: 1, step: 0.01, def: 0.5, fmt: fx.two,
+          hint: "how much the two channels are mixed before the beat is applied" }, x.binaural),
+        R({ label: "beat", k: "hz", min: 0.05, max: 50, def: 4, log: true,
+          fmt: function (v) { return v.toFixed(2) + " Hz"; } }, x.binaural),
+        buildPxSelect("mode", x.binaural, "mode", ["left-right", "right-left", "symmetric"], commitLive)
+      ], commitLive)
+    ]);
+
     var note = document.createElement("p");
     note.className = "hint";
-    note.textContent = "At 0 the bed plays the recording as it is. Stretch slows and smears it " +
-      "into a Paulstretch-style spectral wash — a real phase vocoder, running just for " +
-      "this bed; a hit's own stretch still uses a separate, granular engine. Warp, " +
-      "morph, field and grit are further qualities on top of that wash: a pitch wobble, " +
-      "a drifting read position, how densely the spectral frames overlap, and a " +
-      "digital-artifact texture — each silent until stretch itself is above 0, since " +
-      "there is nothing to warp yet at the plain recording.";
-    col2.appendChild(note);
-    cols.appendChild(col2);
+    note.textContent = "Always heard through the PaulXStretch engine. Stretch ×1 plays at the " +
+      "recording's own speed with randomised phase; the spectrum chain and ratios act on every " +
+      "frame; extras are FieldArc's own.";
+    colStretch.push(note);
+
+    /* One screen, always (C-8): three columns where there is room, tabs where there is not. A
+       rotated phone is short, not narrow, so height decides too. Measured at 501x695 with three
+       tabs, every tab still scrolled (23/53/100 px) under the shared "This point" block, so
+       tabbed mode takes that block into a tab of its own, splits Ratios from the output stage,
+       and gives each tab two fixed sub-columns when the screen is wide enough. Splits are fixed
+       indexes, not CSS columns: a control must not move column while it is being dragged. */
+    var tabbed = innerWidth < 1000 || innerHeight < 700;
+    var twoUp = tabbed && innerWidth >= 700;
+    /* A phone on its side (measured 832x390): the waveform shrinks and its heading goes — the
+       waveform and the tab bar already say what this is. Spectrum overflowed by 20 px without. */
+    if (tabbed && innerHeight < 500) { wave.classList.add("short"); mhead.hidden = true; }
+    var sections = tabbed ? [
+      { title: "Point", nodes: pointBlock ? [pointBlock] : [], split: 0 },
+      { title: "Stretch", nodes: colStretch, split: colStretch.indexOf(extrasHeading) },
+      { title: "Spectrum", nodes: colSpectrum, split: 3 },
+      { title: "Ratios", nodes: [colRatios[0]], split: 0 },
+      { title: "Output", nodes: colRatios.slice(1), split: 2 }
+    ] : [
+      { title: "Stretch", nodes: colStretch },
+      { title: "Spectrum", nodes: colSpectrum },
+      { title: "Ratios", nodes: colRatios }
+    ];
+    var cols = document.createElement("div");
+    cols.className = "ppcols";
+    cols.style.setProperty("--ppcols", tabbed ? 1 : 3);
+    var panes = sections.map(function (s) {
+      var col = document.createElement("div");
+      col.className = "ppcol";
+      if (twoUp && s.split > 0) {
+        col.classList.add("pxtwo");
+        var a = document.createElement("div"), b2 = document.createElement("div");
+        s.nodes.forEach(function (n, i) { (i < s.split ? a : b2).appendChild(n); });
+        col.appendChild(a); col.appendChild(b2);
+      } else {
+        s.nodes.forEach(function (n) { col.appendChild(n); });
+      }
+      cols.appendChild(col);
+      return col;
+    });
+    if (tabbed) {
+      var tabs = document.createElement("div");
+      tabs.className = "pptabs";
+      tabs.setAttribute("role", "tablist");
+      tabs.style.setProperty("--tabs", sections.length);
+      var pick = function (k) {
+        pxTab = k;
+        panes.forEach(function (pane, i) { pane.hidden = i !== k; });
+        Array.prototype.forEach.call(tabs.children, function (t, i) {
+          t.setAttribute("aria-selected", String(i === k));
+        });
+      };
+      sections.forEach(function (s, i) {
+        var t = document.createElement("button");
+        t.type = "button";
+        t.setAttribute("role", "tab");
+        t.textContent = s.title;
+        t.addEventListener("click", function () { pick(i); });
+        tabs.appendChild(t);
+      });
+      body.appendChild(tabs);
+      pick(Math.min(pxTab, sections.length - 1));
+    }
     body.appendChild(cols);
 
     /* Drawn last, once wave is already laid out inside the (already visible) #rp-body —
@@ -5644,6 +5786,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       ctx.fillStyle = "rgba(186,206,181,0.25)";
       ctx.fillRect(0, h / 2, w, 1);
     }
+    /* Outside the play range is dimmed: what is not looped is still shown, but set back. */
+    var x0 = Math.min(q.px.start, q.px.end) * w, x1 = Math.max(q.px.start, q.px.end) * w;
+    ctx.fillStyle = "rgba(10,14,12,0.62)";
+    ctx.fillRect(0, 0, x0, h);
+    ctx.fillRect(x1, 0, w - x1, h);
     var v = bed && bed.voices[f.properties.id];
     if (v && v.stretch && v.stretch.ready && v.stretch.sourceLength) {
       var frac = Math.max(0, Math.min(1, v.stretch.readPos / v.stretch.sourceLength));
@@ -5652,7 +5799,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
-  var swRAF = null;
+  var swRAF = null, pxTab = 1;   /* tabbed panels open on Stretch */
   function soundscapeWaveTick() {
     if ($("#rhythmpanel").hidden || !document.querySelector("#rp-body .ppwave")) {
       swRAF = null; return;
@@ -5771,6 +5918,90 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!pacer) { return; }
     pacer.zones.forEach(function (z) { z.r = soundOfZone(z).zoneR; });
     drawZones();
+  }
+
+  /* A PaulXStretch control. A `log` slider moves in log space so 20 Hz-20 kHz is usable; what
+     is stored and shown is always the real unit. get/set reach values inside arrays (ratios). */
+  function buildPxRow(fl, obj, commit) {
+    var row = document.createElement("label");
+    row.className = "pprow";
+    var name = document.createElement("span");
+    name.textContent = fl.label;
+    if (fl.hint) { row.title = fl.hint; }
+    var input = document.createElement("input"), val = document.createElement("i");
+    var toUi = function (v) { return fl.log ? Math.log(v) : v; };
+    var fromUi = function (u) { return fl.log ? Math.exp(u) : u; };
+    input.type = "range";
+    input.min = toUi(fl.min); input.max = toUi(fl.max);
+    input.step = fl.log ? "any" : fl.step;
+    input.value = toUi(fl.get ? fl.get(obj) : obj[fl.k]);
+    input.dataset.def = toUi(fl.def);
+    input.title = (fl.hint ? fl.hint + " · " : "") + "double-click to reset · shift-drag for fine steps";
+    var show = function () { val.textContent = fl.fmt(fromUi(+input.value)); };
+    show();
+    input.addEventListener("input", function () {
+      var v = fromUi(+input.value);
+      if (fl.set) { fl.set(obj, v); } else { obj[fl.k] = v; }
+      show();
+      commit();
+    });
+    row.appendChild(name); row.appendChild(input); row.appendChild(val);
+    return row;
+  }
+
+  function buildPxToggle(label, obj, key, commit) {
+    var row = document.createElement("div");
+    row.className = "pprow";
+    var name = document.createElement("span");
+    name.textContent = label;
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "ghost";
+    var set = function () {
+      b.setAttribute("aria-pressed", String(!!obj[key]));
+      b.textContent = obj[key] ? "on" : "off";
+    };
+    set();
+    b.addEventListener("click", function () { obj[key] = !obj[key]; set(); commit(); });
+    row.appendChild(name); row.appendChild(b); row.appendChild(document.createElement("i"));
+    return row;
+  }
+
+  function buildPxSelect(label, obj, key, names, commit) {
+    var row = document.createElement("label");
+    row.className = "pprow";
+    var name = document.createElement("span");
+    name.textContent = label;
+    var sel = document.createElement("select");
+    names.forEach(function (n, i) {
+      var op = document.createElement("option");
+      op.value = String(i); op.textContent = n;
+      sel.appendChild(op);
+    });
+    sel.value = String(obj[key] || 0);
+    sel.addEventListener("change", function () { obj[key] = +sel.value; commit(); });
+    row.appendChild(name); row.appendChild(sel); row.appendChild(document.createElement("i"));
+    return row;
+  }
+
+  /* A module in the chain. Its heading is its power switch, as in PaulXStretch; switched off,
+     its controls stay editable and dim, so a setting can be dialled in before it is heard. */
+  function buildPxModule(title, obj, rows, commit) {
+    var box = document.createElement("section");
+    box.className = "pxmod";
+    var h = document.createElement("h2");
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "pxpower";
+    b.textContent = title;
+    var set = function () {
+      b.setAttribute("aria-pressed", String(!!obj.on));
+      box.classList.toggle("off", !obj.on);
+    };
+    set();
+    b.addEventListener("click", function () { obj.on = !obj.on; set(); commit(); });
+    h.appendChild(b);
+    box.appendChild(h);
+    rows.forEach(function (r) { box.appendChild(r); });
+    return box;
   }
 
   function buildSoundRow(fl, q, commitQ) {
@@ -7756,21 +7987,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         v.gain.gain.rampTo(g, BED.fade);
         v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * prox, BED.fade);
         if (v.stretch && v.stretch.ready) {
-          v.stretch.node.port.postMessage({ type: "params", params: {
-            stretchFactor: Math.pow(200, Math.max(0, Math.min(1, q.stretch))),
-            warpBins: v._warpBins || 0,
-            morphRate: q.morph || 0,
-            pitchRatio: stretchPitchRatio(q.stretch).ratio
-          } });
-          v.stretchBlend.fade.rampTo(q.stretch, BED.fade);
-        } else {
-          /* The worklet never became ready (still loading, or its init failed and was
-             already logged/toasted below) — ramping the blend toward q.stretch here would
-             fade toward a wet side whose input has nothing feeding it, which is quieter,
-             not louder, than the dry signal alone. Hold at 0 so a missing worklet falls
-             back to the plain recording at full level instead of a fading-out one. */
-          v.stretchBlend.fade.rampTo(0, BED.fade);
+          v.stretch.node.port.postMessage({ type: "params", params: pxParams(q, v) });
         }
+        v.stretchBlend.fade.rampTo(v.stretch.failed ? 0 : 1, BED.fade);
         applyGrit(v.grit, q.grit);
       }
       v.idle = false;
@@ -7788,13 +8007,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          actually does. A dull recording stays dull however close you stand. */
       v.cutoffHi = Math.max(600, Math.min(14000, (a.centroid_hz || 2000) * 2.2));
       v.cutoffLo = 300;
-      /* The dry player and the warp engine read the same file and blend via makeBlend()
-         (A-17) rather than Tone.CrossFade — at stretch=0 the blend routes 100% dry, so an
-         existing point sounds exactly as it did before this plan (A-8). They are not
-         phase-locked to each other, which is fine: this is a blend of two independently
-         playing copies of the same material, the same way a dry/effected blend anywhere
-         else in this file works, not a stereo pair that needs sample alignment. */
-      v.stretchBlend = makeBlend(Tone, 0);
+      /* A soundscape is always heard through the stretch engine — stretch 0 is the engine at
+         x1, never a dry/wet amount (Kerem, 2026-09-18). The plain player survives only as the
+         fallback for a device where the worklet fails to start; the blend is that switch. */
+      v.stretchBlend = makeBlend(Tone, 1);
       v.player = new Tone.Player({
         url: v.url, loop: true, fadeIn: 0.05, fadeOut: 0.1,
         onload: function () {
@@ -7811,21 +8027,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var pr = Math.max(0, 1 - dd / q2.radius);
           v.gain.gain.rampTo(Math.pow(pr, 1.5) * q2.gain, BED.fade);
           v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * pr, BED.fade);
-          /* Same rule as the existing-voice branch above: only blend toward the wet side
-             once the worklet is actually ready to feed it. The worklet's own init is still
-             in flight at this point almost every time (it awaits its own fetch/decode/
-             addModule chain below), so this normally holds at 0 until a later tick. */
-          v.stretchBlend.fade.rampTo((v.stretch && v.stretch.ready) ? q2.stretch : 0, BED.fade);
+          v.stretchBlend.fade.rampTo(v.stretch.failed ? 0 : 1, BED.fade);
         }
       }).connect(v.stretchBlend.a);
       v.grit = buildGrit(Tone);
       v.grit.output.connect(v.stretchBlend.b);
-      /* The worklet reads its own copy of the recording, decoded once here rather than
-         a second network fetch/decode — a.buffer isn't available yet at this point in
-         the callback (a's own shape is the recording's ANALYSIS metadata, not raw
-         samples), so this decodes the SAME blob url a second time via a plain
-         OfflineAudioContext-free native decode. The one-time cost is small next to a
-         200x-stretched ambient bed's own lifetime. */
+      /* The worklet gets its own decoded copy of the same blob — properties.audio holds the
+         recording's analysis, not its samples. */
       v.stretch = { node: null, ready: false };
       /* Built through Tone's context and joined with Tone.connect. Measured 2026-09-18: a
          native worklet spliced into a Tone.Gain's private native node reached that gain and
@@ -7841,13 +8049,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         ]).then(function (results) {
           var audioBuffer = results[0];
           if (!bed || !bed.on || bed.voices[z.id] !== v) { return; }
-          var raw = audioBuffer.getChannelData(0);
-          var mono = new Float32Array(raw.length);
-          mono.set(raw);
-          /* One output channel: process() writes one, and Tone up-mixes mono to both sides.
-             Left to default it came up stereo with the right side silent. */
-          var node = tctx.createAudioWorkletNode("paulstretch-processor",
-            { numberOfInputs: 0, outputChannelCount: [1] });
+          /* Both channels of a stereo recording: PaulXStretch runs one stretcher per channel,
+             and the independent random phase is what keeps the width. */
+          var channels = [];
+          for (var ci = 0; ci < Math.min(2, audioBuffer.numberOfChannels); ci++) {
+            var copy = new Float32Array(audioBuffer.length);
+            copy.set(audioBuffer.getChannelData(ci));
+            channels.push(copy);
+          }
+          /* Two output channels, both always written by the processor (a mono source is
+             duplicated), so nothing depends on how the graph up-mixes. */
+          var node = tctx.createAudioWorkletNode("paulx-processor",
+            { numberOfInputs: 0, outputChannelCount: [2] });
           /* The only thing the worklet ever sends back (throttled inside process() itself,
              not on every audio callback) — where it actually is in the source right now.
              Stored on v.stretch, not fired into a redraw directly, since nothing here knows
@@ -7859,20 +8072,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
               v.stretch.sourceLength = e.data.sourceLength;
             }
           };
-          node.port.postMessage({ type: "source", data: mono }, [mono.buffer]);
+          node.port.postMessage({ type: "params", params: pxParams(soundOfZone(z), v) });
+          node.port.postMessage({ type: "source", channels: channels },
+            channels.map(function (c) { return c.buffer; }));
           Tone.connect(node, v.grit.input);
           v.stretch.node = node;
           v.stretch.ready = true;
         }).catch(function (err) {
-          /* The worklet never became ready — the blend stays at 0 (see the two
-             stretchBlend.fade guards above), so this falls back to the plain dry
-             recording at full level rather than a quieter, half-wet blend. Loud on
-             purpose: the person turning the stretch knob should learn why it did
-             nothing, not have it fail in silence. */
+          /* The one case the plain recording is heard: the engine could not start. Loud on
+             purpose — the person turning the stretch knob should learn why it does nothing. */
+          v.stretch.failed = true;
+          v.stretchBlend.fade.rampTo(0, BED.fade);
           console.error("Paulstretch worklet failed to initialize for voice " + z.id + ":", err);
           toast("Extreme stretch unavailable for this recording — playing it as recorded.");
         });
       } catch (err) {
+        v.stretch.failed = true;
+        v.stretchBlend.fade.rampTo(0, BED.fade);
         console.error("Paulstretch worklet failed to initialize for voice " + z.id + ":", err);
         toast("Extreme stretch unavailable for this recording — playing it as recorded.");
       }
@@ -7918,14 +8134,55 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (q.morph === undefined) { q.morph = 0; }
     if (q.field === undefined) { q.field = 0; }
     if (q.grit === undefined) { q.grit = 0; }
+    /* The PaulXStretch port. Stretch moved from 200^s to the original's 1024^s range, so a point
+       saved before keeps the factor it had: s' = s * ln200 / ln1024. Its pitch drop is gone —
+       pitch is its own control now (Kerem, 2026-09-18). */
+    if (!q.px) {
+      q.stretch = q.stretch * Math.log(200) / Math.log(1024);
+      q.px = pxDefaults();
+    }
     return q;
+  }
+
+  /* PaulXStretch's defaults (PluginProcessor.cpp). Frequency and pitch shift start enabled at
+     zero, as in the plugin; every other module starts off. */
+  function pxDefaults() {
+    return { v: 1, fft: 0.7, freeze: false, onset: 0, start: 0, end: 1, xfade: 0.01,
+      harmonics: { on: false, n: 10, freq: 128, bw: 25, gauss: false },
+      tonal: { on: false, bw: 0.74, preserve: 0.5 },
+      fshift: { on: true, hz: 0 },
+      pitch: { on: true, st: 0 },
+      ratios: { on: false, r: [0.25, 0.5, 1, 2, 3, 4, 1.5, 1 / 1.5], l: [0, 0, 1, 0, 0, 0, 0, 0] },
+      spread: { on: false, bw: 0 },
+      filter: { on: false, low: 20, high: 20000, stop: false },
+      compress: { on: false, power: 0 },
+      binaural: { on: false, power: 0.5, hz: 4, mode: 0 } };
+  }
+
+  /* setFFTSize() without prebuffering: 2^(7 + 10x), rounded to a power of two for the FFT. */
+  function pxBufsize(fft) {
+    return Math.pow(2, Math.round(7 + 10 * Math.max(0, Math.min(1, fft || 0))));
+  }
+
+  /* The one writer of the worklet's parameters: ensureVoice, warpStep and the panel all post this. */
+  function pxParams(q, v) {
+    var x = q.px;
+    return {
+      stretch: Math.pow(1024, Math.max(0, Math.min(1, q.stretch || 0))),
+      bufsize: pxBufsize(x.fft), freeze: !!x.freeze, onset: x.onset,
+      start: x.start, end: x.end, xfade: x.xfade,
+      morph: q.morph || 0, field: q.field || 0, warpHz: (v && v._warpHz) || 0,
+      mods: { harmonics: x.harmonics, tonal: x.tonal, fshift: x.fshift, pitch: x.pitch,
+              ratios: x.ratios, spread: x.spread, filter: x.filter, compress: x.compress },
+      binaural: x.binaural
+    };
   }
 
   /* The zone list carries a copy so the audio path never looks a feature up per frame. */
   function soundOfZone(z) {
     var f = feature(z.id);
     return f ? soundOf(f) : { radius: 140, gain: 0.9, zoneR: 25, stretch: 0,
-                               warp: 0, morph: 0, field: 0, grit: 0 };
+                               warp: 0, morph: 0, field: 0, grit: 0, px: pxDefaults() };
   }
 
   /* One shared engine for both a per-hit stretch and the soundscape bed's own extreme warp
@@ -7981,193 +8238,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     g.blend.fade.rampTo(amt, 0.2);
   }
 
-  /* One phase-vocoder hop: read a Hann-windowed frame from `source` at `readPos` (zero-
-     padded past either end — a read position drifting near the source's edges degrades to
-     silence rather than reading whatever happens to sit past the array), FFT it, shift the
-     magnitude spectrum by `pitchRatio` (a genuine, multiplicative pitch shift — every
-     partial's frequency scaled by the same ratio, preserving harmonic relationships) and
-     then by `warpBins` bins on top of that (an additive offset — "warp" — not itself a
-     pitch shift despite the similar-sounding name; see this function's own body for how
-     the two compose), discard the phase entirely and substitute `randomFn()` per bin (the
-     one step that makes this Paulstretch rather than a clean phase-coherent stretch),
-     inverse-FFT, window again, and return the frame ready to be overlap-added into an
-     output buffer. Everything the frame depends on is passed in — including fftFn and
-     randomFn — so it can be tested deterministically without needing the worklet's own
-     random phase to be reproducible. */
-  function synthesizeHop(source, readPos, windowSize, warpBins, pitchRatio, fftFn, randomFn) {
-    var i, srcIdx, s, w, mag, pitchMag, pitchBin, outFreqBin, srcBin, phase;
-    var re = new Array(windowSize), im = new Array(windowSize);
-    var start = Math.floor(readPos);
-    for (i = 0; i < windowSize; i++) {
-      srcIdx = start + i;
-      s = (srcIdx >= 0 && srcIdx < source.length) ? source[srcIdx] : 0;
-      w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (windowSize - 1));
-      re[i] = s * w;
-      im[i] = 0;
-    }
-    fftFn(re, im, false);
-    mag = new Array(windowSize);
-    for (i = 0; i < windowSize; i++) { mag[i] = Math.sqrt(re[i] * re[i] + im[i] * im[i]); }
-    /* Multiplicative, unlike warpBins' additive offset below — a real pitch shift that keeps
-       harmonic ratios. Worked on the independent half [0, windowSize/2] only and mirrored
-       back, since a real frame's upper half is a conjugate copy; reading into it would pull
-       a frequency-reversed spectrum in. The vacated top is left empty, never wrapped.
-
-       Downward: PaulXStretch's own spectrum_do_pitch_shift (ProcessedStretch.h:359) scatters
-       every source bin into output bin floor(i*ratio), so nothing is discarded. It sums
-       magnitudes; this sums power, because the bins it merges carry independent random
-       phases and add incoherently — the level then holds across the whole stretch knob
-       (A-18) instead of rising +6 dB at two octaves down. At ratio 1 it is an exact identity. */
-    var half = windowSize / 2, pow2 = new Array(half + 1);
-    for (i = 0; i <= half; i++) { pow2[i] = 0; }
-    for (i = 0; i <= half; i++) {
-      if (pitchRatio < 1) {
-        pitchBin = Math.floor(i * pitchRatio);
-        pow2[pitchBin] += mag[i] * mag[i];
-      } else {
-        pitchBin = Math.floor(i / pitchRatio);
-        pow2[i] = mag[pitchBin] * mag[pitchBin];
-      }
-    }
-    pitchMag = new Array(windowSize);
-    for (i = 0; i < windowSize; i++) {
-      outFreqBin = (i <= half) ? i : (windowSize - i);
-      pitchMag[i] = Math.sqrt(pow2[outFreqBin]);
-    }
-    var outRe = new Array(windowSize), outIm = new Array(windowSize);
-    for (i = 0; i < windowSize; i++) {
-      /* warpBins' own wrap-around offset composes on top of the pitch-shifted spectrum
-         above, not the original — warp must still audibly do its own job at every
-         non-zero stretch, on top of whatever pitchRatio already did, not be computed
-         against the unshifted spectrum and discarded. */
-      srcBin = ((i - warpBins) % windowSize + windowSize) % windowSize;
-      phase = randomFn() * 2 * Math.PI;
-      outRe[i] = pitchMag[srcBin] * Math.cos(phase);
-      outIm[i] = pitchMag[srcBin] * Math.sin(phase);
-    }
-    fftFn(outRe, outIm, true);
-    for (i = 0; i < windowSize; i++) {
-      w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (windowSize - 1));
-      outRe[i] *= w;
-    }
-    return outRe;
-  }
-
-  /* AudioWorkletProcessor runs in its own restricted global scope — no window, no DOM,
-     nothing else in this file is reachable from there — so its module has to be entirely
-     self-contained. Built once, lazily, the first time a soundscape voice needs it (see
-     ensureVoice); the resulting Blob URL is cached and reused for every voice's own
-     AudioWorkletNode, since audioWorklet.addModule() only needs to run once per context. */
-  var paulstretchWorkletUrl = null;
-  function buildPaulstretchWorkletUrl() {
-    if (paulstretchWorkletUrl) { return paulstretchWorkletUrl; }
-    var lines = [
-      "'use strict';",
-      fft.toString(),
-      synthesizeHop.toString(),
-      "class PaulstretchProcessor extends AudioWorkletProcessor {",
-      "  constructor() {",
-      "    super();",
-      "    this.source = null;",
-      "    this.readPos = 0;",
-      "    this.writeBuf = new Float32Array(8 * sampleRate);",
-      "    this.writePos = 0;",
-      "    this.readOutPos = 0;",
-      "    this.hopCounter = 0;",
-      "    this.posReportCounter = 0;",
-      "    this.params = { stretchFactor: 1, warpBins: 0, morphRate: 0, synthesisHop: 1024, windowSize: 4096, pitchRatio: 1 };",
-      "    this.port.onmessage = function(e) {",
-      "      if (e.data.type === 'source') { this.source = e.data.data; this.readPos = 0; }",
-      "      else if (e.data.type === 'params') { Object.assign(this.params, e.data.params); }",
-      "    }.bind(this);",
-      "  }",
-      "  _synthesizeOneHop() {",
-      "    var frame = synthesizeHop(this.source, this.readPos, this.params.windowSize,",
-      "      Math.round(this.params.warpBins), this.params.pitchRatio, fft, Math.random);",
-      "    var i, idx;",
-      "    for (i = 0; i < frame.length; i++) {",
-      "      idx = (this.writePos + i) % this.writeBuf.length;",
-      /* A fresh, independent random phase every hop (the whole point of Paulstretch) sums
-         overlapping hops incoherently, not the way a phase-coherent STFT reconstruction
-         would — the windowed copies partially cancel rather than reinforcing. Measured by
-         driving the real process() loop (128-sample blocks, reading AND zeroing each
-         sample exactly as production does — anything less, e.g. a hand-rolled ring buffer
-         that never zeroes what it reads, wraps around and double-accumulates, inflating
-         the reading) at this exact windowSize/synthesisHop default, 10-trial average with
-         no compensation: ~0.52x source RMS (-5.64dB) — real and audible, matching what
-         was actually heard live as "stretch just gets faint." Real Paulstretch
-         (github.com/essej/paulxstretch, Stretch.cpp:483) applies its own fixed
-         compensation for the identical reason (`REALTYPE ampfactor=2.0f`) — 2.0 is also
-         what this engine's own sweep against the SAME real process()-loop measurement
-         lands on independently for its own (different) window/hop shape: 1.8 → -0.61dB/
-         0.36% pre-limiter clipping, 2.0 → +0.47dB (essentially unity)/1.06%, 2.2 →
-         +1.33dB/2.01% — 2.0 is the best balance of near-unity gain against a clip rate
-         the master bus's own limiter (A-6, `new Tone.Limiter(-1)`) absorbs as occasional
-         peaks, not routine clipping. Not exact for every `field` setting (field changes
-         the hop/overlap ratio, which shifts how much compensation is actually needed —
-         the same already-known limitation recorded against `field`'s own gain behavior;
-         a fully adaptive factor is future work, this fixes the default path everyone
-         actually hears). */
-      "      this.writeBuf[idx] += frame[i] * 2.0;",
-      "    }",
-      "    var hopSeconds = this.params.synthesisHop / sampleRate;",
-      "    var advance = (hopSeconds / Math.max(1, this.params.stretchFactor)) * sampleRate;",
-      "    advance += (this.params.morphRate * sampleRate * hopSeconds) / Math.max(1, this.params.stretchFactor);",
-      "    this.readPos += advance;",
-      "    if (this.source.length > 0) {",
-      "      this.readPos = ((this.readPos % this.source.length) + this.source.length) % this.source.length;",
-      "    }",
-      "    this.writePos = (this.writePos + this.params.synthesisHop) % this.writeBuf.length;",
-      "    this.hopCounter = this.params.synthesisHop;",
-      "  }",
-      "  process(inputs, outputs) {",
-      "    var output = outputs[0][0];",
-      "    if (!output) { return true; }",
-      "    if (!this.source) { output.fill(0); return true; }",
-      "    var i;",
-      "    for (i = 0; i < output.length; i++) {",
-      "      if (this.hopCounter <= 0) { this._synthesizeOneHop(); }",
-      "      this.hopCounter--;",
-      "      var idx = (this.readOutPos + i) % this.writeBuf.length;",
-      "      output[i] = this.writeBuf[idx];",
-      "      this.writeBuf[idx] = 0;",
-      "    }",
-      "    for (i = 1; i < outputs[0].length; i++) { outputs[0][i].set(output); }",
-      "    this.readOutPos = (this.readOutPos + output.length) % this.writeBuf.length;",
-      "    this.posReportCounter += output.length;",
-      "    if (this.posReportCounter >= 2048) {",
-      "      this.posReportCounter = 0;",
-      "      this.port.postMessage({ type: 'pos', readPos: this.readPos, sourceLength: this.source.length });",
-      "    }",
-      "    return true;",
-      "  }",
-      "}",
-      "registerProcessor('paulstretch-processor', PaulstretchProcessor);"
-    ];
-    var blob = new Blob([lines.join("\n")], { type: "application/javascript" });
-    paulstretchWorkletUrl = URL.createObjectURL(blob);
-    return paulstretchWorkletUrl;
-  }
-
-  /* Registered through Tone's context, not the native one underneath it: the node must be
-     created and connected inside Tone's own graph (see ensureVoice). Cached because
-     registerProcessor throws on a second registration of the same name. */
+  /* The PaulXStretch port lives in its own module (src/paulx-worklet.js), registered through
+     Tone's context — the graph the node joins. Cached because registerProcessor throws on a
+     second registration of the same name. */
   var paulstretchModulePromise = null;
   function loadPaulstretchModule(ctx) {
     if (!paulstretchModulePromise) {
-      paulstretchModulePromise = ctx.addAudioWorkletModule(buildPaulstretchWorkletUrl());
+      paulstretchModulePromise = ctx.addAudioWorkletModule("src/paulx-worklet.js");
     }
     return paulstretchModulePromise;
   }
 
-  /* A slow, musical tick (A-1: the Transport, never a UI callback) for the soundscape
-     bed's warp/morph/field qualities. The worklet manages its own continuous drift and
-     random-walk internally once given target parameters (see buildPaulstretchWorkletUrl);
-     this tick's only job is to keep those targets current — warp's own slow wobble is a
-     random walk kept here (on the main thread, at a musical cadence) and forwarded as a
-     plain bin-shift target, since the worklet itself has no reason to run its own
-     independent RNG-driven drift for something this coarse. grit is unrelated to any of
-     this and is unchanged from before this plan. */
+  /* A slow, musical tick (A-1: the Transport, never a UI callback) that keeps each soundscape
+     voice's worklet parameters current. Warp's slow wobble is a random walk kept here, in Hz,
+     and handed to the worklet as a spectrum shift. */
   function warpStep(time) {
     if (!bed) { return; }
     Object.keys(bed.voices).forEach(function (id) {
@@ -8176,19 +8260,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var f = feature(id), q = f ? soundOf(f) : null;
       if (!q) { return; }
       if (q.warp > 0) {
-        v._warpBins = Math.max(-24, Math.min(24,
-          (v._warpBins || 0) + (Math.random() * 2 - 1) * q.warp * 3));
+        v._warpHz = Math.max(-300, Math.min(300,
+          (v._warpHz || 0) + (Math.random() * 2 - 1) * q.warp * 40));
       } else {
-        v._warpBins = 0;
+        v._warpHz = 0;
       }
-      v.stretch.node.port.postMessage({ type: "params", params: {
-        stretchFactor: Math.pow(200, Math.max(0, Math.min(1, q.stretch))),
-        warpBins: v._warpBins,
-        morphRate: q.morph || 0,
-        pitchRatio: stretchPitchRatio(q.stretch).ratio,
-        /* See commitLive's own copy of this clamp above for why. */
-        synthesisHop: Math.max(64, Math.round(1024 * (1 - (q.field || 0) * 0.6)))
-      } });
+      v.stretch.node.port.postMessage({ type: "params", params: pxParams(q, v) });
       applyGrit(v.grit, q.grit);
     });
   }

@@ -106,7 +106,9 @@ test("renderSoundscapePanel shows an empty state with no recording attached, and
   assert.match(src, /properties\.has_audio/,
     "must gate on has_audio, the same flag buildZones/updateBed actually key playback on");
   assert.match(src, /"stretch"/, "must expose the stretch field");
-  assert.match(src, /buildSoundRow\(/, "must reuse the existing row builder, not a bespoke one");
+  /* buildPxRow, not buildSoundRow, since the PaulXStretch port (2026-09-18): the panel needs
+     log-scaled sliders and readouts in real units, which buildSoundRow cannot give. */
+  assert.match(src, /buildPxRow\(/, "must use the shared PaulXStretch row builder");
 });
 
 test("applyStretch sets playbackRate/grainSize/overlap via the real stretchParams, tracks what it applied, and skips redundant writes", () => {
