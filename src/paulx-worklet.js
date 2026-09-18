@@ -418,3 +418,131 @@ PxStretcher.prototype.hopJob = function* (reader, p, out) {
   }
   return onset;
 };
+
+/* ---------- Binaural beats: BinauralBeats.h / .cpp ---------- */
+
+var PX_HL = [0.6923877778065, 0.9360654322959, 0.9882295226860, 0.9987488452737];
+var PX_HR = [0.4021921162426, 0.8561710882420, 0.9722909545651, 0.9952884791278];
+
+/* AP */
+function PxAllpass(a) { this.a = a * a; this.i1 = 0; this.i2 = 0; this.o1 = 0; this.o2 = 0; }
+PxAllpass.prototype.run = function (x) {
+  var o = this.a * (x + this.o2) - this.i2;
+  this.i2 = this.i1; this.i1 = x; this.o2 = this.o1; this.o1 = o;
+  return o;
+};
+
+/* Hilbert: two allpass chains 90 degrees apart, one sample of delay on the first. */
+function PxHilbert() {
+  this.l = PX_HL.map(function (a) { return new PxAllpass(a); });
+  this.r = PX_HR.map(function (a) { return new PxAllpass(a); });
+  this.old = 0; this.h1 = 0; this.h2 = 0;
+}
+PxHilbert.prototype.run = function (x) {
+  var a = this.old, b = x;
+  for (var k = 0; k < 4; k++) { a = this.l[k].run(a); b = this.r[k].run(b); }
+  this.old = x; this.h1 = a; this.h2 = b;
+};
+
+/* BinauralBeats::process(): mix the channels by `power`, then shift left down and right up by
+   half the beat frequency (single-sideband, via the Hilbert pair). Modes 0/1/2 are
+   left-right, right-left and symmetric. */
+export function PxBinaural(sr) { this.sr = sr; this.t = 0; this.hl = new PxHilbert(); this.hr = new PxHilbert(); }
+PxBinaural.prototype.process = function (L, R, bb) {
+  var n = L.length, mono = bb.power * 0.5, freq = bb.hz * 0.5, i, l, r, x, c, s, ol1, ol2, or1, or2;
+  for (i = 0; i < n; i++) { l = L[i]; r = R[i]; L[i] = l * (1 - mono) + r * mono; R[i] = r * (1 - mono) + l * mono; }
+  for (i = 0; i < n; i++) {
+    this.t = (this.t + freq / this.sr) % 1;
+    x = this.t * 2 * Math.PI; c = Math.cos(x); s = Math.sin(x);
+    this.hl.run(L[i]);
+    ol1 = this.hl.h1 * c + this.hl.h2 * s; ol2 = this.hl.h1 * c - this.hl.h2 * s;
+    this.hr.run(R[i]);
+    or1 = this.hr.h1 * c - this.hr.h2 * s; or2 = this.hr.h1 * c + this.hr.h2 * s;
+    if (bb.mode === 1) { L[i] = ol1; R[i] = or1; }
+    else if (bb.mode === 2) { L[i] = (ol1 + or1) * 0.5; R[i] = (ol2 + or2) * 0.5; }
+    else { L[i] = ol2; R[i] = or2; }
+  }
+};
+
+/* ---------- The processor ---------- */
+
+if (typeof AudioWorkletProcessor !== "undefined") {
+  /* The next hop is computed while the current one plays: a job stepped a budget of times per
+     128-sample quantum, sized from how many steps the previous hop took, so it finishes inside
+     the hop. A quantum that reaches the hop boundary first drains the job — a late frame, never
+     a gap. One stretcher per source channel (StretchAudioSource), independent random phase. */
+  class PxProcessor extends AudioWorkletProcessor {
+    constructor() {
+      super();
+      this.p = null; this.src = null; this.ch = [];
+      this.gain = 1; this.rebuild = false; this.posCount = 0;
+      this.bb = new PxBinaural(sampleRate);
+      this.port.onmessage = (e) => this.onMsg(e.data);
+    }
+    onMsg(d) {
+      if (d.type === "source") { this.src = d.channels; this.build(); return; }
+      if (d.type !== "params") { return; }
+      var prev = this.p;
+      this.p = d.params;
+      if (!this.ch.length) { if (this.src) { this.build(); } return; }
+      if (prev && prev.bufsize !== this.p.bufsize) { this.rebuild = true; }
+      for (var c = 0; c < this.ch.length; c++) { this.ch[c].rd.setRange(this.p.start, this.p.end, this.p.xfade); }
+    }
+    build() {
+      if (!this.p || !this.src) { return; }
+      var b = this.p.bufsize, p = this.p;
+      this.ch = this.src.map(function (data, k) {
+        var rd = new PxReader(data, sampleRate);
+        rd.setRange(p.start, p.end, p.xfade);
+        var st = new PxStretcher(b, sampleRate, 0x5eed + k * 7919);
+        st.prime(rd);
+        var s = { rd: rd, st: st, cur: new Float64Array(b), nxt: new Float64Array(b),
+                  idx: 0, job: null, steps: 0, est: 0, budget: 1 };
+        s.est = pxRun(st.hopJob(rd, p, s.cur)).steps;
+        s.job = st.hopJob(rd, p, s.nxt);
+        return s;
+      });
+    }
+    swap(s) {
+      while (s.job && !s.job.next().done) { s.steps++; }
+      if (s.steps) { s.est = s.steps + 1; }
+      var t = s.cur; s.cur = s.nxt; s.nxt = t; s.idx = 0; s.steps = 0;
+      s.job = s.st.hopJob(s.rd, this.p, s.nxt);
+    }
+    process(inputs, outputs) {
+      var out = outputs[0], L = out[0], R = out[1], n = L.length, i, c, k, s, dst, b;
+      if (!this.ch.length) { L.fill(0); if (R) { R.fill(0); } return true; }
+      for (c = 0; c < this.ch.length; c++) {
+        s = this.ch[c];
+        dst = c === 0 ? L : R;
+        if (!dst) { continue; }
+        b = s.st.bufsize;
+        for (i = 0; i < n; i++) {
+          if (s.idx >= b) { this.swap(s); }
+          dst[i] = s.cur[s.idx++];
+        }
+        s.budget = Math.ceil(s.est * n / b * 1.5) + 1;
+        for (k = 0; k < s.budget && s.job; k++) {
+          if (s.job.next().done) { s.job = null; } else { s.steps++; }
+        }
+      }
+      if (this.ch.length === 1 && R) { R.set(L); }
+      if (R && this.p.binaural && this.p.binaural.on) { this.bb.process(L, R, this.p.binaural); }
+      /* An FFT-size change rebuilds the stretchers: fade out (time constant 64 samples), rebuild
+         at silence, fade back in over the new stretcher's own first crossfade. */
+      for (i = 0; i < n; i++) {
+        this.gain += ((this.rebuild ? 0 : 1) - this.gain) / 64;
+        if (this.rebuild && this.gain < 1e-3) { this.gain = 0; this.rebuild = false; this.build(); }
+        L[i] *= this.gain;
+        if (R) { R[i] *= this.gain; }
+      }
+      this.posCount += n;
+      if (this.posCount >= 2048) {
+        this.posCount = 0;
+        this.port.postMessage({ type: "pos", readPos: this.ch[0].rd.pos, sourceLength: this.ch[0].rd.data.length });
+      }
+      return true;
+    }
+  }
+  registerProcessor("paulx-processor", PxProcessor);
+}
