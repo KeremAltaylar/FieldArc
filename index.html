@@ -1111,6 +1111,43 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   background: color-mix(in oklch, var(--sunk) 60%, transparent);
   border: 1px solid var(--bdr); border-radius: 2px;
 }
+/* ---- PaulXStretch modules ----
+   A module's heading is its power switch, as in the original: a lamp dot that lights when on.
+   Off, the rows dim but stay live, so a setting can be dialled in before it is heard. */
+.pxmod { margin-bottom: var(--s-2); }
+.pxmod.off .pprow { opacity: 0.45; }
+.pxmod h2 { margin: var(--s-2) 0 var(--s-1); }
+.pxmod h2::after { display: none; }
+.pxpower {
+  position: relative; width: 100%; text-align: left;
+  padding: 2px 0 2px 1.3rem; border: 0; border-radius: 0; background: transparent;
+  font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase; color: var(--faint);
+}
+.pxpower::before {
+  content: ""; position: absolute; left: 0.15rem; top: 50%;
+  width: 0.62rem; height: 0.62rem; margin-top: -0.31rem;
+  border-radius: 50%; border: 1px solid var(--faint);
+}
+.pxpower[aria-pressed="true"] { color: var(--ink); background: transparent; }
+.pxpower[aria-pressed="true"]::before {
+  background: var(--lamp); border-color: var(--lamp);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--lamp) 18%, transparent);
+}
+.pxpower:hover { color: var(--ink); background: transparent; }
+.pxpower:focus-visible { outline: 2px solid var(--lamp); outline-offset: 1px; }
+.pxratio { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--s-3); }
+.pxratio .pprow { grid-template-columns: 1.8rem 1fr 3rem; }
+.pptabs {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--bdr); border-radius: 2px; overflow: hidden; margin: var(--s-2) 0;
+}
+.pptabs button {
+  border: 0; border-radius: 0; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pptabs button + button { border-left: 1px solid var(--bdr); }
+.pptabs button[aria-selected="true"] { color: var(--sunk); background: var(--accent); }
 .recmode button { border: 0; border-radius: 0; }
 .recmode button + button { border-left: 1px solid var(--bdr); }
 /* Two by two rather than four rows. Four hits is a small set and stacking them cost the
@@ -5514,65 +5551,166 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     };
     updateWaveCaption();
 
-    var cols = document.createElement("div");
-    cols.className = "ppcols";
-    var col = document.createElement("div");
-    col.className = "ppcol";
-    /* updateBed() (commitQ's own last step) only re-posts fresh params to voices in its
-       "near" set — in range of pacer.pos and within BED.maxVoices — the same proximity
-       gate applyHitStretch's own comment documents working around for hits ("a setter
-       can edit a point's stretch while it happens to be out of range"). warpStep already
-       refreshes every voice that has ever been created, near or not, but only once a
-       quarter-note — so an out-of-range voice a setter already created still hears a
-       drag, just up to one tick late. These five sliders close that narrower gap: they
-       reach straight at this point's own live voice, if one already exists, on every
-       drag, matching warpStep's own params shape exactly rather than leaving one field
-       to lag behind the others until the next tick. A voice that was never created (its
-       point never entered the "near" top-BED.maxVoices set at all) has nothing here to
-       reach — that case stays exactly as bounded as it always was. */
+    /* A drag reaches this point's live voice directly, if it has one: updateBed() only
+       re-posts to voices near the walker, and warpStep only once a quarter-note. The caption
+       is pure arithmetic and updates first, whether or not anything is playing — editing in the
+       setter usually has no live voice. */
     var commitLive = function () {
       commitQ();
-      /* Unconditional, unlike the worklet postMessage below: the caption is pure
-         arithmetic on q and durationS, true whether or not a bed voice happens to be
-         playing right now. Editing in the setter usually has no live voice at all — the
-         common case, not the exception — so gating this behind the same live-voice check
-         the postMessage needs would leave the caption frozen at its initial reading for
-         every drag that isn't also a live listen. */
       updateWaveCaption();
       var v = bed && bed.voices[f.properties.id];
       if (!v || !v.ready || !v.stretch || !v.stretch.ready) { return; }
       v.stretch.node.port.postMessage({ type: "params", params: pxParams(q, v) });
       applyGrit(v.grit, q.grit);
     };
-    col.appendChild(buildSoundRow({ k: "stretch", label: "stretch", min: 0, max: 1, step: 0.02,
-      def: 0, hint: "extreme time-stretch, from the recording as it is to a slow spectral smear, " +
-        "dropping pitch by up to two octaves as it slows" },
-      q, commitLive));
-    col.appendChild(buildSoundRow({ k: "warp", label: "warp", min: 0, max: 1, step: 0.02,
-      def: 0, hint: "a slow pitch/time wobble, like a tape losing its own speed" },
-      q, commitLive));
-    col.appendChild(buildSoundRow({ k: "morph", label: "morph", min: 0, max: 1, step: 0.02,
-      def: 0, hint: "drifts which part of the recording is being read, instead of freezing on one" },
-      q, commitLive));
-    col.appendChild(buildSoundRow({ k: "field", label: "field", min: 0, max: 1, step: 0.02,
-      def: 0, hint: "widens or narrows how densely the spectral frames overlap, from a tight, smooth wash to a looser, grainier one" },
-      q, commitLive));
-    col.appendChild(buildSoundRow({ k: "grit", label: "grit", min: 0, max: 1, step: 0.02,
-      def: 0, hint: "a digital-artifact wash — bitcrush and drive — layered on top of the stretched signal" },
-      q, commitLive));
-    cols.appendChild(col);
-    var col2 = document.createElement("div");
-    col2.className = "ppcol";
+
+    var x = q.px;
+    var fx = {
+      x: function (v) { return "×" + (v >= 10 ? Math.round(v) : v.toFixed(1)); },
+      hz: function (v) { return (Math.abs(v) >= 1000 ? (v / 1000).toFixed(1) + " k" : Math.round(v) + " ") + "Hz"; },
+      st: function (v) { return (v > 0 ? "+" : "") + v.toFixed(1) + " st"; },
+      pct: function (v) { return Math.round(v * 100) + " %"; },
+      two: function (v) { return v.toFixed(2); },
+      sec: function (v) { return v.toFixed(2) + " s"; },
+      int: function (v) { return String(Math.round(v)); }
+    };
+    var heading = function (t) { var h2 = document.createElement("h2"); h2.textContent = t; return h2; };
+    var R = function (spec, obj) { return buildPxRow(spec, obj, commitLive); };
+
+    var colStretch = [
+      heading("Stretch"),
+      R({ label: "stretch", k: "stretch", min: 0, max: 1, step: 0.005, def: 0,
+        fmt: function (v) { return fx.x(Math.pow(1024, v)); },
+        hint: "×1 plays at the recording's own speed; ×1024 is PaulXStretch's maximum" }, q),
+      R({ label: "fft size", k: "fft", min: 0, max: 1, step: 0.01, def: 0.7,
+        fmt: function (v) { return String(pxBufsize(v)); },
+        hint: "the hop in samples; each frame is twice this — larger is smoother and slower to react" }, x),
+      R({ label: "onset", k: "onset", min: 0, max: 1, step: 0.01, def: 0, fmt: fx.two,
+        hint: "lets attacks through: a detected transient jumps ahead, and the time is paid back after" }, x),
+      buildPxToggle("freeze", x, "freeze", commitLive),
+      R({ label: "start", k: "start", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.pct,
+        hint: "where in the recording the loop begins" }, x),
+      R({ label: "end", k: "end", min: 0, max: 1, step: 0.001, def: 1, fmt: fx.pct,
+        hint: "where in the recording the loop ends" }, x),
+      R({ label: "loop xfade", k: "xfade", min: 0, max: 1, step: 0.001, def: 0.01, fmt: fx.sec,
+        hint: "how long the end of the loop fades into its start" }, x),
+      heading("Extras"),
+      R({ label: "warp", k: "warp", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
+        hint: "FieldArc's own: the whole spectrum drifts slowly, up to ±300 Hz" }, q),
+      R({ label: "morph", k: "morph", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
+        hint: "FieldArc's own: reads through the recording faster than the stretch alone" }, q),
+      R({ label: "field", k: "field", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
+        hint: "FieldArc's own: each frame is taken from a wandering position around the true one" }, q),
+      R({ label: "grit", k: "grit", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
+        hint: "FieldArc's own: bitcrush and drive on the stretched signal" }, q)
+    ];
+
+    var chainNote = document.createElement("p");
+    chainNote.className = "hint";
+    chainNote.textContent = "Applied in order: harmonics → tonal/noise → frequency → pitch → " +
+      "ratios → spread → filter → compressor.";
+    var colSpectrum = [
+      heading("Spectrum"), chainNote,
+      buildPxModule("Harmonics", x.harmonics, [
+        R({ label: "count", k: "n", min: 1, max: 100, step: 1, def: 10, fmt: fx.int }, x.harmonics),
+        R({ label: "base", k: "freq", min: 1, max: 5000, def: 128, log: true, fmt: fx.hz }, x.harmonics),
+        R({ label: "bandwidth", k: "bw", min: 0.1, max: 200, step: 0.01, def: 25,
+          fmt: function (v) { return v.toFixed(1) + " ¢"; } }, x.harmonics),
+        buildPxToggle("gaussian", x.harmonics, "gauss", commitLive)
+      ], commitLive),
+      buildPxModule("Tonal vs noise", x.tonal, [
+        R({ label: "bandwidth", k: "bw", min: 0.74, max: 1, step: 0.001, def: 0.74, fmt: fx.two }, x.tonal),
+        R({ label: "preserve", k: "preserve", min: -1, max: 1, step: 0.001, def: 0.5, fmt: fx.two,
+          hint: "above 0 keeps the tones, below 0 keeps the noise" }, x.tonal)
+      ], commitLive),
+      buildPxModule("Frequency shift", x.fshift, [
+        R({ label: "shift", k: "hz", min: -1000, max: 1000, step: 1, def: 0, fmt: fx.hz }, x.fshift)
+      ], commitLive),
+      buildPxModule("Pitch shift", x.pitch, [
+        R({ label: "pitch", k: "st", min: -24, max: 24, step: 0.1, def: 0, fmt: fx.st }, x.pitch)
+      ], commitLive),
+      buildPxModule("Spread", x.spread, [
+        R({ label: "spread", k: "bw", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.two }, x.spread)
+      ], commitLive),
+      buildPxModule("Filter", x.filter, [
+        R({ label: "low", k: "low", min: 20, max: 20000, def: 20, log: true, fmt: fx.hz }, x.filter),
+        R({ label: "high", k: "high", min: 20, max: 20000, def: 20000, log: true, fmt: fx.hz }, x.filter),
+        buildPxToggle("stop band", x.filter, "stop", commitLive)
+      ], commitLive),
+      buildPxModule("Compressor", x.compress, [
+        R({ label: "amount", k: "power", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.two }, x.compress)
+      ], commitLive)
+    ];
+
+    var RATIO_DEF = [0.25, 0.5, 1, 2, 3, 4, 1.5, 1 / 1.5];
+    var ratioRows = x.ratios.r.map(function (_, i) {
+      var row = document.createElement("div");
+      row.className = "pxratio";
+      row.appendChild(R({ label: String(i + 1), min: 0.125, max: 8, def: RATIO_DEF[i], log: true,
+        get: function (o) { return o.r[i]; }, set: function (o, v) { o.r[i] = v; },
+        fmt: function (v) { return "×" + v.toFixed(2); } }, x.ratios));
+      row.appendChild(R({ label: "lvl", min: 0, max: 1, step: 0.001, def: i === 2 ? 1 : 0,
+        get: function (o) { return o.l[i]; }, set: function (o, v) { o.l[i] = v; }, fmt: fx.two }, x.ratios));
+      return row;
+    });
+    var colRatios = [
+      buildPxModule("Ratios", x.ratios, ratioRows, commitLive),
+      buildPxModule("Binaural beats", x.binaural, [
+        R({ label: "power", k: "power", min: 0, max: 1, step: 0.01, def: 0.5, fmt: fx.two,
+          hint: "how much the two channels are mixed before the beat is applied" }, x.binaural),
+        R({ label: "beat", k: "hz", min: 0.05, max: 50, def: 4, log: true,
+          fmt: function (v) { return v.toFixed(2) + " Hz"; } }, x.binaural),
+        buildPxSelect("mode", x.binaural, "mode", ["left-right", "right-left", "symmetric"], commitLive)
+      ], commitLive)
+    ];
+
     var note = document.createElement("p");
     note.className = "hint";
-    note.textContent = "The bed is always heard through the Paulstretch engine — a real phase " +
-      "vocoder with randomised phase. At 0 it runs at the recording's own speed; stretch " +
-      "slows it up to x200 and smears it into a spectral wash. A hit's own stretch still " +
-      "uses a separate, granular engine. Warp, morph, field and grit act on the engine at " +
-      "any stretch: a pitch wobble, a drifting read position, how densely the spectral " +
-      "frames overlap, and a digital-artifact texture.";
-    col2.appendChild(note);
-    cols.appendChild(col2);
+    note.textContent = "Always heard through the PaulXStretch engine. Stretch ×1 plays at the " +
+      "recording's own speed with randomised phase; the spectrum chain and ratios act on every " +
+      "frame; extras are FieldArc's own.";
+    colRatios.push(note);
+
+    /* One screen, always (C-8): three columns where there is room, three tabs where there is
+       not. A rotated phone is short, not narrow, so height decides too. */
+    var sections = [
+      { title: "Stretch", nodes: colStretch },
+      { title: "Spectrum", nodes: colSpectrum },
+      { title: "Ratios · binaural", nodes: colRatios }
+    ];
+    var tabbed = innerWidth < 1000 || innerHeight < 700;
+    var cols = document.createElement("div");
+    cols.className = "ppcols";
+    cols.style.setProperty("--ppcols", tabbed ? 1 : 3);
+    var panes = sections.map(function (s) {
+      var col = document.createElement("div");
+      col.className = "ppcol";
+      s.nodes.forEach(function (n) { col.appendChild(n); });
+      cols.appendChild(col);
+      return col;
+    });
+    if (tabbed) {
+      var tabs = document.createElement("div");
+      tabs.className = "pptabs";
+      tabs.setAttribute("role", "tablist");
+      var pick = function (k) {
+        pxTab = k;
+        panes.forEach(function (pane, i) { pane.hidden = i !== k; });
+        Array.prototype.forEach.call(tabs.children, function (t, i) {
+          t.setAttribute("aria-selected", String(i === k));
+        });
+      };
+      sections.forEach(function (s, i) {
+        var t = document.createElement("button");
+        t.type = "button";
+        t.setAttribute("role", "tab");
+        t.textContent = s.title;
+        t.addEventListener("click", function () { pick(i); });
+        tabs.appendChild(t);
+      });
+      body.appendChild(tabs);
+      pick(Math.min(pxTab, sections.length - 1));
+    }
     body.appendChild(cols);
 
     /* Drawn last, once wave is already laid out inside the (already visible) #rp-body —
@@ -5611,6 +5749,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       ctx.fillStyle = "rgba(186,206,181,0.25)";
       ctx.fillRect(0, h / 2, w, 1);
     }
+    /* Outside the play range is dimmed: what is not looped is still shown, but set back. */
+    var x0 = Math.min(q.px.start, q.px.end) * w, x1 = Math.max(q.px.start, q.px.end) * w;
+    ctx.fillStyle = "rgba(10,14,12,0.62)";
+    ctx.fillRect(0, 0, x0, h);
+    ctx.fillRect(x1, 0, w - x1, h);
     var v = bed && bed.voices[f.properties.id];
     if (v && v.stretch && v.stretch.ready && v.stretch.sourceLength) {
       var frac = Math.max(0, Math.min(1, v.stretch.readPos / v.stretch.sourceLength));
@@ -5619,7 +5762,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
-  var swRAF = null;
+  var swRAF = null, pxTab = 0;
   function soundscapeWaveTick() {
     if ($("#rhythmpanel").hidden || !document.querySelector("#rp-body .ppwave")) {
       swRAF = null; return;
@@ -5738,6 +5881,90 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!pacer) { return; }
     pacer.zones.forEach(function (z) { z.r = soundOfZone(z).zoneR; });
     drawZones();
+  }
+
+  /* A PaulXStretch control. A `log` slider moves in log space so 20 Hz-20 kHz is usable; what
+     is stored and shown is always the real unit. get/set reach values inside arrays (ratios). */
+  function buildPxRow(fl, obj, commit) {
+    var row = document.createElement("label");
+    row.className = "pprow";
+    var name = document.createElement("span");
+    name.textContent = fl.label;
+    if (fl.hint) { row.title = fl.hint; }
+    var input = document.createElement("input"), val = document.createElement("i");
+    var toUi = function (v) { return fl.log ? Math.log(v) : v; };
+    var fromUi = function (u) { return fl.log ? Math.exp(u) : u; };
+    input.type = "range";
+    input.min = toUi(fl.min); input.max = toUi(fl.max);
+    input.step = fl.log ? "any" : fl.step;
+    input.value = toUi(fl.get ? fl.get(obj) : obj[fl.k]);
+    input.dataset.def = toUi(fl.def);
+    input.title = (fl.hint ? fl.hint + " · " : "") + "double-click to reset · shift-drag for fine steps";
+    var show = function () { val.textContent = fl.fmt(fromUi(+input.value)); };
+    show();
+    input.addEventListener("input", function () {
+      var v = fromUi(+input.value);
+      if (fl.set) { fl.set(obj, v); } else { obj[fl.k] = v; }
+      show();
+      commit();
+    });
+    row.appendChild(name); row.appendChild(input); row.appendChild(val);
+    return row;
+  }
+
+  function buildPxToggle(label, obj, key, commit) {
+    var row = document.createElement("div");
+    row.className = "pprow";
+    var name = document.createElement("span");
+    name.textContent = label;
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "ghost";
+    var set = function () {
+      b.setAttribute("aria-pressed", String(!!obj[key]));
+      b.textContent = obj[key] ? "on" : "off";
+    };
+    set();
+    b.addEventListener("click", function () { obj[key] = !obj[key]; set(); commit(); });
+    row.appendChild(name); row.appendChild(b); row.appendChild(document.createElement("i"));
+    return row;
+  }
+
+  function buildPxSelect(label, obj, key, names, commit) {
+    var row = document.createElement("label");
+    row.className = "pprow";
+    var name = document.createElement("span");
+    name.textContent = label;
+    var sel = document.createElement("select");
+    names.forEach(function (n, i) {
+      var op = document.createElement("option");
+      op.value = String(i); op.textContent = n;
+      sel.appendChild(op);
+    });
+    sel.value = String(obj[key] || 0);
+    sel.addEventListener("change", function () { obj[key] = +sel.value; commit(); });
+    row.appendChild(name); row.appendChild(sel); row.appendChild(document.createElement("i"));
+    return row;
+  }
+
+  /* A module in the chain. Its heading is its power switch, as in PaulXStretch; switched off,
+     its controls stay editable and dim, so a setting can be dialled in before it is heard. */
+  function buildPxModule(title, obj, rows, commit) {
+    var box = document.createElement("section");
+    box.className = "pxmod";
+    var h = document.createElement("h2");
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "pxpower";
+    b.textContent = title;
+    var set = function () {
+      b.setAttribute("aria-pressed", String(!!obj.on));
+      box.classList.toggle("off", !obj.on);
+    };
+    set();
+    b.addEventListener("click", function () { obj.on = !obj.on; set(); commit(); });
+    h.appendChild(b);
+    box.appendChild(h);
+    rows.forEach(function (r) { box.appendChild(r); });
+    return box;
   }
 
   function buildSoundRow(fl, q, commitQ) {
