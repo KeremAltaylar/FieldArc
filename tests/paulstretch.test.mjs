@@ -268,10 +268,17 @@ test("synthesizeHop's pitchRatio zero-fills past the spectrum's edge instead of 
   // actual catch). The test as a whole still reliably fails under a wrap regression because
   // bins 11-13 and 15 all individually violate 1e-3, even though bins 10 and 14 wouldn't on
   // their own.
+  /* Relative to the peak, not an absolute figure: the pitch drop now keeps the full level, so
+     leakage scales with it. Measured after the scatter mapping: peak 4.0 at bin 3, then a
+     monotonic fall to -61 dB at bin 10 and -82 dB at Nyquist. Wrapped energy would appear as
+     a bump at bins 11-13 around -20 dB. */
+  const peak = Math.max(...mag);
   for (let i = Math.ceil(n / 4) + 2; i < n / 2; i++) {
-    assert.ok(mag[i] < 1e-3,
-      `bin ${i} (source lookup ${4 * i}, out of the [0,${n}) range) carries ${mag[i]} — ` +
-      "expected zero-fill (leakage-level only), not wrapped energy from elsewhere in the spectrum");
+    const db = 20 * Math.log10(mag[i] / peak);
+    assert.ok(db < -50,
+      `bin ${i} sits at ${db.toFixed(1)} dB from the peak — expected leakage only, not wrapped energy`);
+    assert.ok(mag[i + 1] <= mag[i],
+      `bin ${i + 1} rises above bin ${i}: a bump in the vacated top is wrapped energy, not leakage`);
   }
 });
 
@@ -302,7 +309,10 @@ test("synthesizeHop composes pitchRatio and warpBins in order: warpBins' own off
   const expectedMag = Math.max(mag[expected], mag[n - expected]);
   const pitchOnlyMag = Math.max(mag[pitchOnlyBin], mag[n - pitchOnlyBin]);
   const warpOnOriginalMag = Math.max(mag[warpOnOriginalBin], mag[n - warpOnOriginalBin]);
-  assert.ok(expectedMag > pitchOnlyMag * 10,
+  /* 3x, not 10x: the scatter mapping spreads the cluster over two bins, and warp's additive
+     shift leaves a mirror image at bins 2-3 whose leakage reaches bin 4. Measured: 3.34 at
+     bin 6 against 0.96 at bin 4. Were warp dropped, bin 4 would hold 6.66 and bin 6 0.04. */
+  assert.ok(expectedMag > pitchOnlyMag * 3,
     `composed bin ${expected} (mag ${expectedMag}) should dominate the pitch-only bin ` +
     `${pitchOnlyBin} (mag ${pitchOnlyMag}) — warpBins must not be silently dropped`);
   assert.ok(expectedMag > warpOnOriginalMag * 10,
@@ -354,43 +364,68 @@ test("the worklet's process() outputs silence rather than throwing before its so
   assert.match(src, /if\s*\(!this\.source\)/);
 });
 
-test("loadPaulstretchModule registers the module before anything can construct the node from it, and only once", () => {
+test("loadPaulstretchModule registers the module only once", () => {
   const src = slice("function loadPaulstretchModule(ctx)", "\n  }\n");
-  assert.match(src, /ctx\.audioWorklet\.addModule\(\s*buildPaulstretchWorkletUrl\(\)\s*\)/);
   assert.match(src, /if\s*\(!paulstretchModulePromise\)/,
     "must cache the promise — addModule/registerProcessor for the same name a second " +
     "time throws on some browsers, and every voice's ensureVoice call reaches this");
 });
 
-test("connectNativeToToneGain asserts Tone's private internals are real AudioNodes before relying on them", () => {
-  const src = slice("function connectNativeToToneGain(nativeSrc, toneGain)", "\n  }\n");
-  assert.match(src, /toneGain\._gainNode/);
-  assert.match(src, /_nativeAudioNode/);
-  assert.match(src, /instanceof AudioNode/,
-    "must check the drilled-into object is really a native AudioNode, not just present, " +
-    "so a future Tone.js version renaming these internals fails loudly rather than " +
-    "silently connecting to the wrong thing or throwing an unrelated-looking error");
-  assert.match(src, /throw new Error/);
+test("ensureVoice builds the worklet through Tone's own context, never by splicing a native node behind it", () => {
+  /* Measured 2026-09-18 in Chrome with Tone 15.5.42: a native AudioWorkletNode connected into
+     a Tone.Gain's private _nativeAudioNode reached that gain (-20 dBFS) and went no further —
+     every node downstream read -inf, while the same chain fed by a Tone.Oscillator read -3 dBFS.
+     standardized-audio-context only wires a node's outputs once it sees an active input through
+     its own graph; a node spliced in natively is invisible to it. That silence is the whole
+     "stretch fades out instead of stretching" report. */
+  const src = slice("function ensureVoice(z, d)", "\n  }\n");
+  assert.match(src, /createAudioWorkletNode\(\s*["']paulstretch-processor["']/);
+  assert.match(src, /Tone\.connect\(\s*node\s*,\s*v\.grit\.input\s*\)/);
+  assert.doesNotMatch(src, /_nativeAudioContext/);
+  assert.doesNotMatch(src, /connectNativeToToneGain\(/);
+  assert.doesNotMatch(src, /new AudioWorkletNode\(/);
 });
 
-test("ensureVoice constructs the worklet node from Tone's true native context, not the Tone-wrapped one", () => {
+test("the worklet node is created with a single output channel, so Tone up-mixes it to both sides", () => {
+  /* process() writes one channel. Measured: created through Tone the node came up with a
+     second, silent channel — the stretched sound 6 dB down and hard left. */
   const src = slice("function ensureVoice(z, d)", "\n  }\n");
-  assert.match(src, /rawContext\._nativeAudioContext/,
-    "measured against the real build: rawContext itself fails instanceof BaseAudioContext " +
-    "and AudioWorkletNode's own constructor rejects it directly");
-  assert.match(src, /new AudioWorkletNode\(/);
+  assert.match(src, /outputChannelCount:\s*\[\s*1\s*\]/);
 });
 
-test("ensureVoice awaits loadPaulstretchModule before constructing the AudioWorkletNode", () => {
+test("ensureVoice awaits loadPaulstretchModule before creating the worklet node", () => {
   const src = slice("function ensureVoice(z, d)", "\n  }\n");
-  assert.match(src, /loadPaulstretchModule\(/,
-    "new AudioWorkletNode(ctx, 'paulstretch-processor') throws unless addModule already " +
-    "registered that name on this context — skipping this is an easy, silent-until-runtime mistake");
   const moduleCallIdx = src.indexOf("loadPaulstretchModule(");
-  const nodeCtorIdx = src.indexOf("new AudioWorkletNode(");
+  const nodeCtorIdx = src.indexOf("createAudioWorkletNode(");
   assert.ok(moduleCallIdx !== -1 && nodeCtorIdx !== -1 && moduleCallIdx < nodeCtorIdx,
-    "loadPaulstretchModule's promise must resolve (i.e. appear earlier in the .then chain) " +
-    "before the AudioWorkletNode constructor runs");
+    "the module must be registered before the node that names it is created");
+});
+
+test("loadPaulstretchModule registers through Tone's context, the same graph the node joins", () => {
+  const src = slice("function loadPaulstretchModule(ctx)", "\n  }\n");
+  assert.match(src, /addAudioWorkletModule\(\s*buildPaulstretchWorkletUrl\(\)\s*\)/);
+});
+
+test("synthesizeHop's pitch drop keeps the level: every source bin is scattered into the output, none discarded", () => {
+  /* PaulXStretch's own spectrum_do_pitch_shift (ProcessedStretch.h:359) pitches down by
+     scattering: each source bin i lands in output bin floor(i*ratio). Gathering one source bin
+     per output bin instead discards (1 - ratio) of the spectrum — -6 dB at two octaves down,
+     measured live as stretch 100 being far quieter than stretch 0 (A-18). */
+  const fft = extractFn("fft");
+  const synthesizeHop = extractFn("synthesizeHop");
+  const n = 1024;
+  let seed = 7;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const power = (a) => a.reduce((s, x) => s + x * x, 0);
+  let p1 = 0, pQuarter = 0;
+  for (let t = 0; t < 12; t++) {
+    const source = Array.from({ length: n }, () => rand() * 2 - 1);
+    p1 += power(synthesizeHop(source, 0, n, 0, 1, fft, rand));
+    pQuarter += power(synthesizeHop(source, 0, n, 0, 0.25, fft, rand));
+  }
+  const dB = 10 * Math.log10(pQuarter / p1);
+  assert.ok(Math.abs(dB) < 1.5,
+    `two octaves down changed the frame's power by ${dB.toFixed(2)} dB — expected within 1.5 dB`);
 });
 
 test("ensureVoice no longer references GrainPlayer or applyStretch for the soundscape voice", () => {
@@ -789,11 +824,8 @@ test("all three sites that post stretch params to the worklet (ensureVoice's rea
     });
 });
 
-test("ensureVoice guards the nativeCtx lookup and logs+toasts loudly on any stretch-init failure, instead of an uncaught throw or a silent no-op catch", () => {
+test("ensureVoice logs+toasts loudly on any stretch-init failure, instead of an uncaught throw or a silent no-op catch", () => {
   const src = slice("function ensureVoice(z, d)", "\n  }\n");
-  assert.match(src, /if\s*\(!nativeCtx\)\s*\{\s*throw new Error/,
-    "a missing/renamed Tone internal must throw a caught, loud error rather than an " +
-    "uncaught throw that leaks the already-built dry player/filter/grit/blend");
   const catchCount = (src.match(/console\.error\(\s*"Paulstretch worklet failed to initialize/g) || []).length;
   assert.ok(catchCount >= 2,
     "both the synchronous nativeCtx guard and the async Promise.all catch must log loudly");
@@ -805,7 +837,7 @@ test("ensureVoice guards the nativeCtx lookup and logs+toasts loudly on any stre
 
 test("ensureVoice's Promise.all callback checks the resolved voice is still THIS closure's own v, not merely that some voice exists at that id — a stop/start race during decode must abort the stale continuation", () => {
   const src = slice("function ensureVoice(z, d)", "\n  }\n");
-  const promiseAllThen = src.slice(src.indexOf("Promise.all(["), src.indexOf("connectNativeToToneGain("));
+  const promiseAllThen = src.slice(src.indexOf("Promise.all(["), src.indexOf("Tone.connect(node"));
   assert.match(promiseAllThen, /bed\.voices\[z\.id\]\s*!==\s*v/,
     "must compare identity against the closure's own v, not just truthiness — a replacement " +
     "voice under the same id must abort this stale continuation rather than wiring a live " +
@@ -814,7 +846,7 @@ test("ensureVoice's Promise.all callback checks the resolved voice is still THIS
 
 test("ensureVoice listens for the worklet's own 'pos' messages and stores them on v.stretch, so the panel's live cursor has somewhere to read a real position from", () => {
   const src = slice("function ensureVoice(z, d)", "\n  }\n");
-  const nodeIdx = src.indexOf("var node = new AudioWorkletNode(");
+  const nodeIdx = src.indexOf("var node = tctx.createAudioWorkletNode(");
   const readyIdx = src.indexOf("v.stretch.ready = true;");
   assert.ok(nodeIdx !== -1 && readyIdx !== -1 && nodeIdx < readyIdx,
     "expected the worklet node construction before the ready flag is set");

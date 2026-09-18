@@ -640,6 +640,53 @@ input[type="text"]:focus-visible, input[type="email"]:focus-visible, textarea:fo
 }
 #f-note { min-height: 2.5rem; }
 
+/* ---- Photos ----
+   One photo at a time across the card's full width, swiped sideways. A fixed height keeps the
+   card's budget predictable on a phone whatever the photo's shape; the full frame is a tap away. */
+.photohead { display: flex; align-items: center; gap: var(--s-2); }
+.photohead .eyebrow { flex: 1 1 auto; }
+.photocount {
+  font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: var(--track-meta);
+  color: var(--faint);
+}
+.photos {
+  display: flex; overflow-x: auto; scroll-snap-type: x mandatory;
+  gap: var(--s-2); scrollbar-width: none; border-radius: 2px;
+  overscroll-behavior-x: contain;
+}
+.photos::-webkit-scrollbar { display: none; }
+.photo {
+  position: relative; flex: 0 0 100%; margin: 0; scroll-snap-align: start;
+  height: 10rem; background: var(--ground); border: 1px solid var(--bdr); border-radius: 2px;
+  overflow: hidden;
+}
+.photo img {
+  display: block; width: 100%; height: 100%; object-fit: cover; cursor: zoom-in;
+  opacity: 0;
+}
+.photo img.ready { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .photo img { transition: opacity var(--d) var(--ease); }
+}
+.photo img:focus-visible { outline: 2px solid var(--lamp); outline-offset: -2px; }
+.photo .photodel {
+  position: absolute; top: var(--s-1); right: var(--s-1);
+  min-width: 2rem; min-height: 2rem; padding: 0;
+  color: var(--ink); background: color-mix(in oklch, var(--sunk) 72%, transparent);
+  border-color: color-mix(in oklch, var(--ink) 22%, transparent);
+}
+.photo .photodel:hover, .photo .photodel:focus-visible {
+  color: var(--sunk); background: var(--lamp); border-color: var(--lamp);
+}
+#photo-view {
+  width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: var(--s-4);
+  border: 0; background: color-mix(in oklch, var(--sunk) 94%, transparent);
+  flex-direction: column; align-items: center; justify-content: center; gap: var(--s-3);
+}
+#photo-view[open] { display: flex; }
+#photo-view::backdrop { background: transparent; }
+#photo-view img { max-width: 100%; max-height: calc(100dvh - 5rem); object-fit: contain; }
+
 /* A row of solid accent bars was the loudest thing on the patch panel — five "on" states
    shouting over the controls they belong to. Inside the panels a pressed toggle is tinted
    and outlined rather than filled: still unmistakably on, no longer the first thing you
@@ -1518,6 +1565,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <div class="iconpick" id="card-icons" role="group" aria-label="Point type"></div>
       </div>
       <input type="text" id="f-tags" placeholder="tags, comma separated" aria-label="Tags">
+      <div class="cgroup" id="g-photos" hidden>
+        <div class="photohead">
+          <span class="eyebrow">Photos</span>
+          <span class="photocount" id="photo-count" aria-live="polite"></span>
+          <button type="button" class="ghost" id="photo-add">Add</button>
+        </div>
+        <div class="photos" id="photos" role="group" aria-label="Photos"></div>
+        <input type="file" id="photo-file" accept="image/*" multiple hidden>
+      </div>
       <div class="rec cgroup">
         <span class="eyebrow">Sound</span>
         <div class="recmode" role="group" aria-label="What this point holds">
@@ -1567,6 +1623,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       </div>
       </div>
     </div>
+
+    <dialog id="photo-view" aria-label="Photo">
+      <img id="photo-view-img" alt="">
+      <button type="button" class="ghost" id="photo-view-close">Close</button>
+    </dialog>
 
     <div class="section" id="storage">
       <h2>Storage</h2>
@@ -1834,9 +1895,29 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* The map and the archive list show one place at a time; `fc` keeps them all. */
   function visible() {
+    var man = setterTools() ? null : loadManifest();
     return fc.features.filter(function (f) {
-      return !place || f.properties.place === place.properties.id;
+      return (!place || f.properties.place === place.properties.id) && shownTo(f, man);
     });
+  }
+
+  /* A listener sees what has been released: rows from the server, and what this device itself
+     has published. A draft never published stays on the device for its setter and is not
+     shown to anyone who is not signed in as one. `man` is null for a setter. */
+  function shownTo(f, man) {
+    return !man || !!f.properties._remote || f.properties.id in man;
+  }
+
+  /* A redraw, not an edit: it must not go through save(), which counts a change. */
+  function refreshFeatures() {
+    if (!map || !map.getSource("features")) { return; }
+    if (selected && !visible().some(function (f) { return f.properties.id === selected; })) {
+      setSelected(null);
+    }
+    map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+    renderList();
+    renderStats();
+    renderLabels();
   }
 
   /* Merge, not replace: a setter's own device already holds every id the server would
@@ -1858,6 +1939,76 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       fc.features.push(rowToFeature(row));
       have[row.id] = true;
     });
+  }
+
+  /* ---- The server decides what a published feature is ----
+     A device keeps what it authored in localStorage, and before this it kept it forever: a
+     setter removing a point from one device left every phone that had authored it still
+     showing it, and that phone's next publish would have written it back with deleted_at: null.
+     Once this device has published a feature (its id is in the manifest), the server is the
+     authority on whether it still exists. A copy the server no longer holds live is retired
+     here — to the local trash, never erased, and the server keeps its own soft-deleted row.
+     A draft this device never published is not in the manifest and is never touched. */
+  var RECONCILE_CHUNK = 100;
+  var sessionKnown = false, reconciledAs = null;
+
+  function goneFromServer(ids, rows) {
+    var live = {};
+    rows.forEach(function (r) { if (!r.deleted_at) { live[r.id] = true; } });
+    return ids.filter(function (id) { return !live[id]; });
+  }
+
+  function maybeReconcile() {
+    if (!sessionKnown || !map || !map.getSource("features")) { return; }
+    if (reconciledAs === setter.signedIn) { return; }
+    reconciledAs = setter.signedIn;
+    reconcileWithServer();
+  }
+
+  function reconcileWithServer() {
+    if (!sb) { return; }
+    var man = loadManifest();
+    var ids = authoredFeatures()
+      .map(function (f) { return f.properties.id; })
+      .filter(function (id) { return id in man; });
+    if (!ids.length) { return; }
+    /* A setter can see deleted_at, and an unpublished-but-pushed feature is still theirs. A
+       listener can only see the public view, where anything deleted or unpublished is absent —
+       and for a listener, "not released" is exactly what should not be on screen. */
+    var queries = [];
+    for (var i = 0; i < ids.length; i += RECONCILE_CHUNK) {
+      var chunk = ids.slice(i, i + RECONCILE_CHUNK);
+      queries.push(setter.signedIn
+        ? sb.from("features").select("id, deleted_at").in("id", chunk)
+        : sb.from("public_features").select("id").in("id", chunk));
+    }
+    Promise.all(queries).then(function (results) {
+      var rows = [];
+      for (var k = 0; k < results.length; k++) {
+        var r = results[k];
+        if (r.error || !r.data) { return; }   /* a partial answer must not read as "gone" */
+        rows = rows.concat(r.data);
+      }
+      retireFromServer(goneFromServer(ids, rows));
+    }).catch(function () { /* offline: the server said nothing, so nothing is retired */ });
+  }
+
+  function retireFromServer(gone) {
+    if (!gone.length) { return; }
+    var goneSet = {}, t = trash(), man = loadManifest(), stamp = new Date().toISOString();
+    gone.forEach(function (id) { goneSet[id] = true; });
+    fc.features.forEach(function (f) {
+      if (goneSet[f.properties.id]) { t.push({ deleted_at: stamp, feature: f, reason: "server" }); }
+    });
+    setTrash(t);
+    fc.features = fc.features.filter(function (f) { return !goneSet[f.properties.id]; });
+    gone.forEach(function (id) { delete man[id]; });
+    saveManifest(man);
+    if (selected && goneSet[selected]) { setSelected(null); }
+    commit();
+    toast(gone.length + (gone.length === 1 ? " feature was" : " features were") +
+          " removed from the archive by a setter, so this device no longer shows " +
+          (gone.length === 1 ? "it" : "them") + ".");
   }
 
   /* The server-version signal a downloaded place compares itself against. Deliberately not a
@@ -1892,6 +2043,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           if (h && typeof h === "object" && typeof h.size === "number") { total += h.size; }
         });
       }
+      (properties.images || []).forEach(function (img) {
+        if (img && typeof img.size === "number") { total += img.size; }
+      });
     }
     return total;
   }
@@ -1945,6 +2099,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         mergeRemote(r.data);
         map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
         renderList();
+        maybeReconcile();
       })
       /* Supabase resolves most failures to { error }, handled above — but a genuine
          network rejection (DNS, dropped connection, aborted request) rejects the promise
@@ -2115,7 +2270,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        can make one. */
     var SETTER_ONLY = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
-      "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit"];
+      "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit", "#photo-add"];
     var show = setter.signedIn;
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
@@ -2170,6 +2325,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        device that stops being a setter's stops claiming to be one. */
     setWasSetter(setter.signedIn);
     renderSetter();
+    sessionKnown = true;
+    refreshFeatures();
+    maybeReconcile();
   }
 
   function signIn(email) {
@@ -2409,6 +2567,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         });
         p.hits = h;
       }
+      if (p.images) { p.images = p.images.map(function (o) { return Object.assign({}, o); }); }
       var row = { id: id, place: f.properties.place, kind: f.properties.kind,
                   geometry: f.geometry, properties: p, deleted_at: null };
       if (isNew) { row.created_by = setter.id; }
@@ -2492,6 +2651,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             if (!s || typeof s !== "object") { s = r.properties.hits[slot] = {}; }
             s.storage_path = path;
           });
+        });
+      });
+      (r.properties.images || []).forEach(function (img) {
+        uploads.push(function () {
+          return uploadAudio(photoKey(r.id, img.key),
+            function () { return photoPath(r.id, img.key); },
+            "feature " + r.id + " lists a photo this device no longer has — remove it from the " +
+            "card, then publish again"
+          ).then(function (path) { img.storage_path = path; });
         });
       });
     });
@@ -3093,8 +3261,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var q = foldTurkish($("#place-search").value.trim());
     var ul = $("#place-list");
     ul.textContent = "";
-    var counts = {};
+    var counts = {}, man = setterTools() ? null : loadManifest();
     fc.features.forEach(function (f) {
+      if (!shownTo(f, man)) { return; }
       counts[f.properties.place] = (counts[f.properties.place] || 0) + 1;
     });
     var shown = places.filter(function (p) {
@@ -3452,7 +3621,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     trash().forEach(function (e) {
       if (new Date(e.deleted_at).getTime() < cut) { drop.push(e); } else { keep.push(e); }
     });
-    drop.forEach(function (e) { delAudio(e.feature.properties.id); });
+    drop.forEach(function (e) {
+      var id = e.feature.properties.id;
+      delAudio(id);
+      (e.feature.properties.images || []).forEach(function (img) { delAudio(photoKey(id, img.key)); });
+    });
     if (drop.length) { setTrash(keep); } else { renderTrash(); }
   }
   function renderTrash() {
@@ -3963,6 +4136,142 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var h = f && f.properties && f.properties.hits && f.properties.hits[slot];
     return (h && typeof h === "object" && h.storage_path) || null;
   }
+
+  /* ---------- Photos ----------
+     Kept beside the audio: the same IndexedDB store locally, the same bucket on the server
+     under <id>/images/, so the bucket's per-feature read policy already decides who sees them —
+     a sensitive point's photos stay setter-only, like its recordings. */
+  var MAX_PHOTOS = 6, PHOTO_EDGE = 1600, photoUrls = [];
+
+  function photoKey(id, key) { return id + "@img:" + key; }
+  function photoPath(id, key) { return id + "/images/" + key + ".jpg"; }
+  function fitWithin(w, h, max) {
+    var s = Math.min(1, max / Math.max(w, h));
+    return { w: Math.round(w * s), h: Math.round(h * s) };
+  }
+
+  /* Re-drawn through a canvas and re-encoded, which carries no EXIF across — a phone photo's
+     GPS tag included. A sensitive point is fuzzed on publish; its photo must not hand the true
+     position back. */
+  function encodePhoto(file) {
+    return createImageBitmap(file, { imageOrientation: "from-image" }).then(function (bmp) {
+      var d = fitWithin(bmp.width, bmp.height, PHOTO_EDGE);
+      var c = document.createElement("canvas");
+      c.width = d.w; c.height = d.h;
+      c.getContext("2d").drawImage(bmp, 0, 0, d.w, d.h);
+      if (bmp.close) { bmp.close(); }
+      return new Promise(function (res, rej) {
+        c.toBlob(function (b) {
+          if (b) { res({ blob: b, w: d.w, h: d.h }); } else { rej(new Error("could not encode")); }
+        }, "image/jpeg", 0.82);
+      });
+    });
+  }
+
+  function addPhotos(f, files) {
+    var room = MAX_PHOTOS - (f.properties.images || []).length;
+    var take = Array.prototype.slice.call(files, 0, Math.max(0, room));
+    var failed = 0, skipped = files.length - take.length, added = [];
+    return take.reduce(function (chain, file) {
+      return chain.then(function () {
+        return encodePhoto(file).then(function (p) {
+          var key = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+          return putAudio(photoKey(f.properties.id, key), p.blob).then(function () {
+            added.push({ key: key, w: p.w, h: p.h, size: p.blob.size });
+          });
+        }).catch(function () { failed++; });
+      });
+    }, Promise.resolve()).then(function () {
+      if (added.length) {
+        claimEdit(f);
+        f.properties.images = (f.properties.images || []).concat(added);
+        commit();
+        if (selected === f.properties.id) { renderDetail(); }
+      }
+      var notes = [];
+      if (skipped) { notes.push(skipped + " not added — a point holds " + MAX_PHOTOS + " photos"); }
+      if (failed) { notes.push(failed + " could not be read"); }
+      if (notes.length) { toast(notes.join(" · ")); }
+    });
+  }
+
+  function removePhoto(f, key) {
+    if (!setterTools()) { return; }
+    claimEdit(f);
+    f.properties.images = (f.properties.images || []).filter(function (i) { return i.key !== key; });
+    if (!f.properties.images.length) { delete f.properties.images; }
+    delAudio(photoKey(f.properties.id, key));
+    commit();
+    renderDetail();
+  }
+
+  function renderPhotos(f) {
+    var g = $("#g-photos"), strip = $("#photos"), count = $("#photo-count");
+    var imgs = f.properties.images || [], tools = setterTools(), id = f.properties.id;
+    photoUrls.forEach(function (u) { URL.revokeObjectURL(u); });
+    photoUrls = [];
+    strip.textContent = "";
+    strip.scrollLeft = 0;   /* the strip element is reused, and kept the last point's position */
+    g.hidden = f.properties.kind !== "point" || (!imgs.length && !tools);
+    $("#photo-add").hidden = !tools || imgs.length >= MAX_PHOTOS;
+    strip.hidden = !imgs.length;
+    function recount() {
+      var n = strip.children.length;
+      if (!n) { strip.hidden = true; if (!tools) { g.hidden = true; } }
+      var at = strip.clientWidth ? Math.round(strip.scrollLeft / strip.clientWidth) + 1 : 1;
+      count.textContent = n > 1 ? Math.min(at, n) + " / " + n : "";
+    }
+    strip.onscroll = recount;
+    imgs.forEach(function (img, i) {
+      var fig = document.createElement("figure");
+      fig.className = "photo";
+      var el = document.createElement("img");
+      el.alt = label(f) + ", photo " + (i + 1) + " of " + imgs.length;
+      el.decoding = "async";
+      el.tabIndex = 0;
+      el.addEventListener("load", function () { el.classList.add("ready"); });
+      function open() { if (el.src) { openPhoto(el.src, el.alt); } }
+      el.addEventListener("click", open);
+      el.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+      });
+      fig.appendChild(el);
+      if (tools) {
+        var del = document.createElement("button");
+        del.type = "button"; del.className = "ghost photodel"; del.textContent = "×";
+        del.setAttribute("aria-label", "Remove photo " + (i + 1));
+        del.addEventListener("click", function () { removePhoto(f, img.key); });
+        fig.appendChild(del);
+      }
+      strip.appendChild(fig);
+      audioBlob(photoKey(id, img.key), img.storage_path || null).then(function (blob) {
+        if (selected !== id) { return; }
+        if (!blob) { fig.remove(); recount(); return; }
+        var u = URL.createObjectURL(blob);
+        photoUrls.push(u);
+        el.src = u;
+      }, function () { fig.remove(); recount(); });
+    });
+    recount();
+  }
+
+  function openPhoto(src, alt) {
+    var d = $("#photo-view");
+    $("#photo-view-img").src = src;
+    $("#photo-view-img").alt = alt || "";
+    if (d.showModal) { d.showModal(); } else { d.setAttribute("open", ""); }
+  }
+  $("#photo-view").addEventListener("click", function () { this.close(); });
+  $("#photo-add").addEventListener("click", function () {
+    if (!setterTools()) { return; }
+    $("#photo-file").click();
+  });
+  $("#photo-file").addEventListener("change", function () {
+    var f = feature(selected), files = this.files;
+    if (!f || !setterTools() || !files || !files.length) { this.value = ""; return; }
+    var input = this;
+    addPhotos(f, files).then(function () { input.value = ""; });
+  });
 
   /* ---------- Player ---------- */
   var audioEl = new Audio(), audioURL = null;
@@ -7518,35 +7827,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          OfflineAudioContext-free native decode. The one-time cost is small next to a
          200x-stretched ambient bed's own lifetime. */
       v.stretch = { node: null, ready: false };
-      /* A loud, caught failure here — same treatment as connectNativeToToneGain's own
-         assertion below — instead of an uncaught throw. Left unguarded, a renamed Tone
-         internal would throw synchronously, before Promise.all is even reached, which
-         propagates out through THIS .then callback to the outer audioBlob(...).catch
-         below rather than to this block's own .catch — silently deleting the voice entry
-         after the dry player/filter/grit/blend have already been built and wired,
-         leaking the whole Tone chain instead of just losing the stretch effect. */
+      /* Built through Tone's context and joined with Tone.connect. Measured 2026-09-18: a
+         native worklet spliced into a Tone.Gain's private native node reached that gain and
+         went no further — standardized-audio-context, under Tone, only wires a node's outputs
+         once it sees an active input through its own graph, so every stage after grit.input
+         read -inf. Stretch then crossfaded the dry recording into silence. */
       try {
-        var nativeCtx = bed.Tone.context.rawContext._nativeAudioContext;
-        if (!nativeCtx) {
-          throw new Error("ensureVoice: Tone's internal native AudioContext was not found " +
-            "where expected (.rawContext._nativeAudioContext) — this Tone.js build's " +
-            "private internals have likely changed since this bridge was written.");
-        }
+        var tctx = bed.Tone.getContext();
         Promise.all([
           fetch(v.url).then(function (r) { return r.arrayBuffer(); })
-            .then(function (ab) { return nativeCtx.decodeAudioData(ab); }),
-          /* Constructing the worklet node below throws unless this context has already
-             finished registering the paulstretch-processor name — addModule is its own
-             separate async step, cached so only the FIRST voice's ensureVoice call
-             actually loads it and every later one just awaits the same promise. */
-          loadPaulstretchModule(nativeCtx)
+            .then(function (ab) { return tctx.decodeAudioData(ab); }),
+          loadPaulstretchModule(tctx)
         ]).then(function (results) {
           var audioBuffer = results[0];
           if (!bed || !bed.on || bed.voices[z.id] !== v) { return; }
           var raw = audioBuffer.getChannelData(0);
           var mono = new Float32Array(raw.length);
           mono.set(raw);
-          var node = new AudioWorkletNode(nativeCtx, "paulstretch-processor");
+          /* One output channel: process() writes one, and Tone up-mixes mono to both sides.
+             Left to default it came up stereo with the right side silent. */
+          var node = tctx.createAudioWorkletNode("paulstretch-processor",
+            { numberOfInputs: 0, outputChannelCount: [1] });
           /* The only thing the worklet ever sends back (throttled inside process() itself,
              not on every audio callback) — where it actually is in the source right now.
              Stored on v.stretch, not fired into a redraw directly, since nothing here knows
@@ -7559,7 +7860,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             }
           };
           node.port.postMessage({ type: "source", data: mono }, [mono.buffer]);
-          connectNativeToToneGain(node, v.grit.input);
+          Tone.connect(node, v.grit.input);
           v.stretch.node = node;
           v.stretch.ready = true;
         }).catch(function (err) {
@@ -7707,31 +8008,31 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     fftFn(re, im, false);
     mag = new Array(windowSize);
     for (i = 0; i < windowSize; i++) { mag[i] = Math.sqrt(re[i] * re[i] + im[i] * im[i]); }
-    /* Multiplicative, unlike warpBins' own additive offset below — every partial's frequency
-       scaled by the same ratio, which is what preserves harmonic relationships (a real pitch
-       shift) rather than moving every partial by the same fixed amount (a detuning wobble,
-       which is what warpBins is for). Zero-filled past the spectrum's edge: a downward pitch
-       shift has nothing to put in the vacated high end, not a wrapped copy from the opposite
-       end of the spectrum — wrapping here would be a distinct, physically wrong artifact,
-       not a softer version of the real thing. Bounded to [0, windowSize/2], not
-       [0, windowSize): the source frame is real-valued, so only bins up to Nyquist
-       (windowSize/2) carry independent content — the upper half is an exact conjugate-mirror
-       duplicate of the lower half. Allowing the lookup into that mirror half would read back
-       a full-amplitude, frequency-reversed copy of the source's own spectrum for any
-       pitchRatio < 1 — the same category of spurious-high-frequency-content bug as wrapping,
-       just arriving through mirror symmetry instead of modulo arithmetic.
-       Each OUTPUT bin i is first folded to its own independent-half equivalent
-       (outFreqBin) before the lookup, not looked up directly by i — an output bin in the
-       upper/mirror half (i > windowSize/2) is not itself independent content, so pitch-
-       shifting it by its own raw index would silently zero it out at pitchRatio=1 (nothing
-       above Nyquist would ever be <= windowSize/2) instead of correctly mirroring its own
-       lower-half counterpart, the way mag[]'s natural Hermitian symmetry already did for
-       free before this pitch lookup existed. */
+    /* Multiplicative, unlike warpBins' additive offset below — a real pitch shift that keeps
+       harmonic ratios. Worked on the independent half [0, windowSize/2] only and mirrored
+       back, since a real frame's upper half is a conjugate copy; reading into it would pull
+       a frequency-reversed spectrum in. The vacated top is left empty, never wrapped.
+
+       Downward: PaulXStretch's own spectrum_do_pitch_shift (ProcessedStretch.h:359) scatters
+       every source bin into output bin floor(i*ratio), so nothing is discarded. It sums
+       magnitudes; this sums power, because the bins it merges carry independent random
+       phases and add incoherently — the level then holds across the whole stretch knob
+       (A-18) instead of rising +6 dB at two octaves down. At ratio 1 it is an exact identity. */
+    var half = windowSize / 2, pow2 = new Array(half + 1);
+    for (i = 0; i <= half; i++) { pow2[i] = 0; }
+    for (i = 0; i <= half; i++) {
+      if (pitchRatio < 1) {
+        pitchBin = Math.floor(i * pitchRatio);
+        pow2[pitchBin] += mag[i] * mag[i];
+      } else {
+        pitchBin = Math.floor(i / pitchRatio);
+        pow2[i] = mag[pitchBin] * mag[pitchBin];
+      }
+    }
     pitchMag = new Array(windowSize);
     for (i = 0; i < windowSize; i++) {
-      outFreqBin = (i <= windowSize / 2) ? i : (windowSize - i);
-      pitchBin = Math.round(outFreqBin / pitchRatio);
-      pitchMag[i] = (pitchBin >= 0 && pitchBin <= windowSize / 2) ? mag[pitchBin] : 0;
+      outFreqBin = (i <= half) ? i : (windowSize - i);
+      pitchMag[i] = Math.sqrt(pow2[outFreqBin]);
     }
     var outRe = new Array(windowSize), outIm = new Array(windowSize);
     for (i = 0; i < windowSize; i++) {
@@ -7831,6 +8132,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       "      output[i] = this.writeBuf[idx];",
       "      this.writeBuf[idx] = 0;",
       "    }",
+      "    for (i = 1; i < outputs[0].length; i++) { outputs[0][i].set(output); }",
       "    this.readOutPos = (this.readOutPos + output.length) % this.writeBuf.length;",
       "    this.posReportCounter += output.length;",
       "    if (this.posReportCounter >= 2048) {",
@@ -7847,38 +8149,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return paulstretchWorkletUrl;
   }
 
-  /* new AudioWorkletNode(ctx, "paulstretch-processor") throws unless this context has
-     already run audioWorklet.addModule() for a module that registered that exact name —
-     construction and registration are two separate async steps, easy to miss since
-     nothing about the AudioWorkletNode constructor itself hints a prior step was needed.
-     Cached so every soundscape voice's own ensureVoice call awaits the same promise
-     rather than re-adding the module (addModule on an already-loaded module is harmless
-     but wasteful, and registerProcessor throws if called twice for the same name on some
-     browsers). */
+  /* Registered through Tone's context, not the native one underneath it: the node must be
+     created and connected inside Tone's own graph (see ensureVoice). Cached because
+     registerProcessor throws on a second registration of the same name. */
   var paulstretchModulePromise = null;
   function loadPaulstretchModule(ctx) {
     if (!paulstretchModulePromise) {
-      paulstretchModulePromise = ctx.audioWorklet.addModule(buildPaulstretchWorkletUrl());
+      paulstretchModulePromise = ctx.addAudioWorkletModule(buildPaulstretchWorkletUrl());
     }
     return paulstretchModulePromise;
-  }
-
-  /* Tone's own public API only supports connecting a Tone node's output INTO a native
-     node (already used below: toneNode.connect(nativeNode) works as-is) — never the
-     reverse. Routing the worklet's native output back into the existing Tone-based grit/
-     blend graph needs Tone's PRIVATE internals, measured directly against the live
-     browser: Tone.Gain's own instance is not a real AudioNode, and neither is its
-     ._gainNode — only ._gainNode._nativeAudioNode is. A future Tone.js version could
-     rename any of these without warning; asserting here means that shows up as one loud,
-     specific error instead of a stretch knob that silently does nothing. */
-  function connectNativeToToneGain(nativeSrc, toneGain) {
-    var inner = toneGain && toneGain._gainNode && toneGain._gainNode._nativeAudioNode;
-    if (!inner || !(inner instanceof AudioNode)) {
-      throw new Error("connectNativeToToneGain: Tone.Gain's internal native node was not " +
-        "found where expected (._gainNode._nativeAudioNode) — this Tone.js build's " +
-        "private internals have likely changed since this bridge was written.");
-    }
-    nativeSrc.connect(inner);
   }
 
   /* A slow, musical tick (A-1: the Transport, never a UI callback) for the soundscape
@@ -11125,6 +11404,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     $("#f-walk").hidden = f.properties.kind !== "route";
     $("#f-patch").hidden = f.properties.kind !== "route";
+    renderPhotos(f);
     renderAudioMode(f);
     $("#f-walk").setAttribute("aria-pressed", String(!!pacer && pacer.f === f));
 
@@ -11599,6 +11879,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
               }
             });
           }
+          (props.images || []).forEach(function (img) {
+            if (!img || !img.storage_path) { return; }
+            jobs.push(function () {
+              var key = photoKey(row.id, img.key);
+              return audioBlob(key, img.storage_path).then(function (blob) {
+                if (!blob) { audioFailed++; return; }
+                return getAudio(key).then(function (stored) {
+                  if (!stored) { audioFailed++; }
+                });
+              });
+            });
+          });
         });
         var audio = jobs.reduce(function (chain, job) { return chain.then(job); }, Promise.resolve());
         /* The snapshot this writes at the end is what Finding 1's cold-reload fallback
