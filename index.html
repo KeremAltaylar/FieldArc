@@ -2315,7 +2315,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        can make one. */
     var SETTER_ONLY = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
-      "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit", "#photo-add"];
+      "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit", "#photo-add",
+      ".rowdel"];
     var show = setter.signedIn;
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
@@ -3774,7 +3775,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function deleteFeature(id) {
-    if (!id) { return; }
+    /* Refused here, not only at the buttons: the Archive row's × reached this for a listener
+       after #f-delete and the Delete key had both been gated. Every door leads here. */
+    if (!id || !setterTools()) { return; }
     var f = feature(id);
     var name = f ? label(f) : "Feature";
     /* The audio blob stays in IndexedDB until the trash window expires, so a restore is
@@ -11518,6 +11521,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var del = document.createElement("button");
       del.type = "button";
       del.className = "rowdel";
+      del.hidden = !setterTools();
       del.textContent = "×";
       del.setAttribute("aria-label", "Delete " + label(f));
       del.addEventListener("click", function (ev) {

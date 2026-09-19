@@ -102,3 +102,16 @@ test("Storage carries one h2, and Setter sits under it as an h3", () => {
   assert.match(section, /<h3>Setter<\/h3>/);
   assert.match(html, /\.section h3 \{/, "and the h3 is styled rather than left at 1.17em bold");
 });
+
+/* 2026-09-19: a listener could delete points and routes from the Archive tab. The row's ×
+   was built for everyone and deleteFeature() never asked who was calling, so the gating
+   pass that hid #f-delete and guarded its handler left this second door open. */
+test("a listener cannot delete from the archive list", () => {
+  const del = slice("function deleteFeature(id)", "\n  }\n");
+  assert.match(del, /if \(!id \|\| !setterTools\(\)\) \{ return; \}/,
+    "the delete itself refuses, so every entry point is covered, not just the visible ones");
+  const list = slice("function renderList()", "function renderDetail()");
+  assert.match(list, /del\.hidden = !setterTools\(\);/, "the × is not shown to a listener");
+  const gate = slice("function applyModeGating()", "sizePeek();");
+  assert.match(gate, /"\.rowdel"/, "and rows already on screen follow a sign-in or sign-out");
+});
