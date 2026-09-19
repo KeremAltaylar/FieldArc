@@ -52,7 +52,7 @@ test("a manifest that cannot be written says so instead of being swallowed", () 
   assert.match(fn, /return false;/,
     "and must report the failure, or publish()'s success toast overwrites the warning");
   const pub = slice("function publish()", 'addEventListener("click", publish)');
-  assert.match(pub, /if \(recorded\) \{ toast\("Published "/,
+  assert.match(pub, /if \(recorded\) \{\s*var line = "Published "[\s\S]*?toast\(line\);\s*\}/,
     "the success line is conditional on the manifest actually persisting");
 });
 

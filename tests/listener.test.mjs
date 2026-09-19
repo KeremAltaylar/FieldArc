@@ -295,8 +295,10 @@ test("merged remote features cannot enter the publish-pending manifest", () => {
      branch that soft-deletes rows on the server. */
   const pub = html.slice(html.indexOf("function publish()"),
                          html.indexOf('addEventListener("click", publish)'));
-  assert.match(pub, /saveManifest\(window\.FA_PENDING\.manifestOf\(authoredFeatures\(\)\)\)/,
+  assert.match(pub, /var snapshot = window\.FA_PENDING\.manifestOf\(authoredFeatures\(\)\);/,
     "the recorded manifest must use the same predicate, or a merge becomes a mass unpublish");
+  assert.match(pub, /saveManifest\(window\.FA_PENDING\.recordPublished\(loadManifest\(\), snapshot,/,
+    "and what is saved is built from that snapshot, not from some other list");
   assert.doesNotMatch(pub, /manifestOf\(fc\.features\)/,
     "one inconsistent argument here turns a read-only merge into a mass unpublish");
 

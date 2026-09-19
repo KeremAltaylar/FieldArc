@@ -152,8 +152,8 @@ test("publish() stamps created_by on new features only, and always clears delete
   assert.doesNotMatch(pub, /geometry: f\.geometry, properties: p, created_by: setter\.id/,
     "the unconditional stamp is what reassigned another setter's work");
   /* Two batches — see the test below for the measured reason they cannot be one. */
-  assert.match(pub, /upsertBatch\(newRows\)/);
-  assert.match(pub, /upsertBatch\(changedRows\)/);
+  assert.match(pub, /upsertBatch\(newRows\.filter\(sent\)\)/);
+  assert.match(pub, /upsertBatch\(changedRows\.filter\(sent\)\)/);
 });
 
 /* Why added and changed rows cannot share one request, measured rather than assumed. The
@@ -191,4 +191,26 @@ test("publishing writes an audit row naming the setter", async () => {
 
   const { data } = await db.from("audit").select("action,target_id").eq("setter_id", userId);
   assert.ok(data.some((r) => r.action === "publish" && r.target_id === ID));
+});
+
+/* 2026-09-19: three points and a route stuck behind one 50 MB+ WAV. Storage refused the WAV,
+   the whole publish aborted, and the count came straight back to 4. */
+test("one feature's failed upload does not hold the others back", () => {
+  const pub = html.slice(html.indexOf("function publish()"),
+                         html.indexOf('addEventListener("click", publish)'));
+  assert.match(pub, /\.catch\(function \(e\) \{ failed\.push\(\{ id: r\.id/,
+    "a feature's upload chain catches its own failure instead of aborting the publish");
+  assert.match(pub, /var pushed = rows\.filter\(sent\);/, "only what went up is counted as pushed");
+  assert.match(pub, /recordPublished\(loadManifest\(\), snapshot,\s*pushed\.map/,
+    "and only that is recorded, so the failed one stays pending");
+});
+
+test("a recording over the storage limit is shrunk before upload, and photos are not", () => {
+  const pub = html.slice(html.indexOf("function publish()"),
+                         html.indexOf('addEventListener("click", publish)'));
+  assert.match(pub, /return fitForStorage\(key, blob\)\.then/, "every upload goes through the size check");
+  assert.ok(pub.includes('if (/^image\\//.test(blob.type)) { return Promise.resolve(blob); }'),
+    "a photo is uploaded as it is");
+  assert.match(pub, /import\("\.\/src\/shrink\.mjs"\)/,
+    "loaded on demand, so a failed load cannot take the pending counter down with it");
 });

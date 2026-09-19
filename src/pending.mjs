@@ -43,3 +43,15 @@ export function diffManifest(previous, current) {
   }
   return { added: added.sort(), changed: changed.sort(), removed: removed.sort() };
 }
+
+/* The manifest after a publish that may have pushed only some of what was pending. Writing the
+   whole current manifest would mark a feature whose upload failed as published, and it would
+   never be pending again. So only the ids that actually went up take their current hash; one
+   that failed keeps whatever it had before (absent if new, its old hash if changed), and so it
+   still reads as pending on the next diff. */
+export function recordPublished(previous, current, pushedIds, removedIds) {
+  const next = Object.assign({}, previous);
+  for (const id of pushedIds) { if (id in current) { next[id] = current[id]; } }
+  for (const id of removedIds) { delete next[id]; }
+  return next;
+}

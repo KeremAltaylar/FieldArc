@@ -16,6 +16,7 @@ var SHELL_FILES = [
   "./index.html",
   "./places.geojson",
   "./src/pending.mjs",
+  "./src/shrink.mjs",
   "./src/paulx-worklet.js",
   "https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js",
   "https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css"

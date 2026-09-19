@@ -1805,8 +1805,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      script, which has finished running by the time any deferred module executes, and the call
      is guarded because a browser that fails to load this module must still not throw. -->
 <script type="module">
-  import { hashFeature, manifestOf, diffManifest } from "./src/pending.mjs";
-  window.FA_PENDING = { hashFeature, manifestOf, diffManifest };
+  import { hashFeature, manifestOf, diffManifest, recordPublished } from "./src/pending.mjs";
+  window.FA_PENDING = { hashFeature, manifestOf, diffManifest, recordPublished };
   if (window.__fa && window.__fa.publish) { window.__fa.publish.refresh(); }
 </script>
 <script>
@@ -1903,7 +1903,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     t.textContent = msg;
     t.hidden = false;
     clearTimeout(t._timer);
-    t._timer = setTimeout(function () { t.hidden = true; }, 2600);
+    /* Long enough to read. A flat 2.6 s suited "Point reset" and not a publish failure naming
+       which point and why: that line was gone before it could be read, and all that stayed on
+       screen was the unchanged count. About 60 ms a character, capped at 12 s. */
+    t._timer = setTimeout(function () { t.hidden = true; },
+                          Math.min(12000, Math.max(2600, msg.length * 60)));
   }
 
   /* ---------- Error state (C-5): if the library never arrives, say so. ---------- */
@@ -2609,6 +2613,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         p.hits = h;
       }
       if (p.images) { p.images = p.images.map(function (o) { return Object.assign({}, o); }); }
+      /* Same reason: a shrunk take records what listeners actually get on audio.published. */
+      if (p.audio && typeof p.audio === "object") { p.audio = Object.assign({}, p.audio); }
       var row = { id: id, place: f.properties.place, kind: f.properties.kind,
                   geometry: f.geometry, properties: p, deleted_at: null };
       if (isNew) { row.created_by = setter.id; }
@@ -2626,6 +2632,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var newRows = d.added.map(function (id) { return rowFor(id, true); });
     var changedRows = d.changed.map(function (id) { return rowFor(id, false); });
     var rows = newRows.concat(changedRows);
+
+    /* What is being published, hashed now rather than after the uploads. An edit made while a
+       long recording uploads must stay pending; hashing at the end would record it as sent.
+       authoredFeatures(), the same predicate pendingDiff() uses — see the note at the end. */
+    var snapshot = window.FA_PENDING.manifestOf(authoredFeatures());
 
     $("#publish-btn").disabled = true;
     $("#pending-count").textContent = "publishing…";
@@ -2658,26 +2669,64 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
            IndexedDB can evict a blob, site data can be cleared, an import can carry the flag
            without the audio, and any of those must block the publish, not slip past it. */
         if (!blob) { return Promise.reject(new Error(missing)); }
-        var path = pathFor(blob);
-        return sb.storage.from("recordings")
-          .upload(path, blob, { upsert: true, contentType: blob.type })
-          .then(function (r) { return r.error ? Promise.reject(new Error(r.error.message)) : path; });
+        return fitForStorage(key, blob).then(function (fit) {
+          var path = pathFor(fit);
+          return sb.storage.from("recordings")
+            .upload(path, fit, { upsert: true, contentType: fit.type })
+            .then(function (r) { return r.error ? Promise.reject(new Error(r.error.message)) : path; });
+        });
+      });
+    }
+
+    /* Storage refuses anything over 50 MB, and it said so only as a 400 after a minute of
+       uploading: one long WAV held a whole publish back, attempt after attempt. A recording
+       over the limit is shrunk to Opus on the way out (src/shrink.mjs has the why and the
+       bitrates); the blob in IndexedDB is not touched. Photos are already small JPEGs. What
+       was done is kept by key, so the row can say what listeners actually get. */
+    var shrunk = {}, shrinkMod = null;
+    function fitForStorage(key, blob) {
+      if (/^image\//.test(blob.type)) { return Promise.resolve(blob); }
+      shrinkMod = shrinkMod || import("./src/shrink.mjs");
+      return shrinkMod.then(function (m) {
+        if (!m.needsShrink(blob.size)) { return blob; }
+        var mb = Math.round(blob.size / 1048576);
+        $("#pending-count").textContent = "compressing a " + mb + " MB recording…";
+        return m.shrinkToOpus(blob, function (p) {
+          $("#pending-count").textContent =
+            "compressing a " + mb + " MB recording… " + Math.round(p * 100) + "%";
+        }).then(function (info) {
+          shrunk[key] = info;
+          $("#pending-count").textContent = "publishing…";
+          return info.blob;
+        });
       });
     }
 
     /* Sequential on purpose. Six parallel uploads on a phone at the edge of signal is how a
        publish half-finishes; one at a time is slower and finishes. A row is only upserted
        after its files are up, so the server never holds a feature claiming audio it does not
-       have — the queue simply stays pending instead. */
-    var uploads = [];
-    rows.forEach(function (r) {
+       have — that one feature simply stays pending instead.
+
+       Per feature, not all-or-nothing. One bad file used to hold every other feature back,
+       and the setter saw only "publishing…" and then the same count: 3 points and a route
+       stuck behind one oversized WAV. Now each feature's uploads succeed or fail together,
+       a failed one is left out of the upsert and stays pending, and the rest go up. */
+    function jobsFor(r) {
+      var uploads = [];
       if (r.properties.has_audio) {
         uploads.push(function () {
           return uploadAudio(r.id,
             function (blob) { return r.id + "/take." + ext(blob); },
-            "feature " + r.id + " says it has a recording, but this device no longer has the " +
-            "audio for it — re-attach the recording or clear its “has audio” flag, then publish again"
-          ).then(function (path) { r.properties.storage_path = path; });
+            "this device no longer has its recording — re-attach it or clear its “has audio” " +
+            "flag, then publish again"
+          ).then(function (path) {
+            r.properties.storage_path = path;
+            var s = shrunk[r.id];
+            if (s && r.properties.audio) {
+              r.properties.audio.published = { codec: s.codec, bitrate: s.bitrate,
+                                               channels: s.channels, bytes: s.bytes };
+            }
+          });
         });
       }
       HIT_SLOTS.forEach(function (slot) {
@@ -2685,8 +2734,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         uploads.push(function () {
           return uploadAudio(r.id + "#" + slot,
             function (blob) { return r.id + "/hits/" + slot + "." + ext(blob); },
-            "feature " + r.id + " lists a “" + slot + "” hit, but this device no longer has the " +
-            "audio for it — re-attach that hit or remove the slot, then publish again"
+            "its “" + slot + "” hit is no longer on this device — re-attach that hit or remove " +
+            "the slot, then publish again"
           ).then(function (path) {
             var s = r.properties.hits[slot];
             if (!s || typeof s !== "object") { s = r.properties.hits[slot] = {}; }
@@ -2698,17 +2747,35 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         uploads.push(function () {
           return uploadAudio(photoKey(r.id, img.key),
             function () { return photoPath(r.id, img.key); },
-            "feature " + r.id + " lists a photo this device no longer has — remove it from the " +
-            "card, then publish again"
+            "one of its photos is no longer on this device — remove it from the card, then " +
+            "publish again"
           ).then(function (path) { img.storage_path = path; });
         });
       });
-    });
-    var audio = uploads.reduce(function (chain, job) { return chain.then(job); }, Promise.resolve());
+      return uploads;
+    }
+
+    /* What each failure is called on screen. An id means nothing to the person holding the
+       phone; the name they typed, or the kind of thing it is, does. */
+    function labelOf(r) {
+      var n = r.properties && r.properties.name;
+      return n ? "“" + n + "”" : "a " + r.kind;
+    }
+
+    var failed = [];
+    var audio = rows.reduce(function (chain, r) {
+      return chain.then(function () {
+        return jobsFor(r).reduce(function (c, job) { return c.then(job); }, Promise.resolve())
+          .catch(function (e) { failed.push({ id: r.id, label: labelOf(r), message: e.message }); });
+      });
+    }, Promise.resolve());
+    function sent(r) {
+      return !failed.some(function (x) { return x.id === r.id; });
+    }
 
     /* Two requests rather than one, for the reason given where the batches are built. Each
-       throws on its own error so a half-written publish stops at the first failure with the
-       manifest unwritten and everything still pending. */
+       throws on its own error so a failed upsert stops the publish with the manifest unwritten
+       and everything still pending. */
     function upsertBatch(batch) {
       if (!batch.length) { return Promise.resolve({ error: null }); }
       return sb.from("features").upsert(batch, { onConflict: "id" }).then(function (r) {
@@ -2717,8 +2784,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       });
     }
 
-    var work = audio.then(function () { return upsertBatch(newRows); })
-      .then(function () { return upsertBatch(changedRows); });
+    var work = audio.then(function () { return upsertBatch(newRows.filter(sent)); })
+      .then(function () { return upsertBatch(changedRows.filter(sent)); });
 
     return work.then(function (r) {
       if (r.error) { throw new Error(r.error.message); }
@@ -2728,22 +2795,39 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         .update({ deleted_at: new Date().toISOString() }).in("id", d.removed);
     }).then(function (r) {
       if (r && r.error) { throw new Error(r.error.message); }
+      /* A publish in which nothing went up is not an event in the archive's history. */
+      if (!rows.filter(sent).length && !d.removed.length) { return null; }
       return sb.from("audit").insert({
         setter_id: setter.id, action: "publish", target_id: null,
-        detail: { added: d.added.length, changed: d.changed.length, removed: d.removed.length }
+        detail: { added: newRows.filter(sent).length, changed: changedRows.filter(sent).length,
+                  removed: d.removed.length, failed: failed.length }
       });
     }).then(function () {
-      /* authoredFeatures(), not fc.features, and the two MUST agree. Recording merged ids here
-         while pendingDiff() leaves them out of the current manifest would make every one of
-         them read as REMOVED on the very next diff — and `removed` is the branch that soft-
-         deletes rows on the server. One inconsistent argument here turns a read-only merge into
-         a mass unpublish. */
-      var recorded = saveManifest(window.FA_PENDING.manifestOf(authoredFeatures()));
+      /* The snapshot was taken with authoredFeatures(), not fc.features, and the two MUST
+         agree. Recording merged ids here while pendingDiff() leaves them out of the current
+         manifest would make every one of them read as REMOVED on the very next diff — and
+         `removed` is the branch that soft-deletes rows on the server. One inconsistent argument
+         here turns a read-only merge into a mass unpublish.
+
+         Only what actually went up is recorded; a feature whose files failed keeps its old
+         entry and so is still pending. */
+      var pushed = rows.filter(sent);
+      var recorded = saveManifest(window.FA_PENDING.recordPublished(loadManifest(), snapshot,
+        pushed.map(function (r) { return r.id; }), d.removed));
       renderPending();
       /* Only when the manifest actually persisted: saveManifest has already said something
          more useful otherwise, and this line would erase it. */
-      if (recorded) { toast("Published " + rows.length + " · removed " + d.removed.length); }
-      return { pushed: rows.length, removed: d.removed.length, failed: 0 };
+      if (recorded) {
+        var line = "Published " + pushed.length + " · removed " + d.removed.length;
+        if (failed.length) {
+          line = (pushed.length || d.removed.length ? line + " · " : "Publish failed — ") +
+            failed.length + " still pending. " + failed.map(function (x) {
+              return x.label + ": " + x.message;
+            }).join(" · ");
+        }
+        toast(line);
+      }
+      return { pushed: pushed.length, removed: d.removed.length, failed: failed.length };
     }).catch(function (e) {
       /* The queue survives: the manifest is only written on success, so a failed publish
          leaves everything pending rather than silently marking it done. */

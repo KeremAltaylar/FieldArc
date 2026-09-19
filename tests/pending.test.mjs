@@ -69,3 +69,23 @@ test("coordinate order is data, not noise — reordering changes the hash (route
   assert.notEqual(hashFeature(one), hashFeature(two),
     "a reversed route is a different walk; canonical() must not sort the coordinate pairs");
 });
+
+/* A partial publish: only what actually reached the server is recorded, so what failed stays
+   pending and what went up stops being counted. */
+test("recordPublished records only the ids that went up, and drops the removed", async () => {
+  const { recordPublished } = await import("../src/pending.mjs");
+  const previous = { a: "1", gone: "9", untouched: "5" };
+  const current = { a: "2", b: "3", failed: "4", untouched: "5" };
+  const next = recordPublished(previous, current, ["a", "b"], ["gone"]);
+  assert.deepEqual(next, { a: "2", b: "3", untouched: "5" });
+  assert.deepEqual(diffManifest(next, current),
+    { added: ["failed"], changed: [], removed: [] },
+    "the one that failed is exactly what is still pending");
+  assert.deepEqual(previous, { a: "1", gone: "9", untouched: "5" }, "the input is not mutated");
+});
+
+test("a failed change keeps its old hash, so it still reads as changed", async () => {
+  const { recordPublished } = await import("../src/pending.mjs");
+  const next = recordPublished({ a: "1" }, { a: "2" }, [], []);
+  assert.deepEqual(diffManifest(next, { a: "2" }).changed, ["a"]);
+});
