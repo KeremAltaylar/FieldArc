@@ -15,7 +15,7 @@ function src(name) {
 
 test("the panel has its sections and every PaulXStretch control", () => {
   const p = src("renderSoundscapePanel");
-  ["Stretch", "Spectrum", "Extras"].forEach((h) => assert.match(p, new RegExp('heading\\("' + h + '"\\)')));
+  ["Stretch", "Spectrum", "Extras"].forEach((h) => assert.match(p, new RegExp('heading\\("' + h + '"[,)]')));
   ["Harmonics", "Tonal vs noise", "Frequency shift", "Pitch shift", "Ratios", "Spread", "Filter",
    "Compressor", "Binaural beats"].forEach((m) => assert.match(p, new RegExp('buildPxModule\\("' + m + '"'), m));
   ["stretch", "fft", "onset", "start", "end", "xfade", "warp", "morph", "field", "grit"]
@@ -52,12 +52,19 @@ test("log sliders keep the stored value in real units", () => {
 test("narrow or short screens get tabs, not a scrolling panel", () => {
   /* Measured: 1428x729 three columns, 501x695 five tabs, 832x390 five tabs with two sub-columns
      — every one 0 px of panel scroll. Three tabs had scrolled 23-168 px. */
-  const p = src("renderSoundscapePanel");
-  assert.match(p, /setAttribute\("role", "tablist"\)/);
-  assert.match(p, /innerWidth < 1000 \|\| innerHeight < 700/);
+  /* 2026-09-19: the tab frame moved into soundColumns, shared by all three sound panels, so
+     Rhythm and Grains got the same fallback Stretch already had. */
+  const p = src("renderSoundscapePanel"), cols = src("soundColumns"), tabbed = src("soundTabbed");
+  assert.match(cols, /setAttribute\("role", "tablist"\)/);
+  assert.match(tabbed, /innerWidth < 1000 \|\| innerHeight < 700/);
+  assert.match(cols, /twoUp = tabbed && innerWidth >= 700/);
+  assert.match(p, /var tabbed = soundTabbed\(\);/);
+  assert.match(p, /soundColumns\(body, "soundscape", tabbed \?/);
   ["Point", "Stretch", "Spectrum", "Ratios", "Output"].forEach((t) => assert.match(p, new RegExp('title: "' + t + '"')));
-  assert.match(p, /twoUp = tabbed && innerWidth >= 700/);
   assert.match(p, /innerHeight < 500\) \{ wave\.classList\.add\("short"\); mhead\.hidden = true; \}/);
+  for (const panel of ["renderRhythmPanel", "renderGrainPanel"]) {
+    assert.match(src(panel), /soundColumns\(body,/, panel + " uses the same frame");
+  }
 });
 
 test("every drag updates the caption first, whether or not a voice is playing, then posts pxParams", () => {

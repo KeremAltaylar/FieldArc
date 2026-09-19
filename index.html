@@ -1051,7 +1051,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   display: flex; flex-direction: column;
   background: var(--sunk);
 }
-#pp-title {
+/* The three sound panels wear the patch's header: one mono line, actions pushed right. Their
+   title was left to the body face and the actions sat against it on the left. */
+#pp-title, #rp-title {
   flex: 1; font-family: var(--font-mono); font-size: var(--t-xs);
   letter-spacing: var(--track-meta); text-transform: uppercase; color: var(--dim);
 }
@@ -1102,7 +1104,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 .grainwave {
   display: block; width: 100%; height: 68px;
-  margin-bottom: var(--s-3);
+  margin-bottom: var(--s-2);
   background: color-mix(in oklch, var(--sunk) 60%, transparent);
   border: 1px solid var(--bdr); border-radius: 2px;
 }
@@ -1140,7 +1142,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .pxratio .pprow { grid-template-columns: 1.8rem 1fr 3rem; }
 .pxtwo { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--s-5); align-items: start; }
 .pxtwo > div { min-width: 0; }
-.ppwave.short { height: 32px; }
+/* C-10: the display takes the height the columns give back. Only where the panel is in
+   columns — tabbed, every pixel is already spoken for. */
+@media (min-width: 1000px) and (min-height: 700px) {
+  .ppwave, .grainwave { height: 104px; }
+  .grainenv { height: 88px; }
+  #rp-body .rpat.cells16 i { height: 13px; }
+}
+.ppwave.short, .grainwave.short { height: 32px; }
 .pptabs {
   display: grid; grid-template-columns: repeat(var(--tabs, 3), minmax(0, 1fr));
   border: 1px solid var(--bdr); border-radius: 2px; overflow: hidden; margin: var(--s-2) 0;
@@ -1255,7 +1264,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 .ppcol { min-width: 0; }
 .ppcol h2:first-child { margin-top: 0; }
 
-#pp-body h2 { margin: var(--s-2) 0 var(--s-1); break-after: avoid; }
+#pp-body h2, #rp-body h2 { margin: var(--s-2) 0 var(--s-1); break-after: avoid; }
+/* A column that opens on a module lines its heading up with the plain headings beside it. */
+.ppcol > .pxmod:first-child h2 { margin-top: 0; }
 #pp-body h2:first-child { margin-top: 0; }
 .pprow {
   display: grid; grid-template-columns: 6.4rem 1fr 3.6rem; align-items: center;
@@ -1353,6 +1364,82 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 .pphead h2 { margin: 0; }
 .pphead .ppgen { flex: 0 0 auto; }
+
+/* ---- The three sound panels, in the patch's language ----
+   A display's own readout sits on its heading line, right-aligned, as a mono meta line —
+   the waveform says what the recording is, this says how long it now takes. */
+.ppmeta {
+  flex: 0 1 auto; min-width: 0;
+  font-family: var(--font-mono); font-size: var(--t-xs); color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The heading keeps its words; the readout beside it is what gives way, with an ellipsis.
+   At 501 px the caption squeezed "The recording" onto two lines. */
+.pphead h2 { flex: 1 0 auto; white-space: nowrap; }
+/* Actions stacked as full-width rows, the height of a control row. */
+.ppactions { display: flex; flex-direction: column; gap: var(--s-1); }
+.ppactions button { width: 100%; padding: 2px var(--s-2); font-size: var(--t-xs); }
+/* The four hits as cards, the way the patch lays out its chords: one card per voice, the
+   same rows in the same order in each, so the four read across as one instrument. */
+.hitcards {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-2);
+}
+.hitcard {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding: var(--s-2) var(--s-3);
+  background: var(--panel); border: 1px solid var(--bdr); border-radius: 2px;
+}
+.hithead {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-2);
+  margin-bottom: var(--s-1);
+  font-family: var(--font-mono); font-size: var(--t-xs);
+  letter-spacing: var(--track-eyebrow); text-transform: uppercase; color: var(--ink);
+}
+.hithead b { font-weight: 400; }
+.hithead em {
+  font-style: normal; letter-spacing: 0; text-transform: none; color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.hitcard.unset .hithead em { color: var(--faint); }
+.hitcard .pprow { grid-template-columns: 4.8rem 1fr 3.2rem; margin-bottom: 0; }
+.hitsub {
+  display: flex; align-items: center; gap: var(--s-2);
+  margin: var(--s-1) 0 2px;
+  font-family: var(--font-mono); font-size: var(--t-xs); letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase; color: var(--faint);
+}
+.hitsub::after {
+  content: ""; flex: 1 1 auto; height: 1px;
+  background: color-mix(in oklch, var(--ink) 8%, transparent);
+}
+/* Sixteen cells to a row, like a step sequencer's pages: a 64-step pattern is four rows of a
+   bar each rather than sixty-four slivers across a card. */
+.rpat.cells16 {
+  display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 2px;
+  max-width: none; margin: var(--s-2) 0 0;
+}
+.rpat.cells16 i { height: 10px; }
+/* A module's power switch is the lamp dot, and only the dot. The panels' pressed-button tint
+   is more specific and was painting a filled bar behind the modules that were on, so "on"
+   read three different ways on one screen. */
+#rp-body .pxpower[aria-pressed], #rp-body .pxpower[aria-pressed]:hover {
+  background: transparent; border-color: transparent;
+}
+@media (max-width: 999px), (max-height: 699px) {
+  .hitcards { grid-template-columns: minmax(0, 1fr); }
+}
+/* A phone on its side is short, not narrow (W-5): the card puts its pattern controls and its
+   effects side by side instead of stacking eleven rows into a 390 px screen. */
+.hitmain, .hitfx { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+@media (max-height: 499px) and (min-width: 600px) {
+  .hitcard {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 2px var(--s-5); align-items: start;
+  }
+  .hitcard > .hithead, .hitcard > .rpat { grid-column: 1 / -1; }
+  .hitfx .hitsub { margin-top: 0; }
+}
 /* The chord you are standing in, so the editor and the walk agree. */
 .ppchord.now { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 14%, var(--panel)); }
 .ppchord.now b { color: var(--accent); }
@@ -1619,9 +1706,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <span class="eyebrow">Sound</span>
         <div class="recmode" role="group" aria-label="What this point holds">
           <button type="button" data-amode="soundscape" aria-pressed="true"
-                  title="One recording of any length, played as it is">Soundscape</button>
+                  title="One recording of any length, through the PaulXStretch engine">Stretch</button>
           <button type="button" data-amode="hits" aria-pressed="false"
-                  title="Four hits, sequenced into a rhythm in tempo with the route">4 hits</button>
+                  title="Four hits, sequenced into a rhythm in tempo with the route">Rhythm</button>
           <button type="button" data-amode="grains" aria-pressed="false"
                   title="One recording, granulated into a rhythm in tempo with the route">Grains</button>
         </div>
@@ -4967,163 +5054,225 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     { k: "radius", label: "carries", min: 20, max: 400, step: 10, unit: " m",
       hint: "how far away this point starts to be heard" },
     { k: "gain", label: "level", min: 0, max: 1, step: 0.05,
-      hint: "how loud it is at the centre" },
+      hint: "how loud it is at the centre — these belong to the point, so every point on a route can differ" },
     { k: "zoneR", label: "zone", min: 5, max: 160, step: 1, unit: " m",
       hint: "how close you must be for its zone event to fire" }
   ];
 
+  function pctFmt(v) { return Math.round(v * 100) + " %"; }
+
   var RHYTHM_FIELDS = [
     { k: "on", label: "rhythm", toggle: true },
-    { k: "steps", label: "steps", min: 4, max: 64, step: 1 },
+    { k: "steps", label: "steps", min: 4, max: 64, step: 1,
+      hint: "how many steps one bar of the pattern has" },
     { k: "div", label: "step length", options: function () { return DIVISIONS; },
-      fmt: function (v) {
-        return (DIV_LABEL[v] || v) + " \u00b7 " +
-          divSeconds(v, pacer ? pacer.patch.tempo : 72).toFixed(2) + " s";
-      } },
+      fmt: function (v) { return DIV_LABEL[v] || v; },
+      side: function (v) { return divSeconds(v, pacer ? pacer.patch.tempo : 72).toFixed(2) + " s"; },
+      hint: "a musical division of the route's tempo" },
     { k: "gain", label: "level", min: 0, max: 1, step: 0.05 },
-    { k: "idiom", label: "idiom", min: 0, max: 1, step: 0.02 },
-    { k: "sentenceBars", label: "phrase length", min: 4, max: 32, step: 1, unit: " bars" }
+    { k: "idiom", label: "idiom", min: 0, max: 1, step: 0.02,
+      hint: "how strongly the pattern leans on its own phrases rather than a free draw" },
+    { k: "sentenceBars", label: "phrase", min: 4, max: 32, step: 1, unit: " bars",
+      hint: "how many bars before the pattern moves on to its next related phrase" }
   ];
 
+  /* The explanation that used to sit beside these as a paragraph is on each control now, where
+     it is read at the moment it is needed: three different randomnesses, kept apart on purpose \u2014
+     roam moves where each pulse bites, scatter spreads the grains inside one burst, vary changes
+     the shape of the cloud itself. */
   var GRAIN_FIELDS = [
-    { k: "pulses", label: "pulses", min: 0, max: 64, step: 1 },
-    { k: "rotate", label: "rotation", min: 0, max: 63, step: 1 },
-    { k: "offset", label: "offset", min: 0, max: 1, step: 0.01 },
-    { k: "roam", label: "roam", min: 0, max: 1, step: 0.02 },
+    { k: "pulses", label: "pulses", min: 0, max: 64, step: 1,
+      hint: "how many of the steps fire a burst, spread as evenly as the step count allows" },
+    { k: "rotate", label: "rotation", min: 0, max: 63, step: 1,
+      fmt: function (v) { return "\u21ba " + v; },
+      hint: "turns the pattern without changing it" },
+    { k: "offset", label: "offset", min: 0, max: 1, step: 0.01, fmt: pctFmt,
+      hint: "where in the recording the grains come from" },
+    { k: "roam", label: "roam", min: 0, max: 1, step: 0.02, fmt: pctFmt,
+      hint: "how far each pulse's bite moves around the offset \u2014 at 100 % across the whole recording" },
     { k: "grain", label: "grain size", min: 20, max: 500, step: 5, unit: " ms" },
-    { k: "count", label: "grains per pulse", min: 1, max: 32, step: 1 },
-    { k: "spread", label: "spread", min: 0, max: 1, step: 0.02 },
-    { k: "scatter", label: "scatter", min: 0, max: 1, step: 0.02 },
-    { k: "pitch", label: "pitch", min: -24, max: 24, step: 1, unit: " st" },
+    { k: "count", label: "per pulse", min: 1, max: 32, step: 1,
+      hint: "grains in each burst" },
+    { k: "spread", label: "spread", min: 0, max: 1, step: 0.02, fmt: pctFmt,
+      hint: "how far the burst is thrown across the step \u2014 at 0 % one transient, at 100 % it fills the step" },
+    { k: "scatter", label: "scatter", min: 0, max: 1, step: 0.02, fmt: pctFmt,
+      hint: "how far each grain in a burst wanders from the pulse's position in the file" },
+    { k: "pitch", label: "pitch", min: -24, max: 24, step: 1,
+      fmt: function (v) { return (v > 0 ? "+" : "") + v + " st"; } },
     { k: "gain", label: "level", min: 0, max: 1, step: 0.05 },
-    { k: "vary", label: "vary per hit", min: 0, max: 1, step: 0.02 }
+    { k: "vary", label: "vary", min: 0, max: 1, step: 0.02, fmt: pctFmt,
+      hint: "changes each burst's size, number, spread, level, envelope and pitch (by whole semitones)" }
   ];
 
   /* Fractions of the grain, shown as percentages, because that is what they are — a grain
      whose size is being varied per hit cannot hold a time in milliseconds and keep its
      shape. */
   var GRAIN_ENV_FIELDS = [
-    { k: "attack", label: "attack", min: 0, max: 1, step: 0.01,
-      fmt: function (v) { return Math.round(v * 100) + "%"; } },
-    { k: "decay", label: "decay", min: 0, max: 1, step: 0.01,
-      fmt: function (v) { return Math.round(v * 100) + "%"; } },
-    { k: "sustain", label: "sustain", min: 0, max: 1, step: 0.02,
-      fmt: function (v) { return Math.round(v * 100) + "%"; } },
-    { k: "release", label: "release", min: 0, max: 1, step: 0.01,
-      fmt: function (v) { return Math.round(v * 100) + "%"; } }
+    { k: "attack", label: "attack", min: 0, max: 1, step: 0.01, fmt: pctFmt,
+      hint: "of the grain — a short attack into a long release is a struck sound" },
+    { k: "decay", label: "decay", min: 0, max: 1, step: 0.01, fmt: pctFmt,
+      hint: "of the grain" },
+    { k: "sustain", label: "sustain", min: 0, max: 1, step: 0.02, fmt: pctFmt,
+      hint: "the level held between decay and release" },
+    { k: "release", label: "release", min: 0, max: 1, step: 0.01, fmt: pctFmt,
+      hint: "of the grain — a long attack into a short release is a swell that stops dead" }
   ];
+
+  /* What the card calls each mode. The stored values stay as they were ("soundscape", "hits"),
+     so nothing already recorded or published needs migrating; only the words changed
+     (Kerem, 2026-09-19: Soundscape becomes Stretch, 4 hits becomes Rhythm). */
+  var MODE_LABEL = { soundscape: "Stretch", hits: "Rhythm", grains: "Grains" };
+  function modeOf(f) {
+    var m = f.properties.audio_mode;
+    return m === "hits" || m === "grains" ? m : "soundscape";
+  }
+
+  /* ---- The frame the three sound panels share with the route's patch ----
+     Same header, same first column in all three (C-9: the same control in the same place), four
+     columns where there is room, and tabs where there is not (C-8): a rotated phone is short,
+     not narrow, so height decides too — the thresholds measured for the Stretch panel. */
+  function soundTabbed() { return innerWidth < 1000 || innerHeight < 700; }
+  var soundTabs = {};
+  function soundColumns(body, key, sections, count) {
+    var tabbed = soundTabbed(), twoUp = tabbed && innerWidth >= 700;
+    var cols = document.createElement("div");
+    cols.className = "ppcols";
+    cols.style.setProperty("--ppcols", tabbed ? 1 : (count || sections.length));
+    var panes = sections.map(function (s) {
+      var col = document.createElement("div");
+      col.className = "ppcol";
+      if (s.span && !tabbed) { col.style.gridColumn = "span " + s.span; }
+      if (twoUp && s.split > 0) {
+        col.classList.add("pxtwo");
+        var a = document.createElement("div"), b = document.createElement("div");
+        s.nodes.forEach(function (n, i) { (i < s.split ? a : b).appendChild(n); });
+        col.appendChild(a); col.appendChild(b);
+      } else {
+        s.nodes.forEach(function (n) { col.appendChild(n); });
+      }
+      cols.appendChild(col);
+      return col;
+    });
+    if (tabbed && sections.length > 1) {
+      var tabs = document.createElement("div");
+      tabs.className = "pptabs";
+      tabs.setAttribute("role", "tablist");
+      tabs.style.setProperty("--tabs", sections.length);
+      var pick = function (k) {
+        soundTabs[key] = k;
+        panes.forEach(function (pane, i) { pane.hidden = i !== k; });
+        Array.prototype.forEach.call(tabs.children, function (t, i) {
+          t.setAttribute("aria-selected", String(i === k));
+        });
+      };
+      sections.forEach(function (s, i) {
+        var t = document.createElement("button");
+        t.type = "button";
+        t.setAttribute("role", "tab");
+        t.textContent = s.title;
+        t.addEventListener("click", function () { pick(i); });
+        tabs.appendChild(t);
+      });
+      body.appendChild(tabs);
+      pick(Math.min(soundTabs[key] === undefined ? 1 : soundTabs[key], sections.length - 1));
+    }
+    body.appendChild(cols);
+    /* The filled part of each track is painted from its value. Only the Rhythm panel ever did
+       this, so on Stretch and Grains every fill sat at the middle wherever the thumb was. */
+    syncRanges(body);
+    return cols;
+  }
+
+  function pointColumn(f, q, commitQ) {
+    var nodes = [ppHeading("This point",
+      "A stream carries further than a nest. These belong to the point, so every point on a " +
+      "route can differ.")];
+    SOUND_FIELDS.forEach(function (fl) { nodes.push(buildSoundRow(fl, q, commitQ)); });
+    return nodes;
+  }
+
+  function ppHeading(text, hint) {
+    var h = document.createElement("h2");
+    h.textContent = text;
+    if (hint) { h.title = hint; }
+    return h;
+  }
+
+  /* The nothing-attached state, in the columns beside This point rather than instead of it —
+     the point still has a reach and a level before it has a sound. */
+  function soundEmpty(title, text) {
+    var none = document.createElement("div");
+    none.className = "rpempty";
+    var et = document.createElement("p");
+    et.className = "rpempty-t";
+    et.textContent = title;
+    var ed = document.createElement("p");
+    ed.className = "hint";
+    ed.textContent = text;
+    none.appendChild(et); none.appendChild(ed);
+    return none;
+  }
 
   /* The grains panel. One Euclidean line at the top because that is the rhythm, then the
      cloud behind each pulse. C-5's empty state matters more here than in the hits panel:
      the controls are meaningless with no recording, and saying so is cheaper than letting
      someone move nine faders that do nothing. */
-  function renderGrainPanel(f, r, body) {
+  function renderGrainPanel(f, r, body, commitQ) {
+    var point = pointColumn(f, soundOf(f), commitQ);
     if (!f.properties.has_audio) {
-      var none = document.createElement("div");
-      none.className = "rpempty";
-      var et = document.createElement("p");
-      et.className = "rpempty-t";
-      et.textContent = "No recording attached yet.";
-      var ed = document.createElement("p");
-      ed.className = "hint";
-      ed.textContent = "This point is set to grains. Attach one recording on its card — any " +
-        "length — and a Euclidean line will read short grains out of it, in tempo with the " +
-        "route. The same file works as a soundscape if you change your mind.";
-      none.appendChild(et); none.appendChild(ed);
-      body.appendChild(none);
+      soundColumns(body, "grains", [
+        { title: "Point", nodes: point },
+        { title: "Grains", span: 3, nodes: [soundEmpty("No recording attached yet.",
+          "This point is set to Grains. Attach one recording on its card — any length — and a " +
+          "Euclidean line will read short grains out of it, in tempo with the route. The same " +
+          "file works as a Stretch if you change your mind.")] }
+      ], 4);
       return;
     }
 
     var g = r.grains || (r.grains = defaultGrains());
     var commitR = function () { claimEdit(f); save(); };
+    var commitLine = function () { claimEdit(f); save(); markGrainPattern(); };
+    /* The grain fields' own defaults, so double-click resets a grain fader to a grain value
+       rather than to whatever the rhythm object happens to hold under the same key. */
+    var G = defaultGrains();
+    function gRow(fl, commit) {
+      return buildRhythmRow(Object.assign({ def: G[fl.k] }, fl), g, commit);
+    }
 
+    /* The recording across the top, the way the Stretch panel shows it: what is in the file,
+       the band roam can reach, the offset, and the grains as they actually play. */
+    var whead = document.createElement("div");
+    whead.className = "pphead";
+    whead.appendChild(ppHeading("The recording"));
+    var meta = document.createElement("span");
+    meta.className = "ppmeta";
+    var dur = (f.properties.audio || {}).duration_s;
+    meta.textContent = dur ? fmtLongDuration(dur) + " · lit band is what roam reaches · marks are grains as they play" : "";
+    whead.appendChild(meta);
+    body.appendChild(whead);
     var wave = document.createElement("canvas");
     wave.className = "grainwave";
     wave.title = "The recording. The lit band is what roam can reach, the line is the " +
       "offset, and the marks are grains as they play.";
     body.appendChild(wave);
+    if (soundTabbed() && innerHeight < 500) { wave.classList.add("short"); whead.hidden = true; }
 
-    var cols = document.createElement("div");
-    cols.className = "ppcols";
-    /* Four columns of content in a grid that defaults to three puts the last one on a row
-       of its own — the same way a third mode button wrapped out of a two-column group.
-       Set explicitly, and stepped down rather than squeezed on a narrow panel. */
-    cols.style.setProperty("--ppcols", innerWidth >= 1220 ? 4 : (innerWidth >= 820 ? 2 : 1));
-    var col = document.createElement("div");
-    col.className = "ppcol";
-    var h1 = document.createElement("h2");
-    h1.textContent = "The line";
-    col.appendChild(h1);
-    [RHYTHM_FIELDS[0], RHYTHM_FIELDS[1], RHYTHM_FIELDS[2]].forEach(function (fl) {
-      col.appendChild(buildRhythmRow(fl, r, function () { claimEdit(f); save(); markGrainPattern(); }));
-    });
-    GRAIN_FIELDS.slice(0, 2).forEach(function (fl) {
-      col.appendChild(buildRhythmRow(fl, g, function () { claimEdit(f); save(); markGrainPattern(); }));
-    });
-    cols.appendChild(col);
-
-    var col2 = document.createElement("div");
-    col2.className = "ppcol";
-    var h2 = document.createElement("h2");
-    h2.textContent = "The cloud";
-    col2.appendChild(h2);
-    GRAIN_FIELDS.slice(2).forEach(function (fl) {
-      col2.appendChild(buildRhythmRow(fl, g, commitR));
-    });
-    cols.appendChild(col2);
-
-    var colE = document.createElement("div");
-    colE.className = "ppcol";
-    var hE = document.createElement("h2");
-    hE.textContent = "The grain envelope";
-    colE.appendChild(hE);
-    GRAIN_ENV_FIELDS.forEach(function (fl) {
-      colE.appendChild(buildRhythmRow(fl, g, function () { claimEdit(f); save(); grainEnvDraw(); }));
-    });
-    var eshape = document.createElement("canvas");
-    eshape.className = "grainenv";
-    eshape.title = "The shape every grain is cut to, before vary moves it";
-    colE.appendChild(eshape);
-    cols.appendChild(colE);
-
-    var col3 = document.createElement("div");
-    col3.className = "ppcol";
-    var note = document.createElement("p");
-    note.className = "hint";
-    note.textContent = "One Euclidean line, and behind every pulse a burst of grains cut " +
-      "from the recording. Offset is where in the file they come from; scatter is how far " +
-      "each one wanders from there, so a burst reads across the recording rather than " +
-      "repeating one slice. Spread is how far the burst is thrown across the step — at " +
-      "zero they land together as one transient, at one they fill the step. " +
-      "Three different randomnesses, kept apart on purpose: roam moves where each pulse " +
-      "bites, across the whole recording at one; scatter spreads the grains around that " +
-      "point inside a single burst; vary changes the shape of the cloud itself — size, " +
-      "number, spread, level, envelope and pitch by whole semitones. " +
-      "The envelope is four stages as fractions of the grain, so it keeps its shape when " +
-      "the size varies: a short attack into a long release is a struck sound, a long " +
-      "attack into a short release is a swell that stops dead, and sustain is the level " +
-      "held in between. The marks on the waveform are drawn in that shape, after vary has " +
-      "moved it.";
-    col3.appendChild(note);
+    var line = [ppHeading("The line", "One Euclidean line; behind every pulse, a burst of grains")];
+    RHYTHM_FIELDS.slice(0, 3).forEach(function (fl) { line.push(buildRhythmRow(fl, r, commitLine)); });
+    GRAIN_FIELDS.slice(0, 2).forEach(function (fl) { line.push(gRow(fl, commitLine)); });
     var strip = document.createElement("div");
-    strip.className = "rpat grainpat";
-    col3.appendChild(strip);
-    cols.appendChild(col3);
-    body.appendChild(cols);
+    strip.className = "rpat grainpat cells16";
+    line.push(strip);
 
-    var mhead = document.createElement("div");
-    mhead.className = "pphead";
-    var hh = document.createElement("h2");
-    hh.textContent = "The pattern";
-    mhead.appendChild(hh);
     var rnd = document.createElement("button");
-    rnd.type = "button"; rnd.className = "ghost ppgen";
+    rnd.type = "button"; rnd.className = "ghost";
     rnd.textContent = "Generate a pattern";
     rnd.title = "A Euclidean line and a cloud to go behind it";
     rnd.addEventListener("click", function () {
       var st = Math.max(1, Math.min(64, r.steps | 0));
       /* Coprime with the step count where it can be, so the line does not simply repeat
-         every bar — the same reasoning as the four-hit generator. */
+         every bar — the same reasoning as the Rhythm generator. */
       var choices = [5, 7, 9, 11, 13, 17, 19, 21, 23].filter(function (x) { return x < st; });
       g.pulses = choices[Math.floor(Math.random() * choices.length)] || 5;
       g.rotate = Math.floor(Math.random() * st);
@@ -5146,10 +5295,34 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       claimEdit(f);
       save();
       renderRhythmPanel();
-      toast("E(" + g.pulses + "," + st + ") \u00b7 " + g.count + " grains");
+      toast("E(" + g.pulses + "," + st + ") · " + g.count + " grains");
     });
-    mhead.appendChild(rnd);
-    body.appendChild(mhead);
+    /* C-11: the generator sits with the line it generates. */
+    var acts = document.createElement("div");
+    acts.className = "ppactions";
+    acts.style.marginTop = "var(--s-2)";
+    acts.appendChild(rnd);
+    line.push(acts);
+
+    var cloud = [ppHeading("The cloud", "Three randomnesses kept apart on purpose: roam, scatter and vary")];
+    GRAIN_FIELDS.slice(2).forEach(function (fl) { cloud.push(gRow(fl, commitR)); });
+
+    var env = [ppHeading("The grain envelope",
+      "Four stages as fractions of the grain, so it keeps its shape when the size varies")];
+    GRAIN_ENV_FIELDS.forEach(function (fl) {
+      env.push(gRow(fl, function () { claimEdit(f); save(); grainEnvDraw(); }));
+    });
+    var eshape = document.createElement("canvas");
+    eshape.className = "grainenv";
+    eshape.title = "The shape every grain is cut to, before vary moves it";
+    env.push(eshape);
+
+    soundColumns(body, "grains", [
+      { title: "Point", nodes: point },
+      { title: "Line", nodes: line, split: 4 },
+      { title: "Cloud", nodes: cloud, split: 5 },
+      { title: "Envelope", nodes: env, split: 5 }
+    ]);
     markGrainPattern();
     grainEnvDraw();
     grainWaveStart();
@@ -5316,58 +5489,32 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var f = feature(selected);
     if (!f || f.properties.kind !== "point") { return; }
     var r = rhythmOf(f), q = soundOf(f), body = $("#rp-body");
-    $("#rp-title").textContent = "Sound \u00b7 " + label(f);
+    $("#rp-title").textContent = "Sound · " + MODE_LABEL[modeOf(f)] + " · " + label(f);
     body.textContent = "";
 
-    /* Every point has a presence whether or not it has anything to play, so this section is
-       always here and the hits are what may be missing. */
-    var scols = document.createElement("div");
-    scols.className = "ppcols";
-    scols.style.setProperty("--ppcols", innerWidth >= 1000 ? 3 : 1);
-    var scol = document.createElement("div");
-    scol.className = "ppcol";
-    var sh = document.createElement("h2");
-    sh.textContent = "This point";
-    scol.appendChild(sh);
+    /* Every point has a presence whether or not it has anything to play, so This point is the
+       first column of all three panels and the sound is what may be missing. */
     var commitQ = function () { claimEdit(f); save(); updateBed(); redrawZones(); };
-    SOUND_FIELDS.forEach(function (fl) {
-      scol.appendChild(buildSoundRow(fl, q, commitQ));
-    });
-    scols.appendChild(scol);
-    var snote = document.createElement("div");
-    snote.className = "ppcol";
-    var sp = document.createElement("p");
-    sp.className = "hint";
-    sp.textContent = "A stream carries further than a nest. These belong to the point, so " +
-      "every point on a route can differ \u2014 they used to be one setting shared by all " +
-      "of them.";
-    snote.appendChild(sp);
-    scols.appendChild(snote);
-    body.appendChild(scols);
 
-    /* C-5: the empty state, which is where a panel usually gives itself away. A sequencer
-       with nothing to sequence should say so and say where to go, not offer four rows of
-       controls that do nothing when you move them. */
-    if (f.properties.audio_mode === "grains") { renderGrainPanel(f, r, body); return; }
+    if (f.properties.audio_mode === "grains") { renderGrainPanel(f, r, body, commitQ); return; }
     if (f.properties.audio_mode !== "hits") {
       renderSoundscapePanel(f, q, commitQ, body);
       return;
     }
+    var point = pointColumn(f, q, commitQ);
+
+    /* C-5: the empty state, which is where a panel usually gives itself away. A sequencer
+       with nothing to sequence should say so and say where to go, not offer four cards of
+       controls that do nothing when you move them. */
     var hitsOn = f.properties.hits || {};
     var filled = HIT_SLOTS.filter(function (k) { return hitsOn[k]; });
     if (!filled.length) {
-      var none = document.createElement("div");
-      none.className = "rpempty";
-      var et = document.createElement("p");
-      et.className = "rpempty-t";
-      et.textContent = "No hits attached yet.";
-      var ed = document.createElement("p");
-      ed.className = "hint";
-      ed.textContent = "This point is set to four hits. Attach a low, a mid, a high and a " +
-        "free sound on its card, and each one gets a Euclidean pattern here, in tempo " +
-        "with the route.";
-      none.appendChild(et); none.appendChild(ed);
-      body.appendChild(none);
+      soundColumns(body, "hits", [
+        { title: "Point", nodes: point },
+        { title: "Rhythm", span: 3, nodes: [soundEmpty("No hits attached yet.",
+          "This point is set to Rhythm. Attach a low, a mid, a high and a free sound on its " +
+          "card, and each one gets a Euclidean pattern here, in tempo with the route.")] }
+      ], 4);
       return;
     }
 
@@ -5375,30 +5522,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        is heard on the next one rather than needing the point reloaded. */
     var commitR = function () { claimEdit(f); save(); markPattern(); };
 
-    var cols = document.createElement("div");
-    cols.className = "ppcols";
-    var col = document.createElement("div");
-    col.className = "ppcol";
-    RHYTHM_FIELDS.forEach(function (fl) { col.appendChild(buildRhythmRow(fl, r, commitR)); });
-    cols.appendChild(col);
+    var line = [ppHeading("The line", "Pulses are spread as evenly as the step count allows. " +
+      "Rotation turns a pattern without changing it. Everything runs on the route's tempo.")];
+    RHYTHM_FIELDS.slice(0, 4).forEach(function (fl) { line.push(buildRhythmRow(fl, r, commitR)); });
+    var phrase = [ppHeading("Phrase", "Four related patterns, cycled one phrase at a time")];
+    RHYTHM_FIELDS.slice(4).forEach(function (fl) { phrase.push(buildRhythmRow(fl, r, commitR)); });
 
-    var col2 = document.createElement("div");
-    col2.className = "ppcol";
-    var note = document.createElement("p");
-    note.className = "hint";
-    note.textContent = "Pulses are spread as evenly as the step count allows. Rotation turns " +
-      "a pattern without changing it. Everything runs on the route's tempo.";
-    col2.appendChild(note);
-    cols.appendChild(col2);
-    body.appendChild(cols);
-
-    var mhead = document.createElement("div");
-    mhead.className = "pphead";
-    var h = document.createElement("h2");
-    h.textContent = "The four hits";
-    mhead.appendChild(h);
     var rnd = document.createElement("button");
-    rnd.type = "button"; rnd.className = "ghost ppgen";
+    rnd.type = "button"; rnd.className = "ghost";
     rnd.textContent = "Generate a pattern";
     rnd.title = "Four Euclidean patterns that will not lock to each other";
     rnd.addEventListener("click", function () {
@@ -5408,11 +5539,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       renderRhythmPanel();
       toast("New pattern");
     });
-    mhead.appendChild(rnd);
     var rndFx = document.createElement("button");
-    rndFx.type = "button"; rndFx.className = "ghost ppgen";
+    rndFx.type = "button"; rndFx.className = "ghost";
     rndFx.textContent = "Randomize effects";
-    rndFx.title = "New crush, drive and delay for all four voices";
+    rndFx.title = "New crush, drive, delay and stretch for all four voices — the pattern is kept";
     rndFx.addEventListener("click", function () {
       randomHitFx(r);
       claimEdit(f);
@@ -5422,102 +5552,93 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       applyHitStretch(bed && bed.rhythms[f.properties.id], r);
       toast("New effects");
     });
-    mhead.appendChild(rndFx);
-    body.appendChild(mhead);
+    var acts = document.createElement("div");
+    acts.className = "ppactions";
+    acts.appendChild(rnd); acts.appendChild(rndFx);
+    var gen = [ppHeading("Generate"), acts];
 
-    /* A colour-bar control, built once and reused for crush/drive/delay-fb/delay-wet/
-       stretch: same shape as buildRhythmRow/buildSoundRow, just at .rfxrow's compact
-       size — the pattern controls above stay full-size since they're what a setter
-       actually drags most. */
-    function buildFxRow(spec, cfg, slot, onChange) {
+    /* One control row, the patch's shape: label, fader, readout in its unit. */
+    function hitRow(spec, cfg, slot, onInput) {
       var wrap = document.createElement("label");
-      wrap.className = "rfxrow";
+      wrap.className = "pprow";
+      if (spec.hint) { wrap.title = spec.hint; }
       var lab = document.createElement("span");
-      lab.textContent = spec[0];
+      lab.textContent = spec.label;
       var inp = document.createElement("input");
-      inp.type = "range"; inp.min = spec[1]; inp.max = spec[2]; inp.step = spec[3];
-      inp.value = cfg[spec[0]];
-      inp.dataset.def = defaultRhythm().voices[slot][spec[0]];
+      inp.type = "range"; inp.min = spec.min; inp.max = spec.max; inp.step = spec.step;
+      inp.value = cfg[spec.k];
+      inp.dataset.def = defaultRhythm().voices[slot][spec.k];
       inp.title = "Shift-drag for fine steps · double-click to reset";
       var out = document.createElement("i");
-      var show = function () { out.textContent = (+inp.value).toFixed(2); };
+      var show = function () {
+        var v = +inp.value;
+        out.textContent = spec.fmt ? spec.fmt(v) : (spec.step < 1 ? v.toFixed(2) : String(v));
+      };
       show();
-      inp.addEventListener("input", function () {
-        cfg[spec[0]] = +inp.value; show(); onChange();
-      });
+      inp.addEventListener("input", function () { cfg[spec.k] = +inp.value; show(); onInput(); });
       wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(out);
       return wrap;
     }
 
-    HIT_SLOTS.forEach(function (slot) {
+    function slotName(slot) { return slot === "rand" ? "free" : slot; }
+
+    /* One voice, one card: the pattern it plays (what you touch constantly), then its colour
+       (crush/drive/delay/stretch — dialled in once and mostly left alone), then the pattern
+       drawn. The same rows in the same order on all four. */
+    function hitCard(slot) {
       var cfg = r.voices[slot];
-      var row = document.createElement("div");
-      row.className = "rvoice";
-      var nm = document.createElement("span");
-      nm.className = "rname";
-      var nmTop = document.createElement("b");
-      nmTop.style.fontWeight = "400";
-      nmTop.textContent = slot === "rand" ? "free" : slot;
-      var nmNum = document.createElement("em");
-      nm.appendChild(nmTop); nm.appendChild(nmNum);
-      row.appendChild(nm);
-      var content = document.createElement("div");
-      content.className = "rvoice-content";
-      row.appendChild(content);
-      /* The numbers that made the pattern, said plainly. A strip of cells shows you the
-         shape; E(13,64) tells you why it is that shape and what to change. */
+      var card = document.createElement("section");
+      card.className = "hitcard" + (hitsOn[slot] ? "" : " unset");
+      var head = document.createElement("div");
+      head.className = "hithead";
+      var nm = document.createElement("b");
+      nm.textContent = slotName(slot);
+      var nums = document.createElement("em");
+      head.appendChild(nm); head.appendChild(nums);
+      card.appendChild(head);
+      /* The numbers that made the pattern, said plainly. The cells show you the shape;
+         E(13,64) tells you why it is that shape and what to change. */
       var showNums = function () {
         var st = Math.max(1, Math.min(64, r.steps | 0));
-        nmNum.textContent = "E(" + Math.min(cfg.pulses, st) + "," + st + ")" +
-          (cfg.rotate ? " ↺" + cfg.rotate : "");
+        nums.textContent = hitsOn[slot]
+          ? "E(" + Math.min(cfg.pulses, st) + "," + st + ")" + (cfg.rotate ? " ↺" + cfg.rotate : "")
+          : "nothing attached";
       };
       showNums();
-      var mainBar = document.createElement("div");
-      mainBar.className = "rvoice-main";
-      content.appendChild(mainBar);
+
       var stepsNow = Math.max(1, Math.min(64, r.steps | 0));
-      [["pulses", 0, stepsNow, 1], ["rotate", 0, stepsNow - 1, 1],
-       ["gain", 0, 1, 0.05]].forEach(function (spec) {
-        var wrap = document.createElement("label");
-        wrap.className = "pprow";
-        var lab = document.createElement("span");
-        lab.textContent = spec[0];
-        var inp = document.createElement("input");
-        inp.type = "range"; inp.min = spec[1]; inp.max = spec[2]; inp.step = spec[3];
-        inp.value = cfg[spec[0]];
-        inp.dataset.def = defaultRhythm().voices[slot][spec[0]];
-        inp.title = "Shift-drag for fine steps · double-click to reset";
-        var out = document.createElement("i");
-        var show = function () {
-          out.textContent = spec[3] < 1 ? (+inp.value).toFixed(2) : inp.value;
-        };
-        show();
-        inp.addEventListener("input", function () {
-          cfg[spec[0]] = +inp.value; show(); showNums(); commitR(); drawPattern(slot, r);
-        });
-        wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(out);
-        mainBar.appendChild(wrap);
-      });
-      /* This voice's colour, visually secondary to the pattern above it (A-8 controls,
-         mostly left at their off position): crush/drive shape the hit itself, the delay
-         trio is its own short echo, stretch is the granular warp — six controls that used
-         to auto-wrap across the pattern bar's own grid and collide with each other. */
-      var fxBar = document.createElement("div");
-      fxBar.className = "rvoice-fx";
-      content.appendChild(fxBar);
+      var onPattern = function () { showNums(); commitR(); drawPattern(slot, r); };
+      var main = document.createElement("div");
+      main.className = "hitmain";
+      main.appendChild(hitRow({ k: "pulses", label: "pulses", min: 0, max: stepsNow, step: 1 },
+        cfg, slot, onPattern));
+      main.appendChild(hitRow({ k: "rotate", label: "rotate", min: 0, max: stepsNow - 1, step: 1,
+        fmt: function (v) { return "↺ " + v; } }, cfg, slot, onPattern));
+      main.appendChild(hitRow({ k: "gain", label: "level", min: 0, max: 1, step: 0.05 },
+        cfg, slot, commitR));
+      card.appendChild(main);
+
+      var fxBox = document.createElement("div");
+      fxBox.className = "hitfx";
+      card.appendChild(fxBox);
+      var sub = document.createElement("div");
+      sub.className = "hitsub";
+      sub.textContent = "effects";
+      fxBox.appendChild(sub);
       var onFx = function () {
         commitR();
         applyHitFx(bed && bed.rhythms[f.properties.id], r);
       };
-      fxBar.appendChild(buildFxRow(["crush", 0, 1, 0.02], cfg, slot, onFx));
-      fxBar.appendChild(buildFxRow(["drive", 0, 1, 0.02], cfg, slot, onFx));
-      /* A musical division, not a free number — same idiom as RHYTHM_FIELDS' own "div"
-         row and the shared room's own delay-division control. */
+      fxBox.appendChild(hitRow({ k: "crush", label: "crush", min: 0, max: 1, step: 0.02,
+        hint: "bitcrush, blended in" }, cfg, slot, onFx));
+      fxBox.appendChild(hitRow({ k: "drive", label: "drive", min: 0, max: 1, step: 0.02,
+        hint: "saturation, blended in" }, cfg, slot, onFx));
+      /* A musical division, not a free number — the same idiom as the step length and the
+         shared room's own delay. Its length in seconds goes to the readout column. */
       var delWrap = document.createElement("label");
-      delWrap.className = "rfxrow";
+      delWrap.className = "pprow";
       var delLab = document.createElement("span");
       delLab.textContent = "delay";
-      delLab.title = "delay time";
       var delSel = document.createElement("select");
       DIVISIONS.forEach(function (d) {
         var op = document.createElement("option");
@@ -5525,24 +5646,58 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         delSel.appendChild(op);
       });
       delSel.value = cfg.delayDiv;
-      delSel.addEventListener("change", function () {
-        cfg.delayDiv = delSel.value; onFx();
-      });
-      delWrap.appendChild(delLab); delWrap.appendChild(delSel);
-      fxBar.appendChild(delWrap);
-      fxBar.appendChild(buildFxRow(["delayFb", 0, 0.85, 0.02], cfg, slot, onFx));
-      fxBar.appendChild(buildFxRow(["delayWet", 0, 1, 0.02], cfg, slot, onFx));
-      fxBar.appendChild(buildFxRow(["stretch", 0, 1, 0.02], cfg, slot, function () {
-        commitR();
-        applyHitStretch(bed && bed.rhythms[f.properties.id], r);
-      }));
+      var delOut = document.createElement("i");
+      var delShow = function () {
+        delOut.textContent = divSeconds(delSel.value, pacer ? pacer.patch.tempo : 72).toFixed(2) + " s";
+      };
+      delShow();
+      delSel.addEventListener("change", function () { cfg.delayDiv = delSel.value; delShow(); onFx(); });
+      delWrap.appendChild(delLab); delWrap.appendChild(delSel); delWrap.appendChild(delOut);
+      fxBox.appendChild(delWrap);
+      fxBox.appendChild(hitRow({ k: "delayFb", label: "feedback", min: 0, max: 0.85, step: 0.02 },
+        cfg, slot, onFx));
+      fxBox.appendChild(hitRow({ k: "delayWet", label: "delay mix", min: 0, max: 1, step: 0.02 },
+        cfg, slot, onFx));
+      fxBox.appendChild(hitRow({ k: "stretch", label: "stretch", min: 0, max: 1, step: 0.02,
+        hint: "the granular warp on this voice alone" }, cfg, slot, function () {
+          commitR();
+          applyHitStretch(bed && bed.rhythms[f.properties.id], r);
+        }));
+
       var pat = document.createElement("div");
-      pat.className = "rpat";
+      pat.className = "rpat cells16";
       pat.dataset.slot = slot;
-      content.appendChild(pat);
-      body.appendChild(row);
-      drawPattern(slot, r);
-    });
+      card.appendChild(pat);
+      return card;
+    }
+    var cards = HIT_SLOTS.map(hitCard);
+
+    /* Tabbed, each voice is a tab of its own: one card is the height of a tab, four stacked
+       were not. */
+    if (soundTabbed()) {
+      soundColumns(body, "hits", [
+        { title: "Point", nodes: point },
+        { title: "Line", nodes: line.concat(phrase, gen), split: line.length }
+      ].concat(HIT_SLOTS.map(function (slot, i) {
+        return { title: slotName(slot), nodes: [cards[i]] };
+      })));
+    } else {
+      soundColumns(body, "hits", [
+        { title: "Point", nodes: point },
+        { title: "Line", nodes: line },
+        { title: "Phrase", nodes: phrase },
+        { title: "Generate", nodes: gen }
+      ]);
+      var mhead = document.createElement("div");
+      mhead.className = "pphead";
+      mhead.appendChild(ppHeading("The four hits"));
+      body.appendChild(mhead);
+      var grid = document.createElement("div");
+      grid.className = "hitcards";
+      cards.forEach(function (c) { grid.appendChild(c); });
+      body.appendChild(grid);
+    }
+    HIT_SLOTS.forEach(function (slot) { drawPattern(slot, r); });
     syncRanges(body);
     markPattern();
   }
@@ -5589,49 +5744,39 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return out;
   }
 
-  /* The soundscape panel: today just the warp knob. C-5's empty state applies the same way
-     the grains panel already handles no attached recording — a warp control is meaningless
-     with nothing to warp. */
+  /* The Stretch panel (stored as audio_mode "soundscape"). C-5's empty state applies the same
+     way the grains panel handles no attached recording — nothing to stretch, nothing to set. */
   function renderSoundscapePanel(f, q, commitQ, body) {
+    var point = pointColumn(f, q, commitQ);
     if (!f.properties.has_audio) {
-      var none = document.createElement("div");
-      none.className = "rpempty";
-      var et = document.createElement("p");
-      et.className = "rpempty-t";
-      et.textContent = "No recording attached yet.";
-      var ed = document.createElement("p");
-      ed.className = "hint";
-      ed.textContent = "This point is set to soundscape. Attach a recording on its card, and " +
-        "it plays as the ambient bed heard while walking near it.";
-      none.appendChild(et); none.appendChild(ed);
-      body.appendChild(none);
+      soundColumns(body, "soundscape", [
+        { title: "Point", nodes: point },
+        { title: "Stretch", span: 3, nodes: [soundEmpty("No recording attached yet.",
+          "This point is set to Stretch. Attach a recording on its card, and it plays through " +
+          "the PaulXStretch engine as the ambient bed heard while walking near it.")] }
+      ], 4);
       return;
     }
-    /* renderRhythmPanel has already put the "This point" block in; tabbed, it becomes a tab. */
-    var pointBlock = body.firstElementChild;
+    var tabbed = soundTabbed();
+
+    /* The waveform answers "is this stretched" at a glance: the same peaks, always spanning the
+       full width, blur from tight wiggles into broad, soft humps as stretch rises
+       (soundscapeWaveDraw/smoothedPeaksForStretch) — it never shrinks into a corner, which would
+       read as the recording getting SHORTER, the opposite of what stretch does. A moving yellow
+       line marks the worklet's own real read position while a bed voice for this point is
+       actually playing. The readout on the heading line carries the precise duration this
+       picture only gestures at. */
     var mhead = document.createElement("div");
     mhead.className = "pphead";
-    var h = document.createElement("h2");
-    h.textContent = "The ambient bed";
-    mhead.appendChild(h);
+    mhead.appendChild(ppHeading("The recording"));
+    var waveCaption = document.createElement("span");
+    waveCaption.className = "ppmeta";
+    mhead.appendChild(waveCaption);
     body.appendChild(mhead);
-
-    /* The waveform itself answers "is this stretched" at a glance: the same peaks, always
-       spanning the full width, blur from tight wiggles into broad, soft humps as stretch
-       rises (soundscapeWaveDraw/smoothedPeaksForStretch) — it never shrinks into a corner,
-       which would read as the recording getting SHORTER, the opposite of what stretch
-       does. A moving yellow line marks the worklet's own real read position while a bed
-       voice for this point is actually playing (soundscapeWaveTick's redraw loop), so
-       crawling glacially at x200 versus briskly at x1 is something you watch, not just a
-       number. The caption underneath carries the precise duration this picture only
-       gestures at. */
     var wave = document.createElement("canvas");
     wave.className = "ppwave";
     wave.title = "The recording, softening as stretch rises, with a live cursor while it plays.";
     body.appendChild(wave);
-    var waveCaption = document.createElement("p");
-    waveCaption.className = "hint";
-    body.appendChild(waveCaption);
     var durationS = (f.properties.audio || {}).duration_s || 0;
     var updateWaveCaption = function () {
       if (!durationS) { waveCaption.textContent = ""; return; }
@@ -5667,12 +5812,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       sec: function (v) { return v.toFixed(2) + " s"; },
       int: function (v) { return String(Math.round(v)); }
     };
-    var heading = function (t) { var h2 = document.createElement("h2"); h2.textContent = t; return h2; };
+    var heading = function (t, hint) { return ppHeading(t, hint); };
     var R = function (spec, obj) { return buildPxRow(spec, obj, commitLive); };
-    var extrasHeading = heading("Extras");
 
     var colStretch = [
-      heading("Stretch"),
+      heading("Stretch", "Always heard through the PaulXStretch engine. Stretch ×1 plays at the " +
+        "recording's own speed with randomised phase; the spectrum chain and ratios act on every " +
+        "frame; extras are FieldArc's own."),
       R({ label: "stretch", k: "stretch", min: 0, max: 1, step: 0.005, def: 0,
         fmt: function (v) { return fx.x(Math.pow(1024, v)); },
         hint: "×1 plays at the recording's own speed; ×1024 is PaulXStretch's maximum" }, q),
@@ -5690,7 +5836,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       R({ label: "end", k: "end", min: 0, max: 1, step: 0.001, def: 1, fmt: fx.pct,
         hint: "where in the recording the loop ends" }, x),
       R({ label: "loop xfade", k: "xfade", min: 0, max: 1, step: 0.001, def: 0.01, fmt: fx.sec,
-        hint: "how long the end of the loop fades into its start" }, x),
+        hint: "how long the end of the loop fades into its start" }, x)
+    ];
+    var extrasHeading = heading("Extras", "FieldArc's own, on top of the PaulXStretch engine");
+    var colExtras = [
       extrasHeading,
       R({ label: "warp", k: "warp", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
         hint: "FieldArc's own: the whole spectrum drifts slowly, up to ±300 Hz" }, q),
@@ -5702,12 +5851,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         hint: "FieldArc's own: bitcrush and drive on the stretched signal" }, q)
     ];
 
-    var chainNote = document.createElement("p");
-    chainNote.className = "hint";
-    chainNote.textContent = "Applied in order: harmonics → tonal/noise → frequency → pitch → " +
-      "ratios → spread → filter → compressor.";
     var colSpectrum = [
-      heading("Spectrum"), chainNote,
+      heading("Spectrum", "Applied in order: harmonics → tonal/noise → frequency → pitch → " +
+        "ratios → spread → filter → compressor. A module's dot is its power switch."),
       buildPxModule("Harmonics", x.harmonics, [
         R({ label: "count", k: "n", min: 1, max: 100, step: 1, def: 10, fmt: fx.int }, x.harmonics),
         R({ label: "base", k: "freq", min: 1, max: 5000, def: 128, log: true, fmt: fx.hz }, x.harmonics),
@@ -5730,8 +5876,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         R({ label: "spread", k: "bw", min: 0, max: 1, step: 0.001, def: 0, fmt: fx.two }, x.spread)
       ], commitLive)
     ];
-    /* Filter and Compressor sit in the third column for height, not for order: at 1428x729 the
-       whole chain in one column scrolled by 68 px. The chain note gives the real order. */
+    /* Filter and Compressor sit with the ratios for height, not for order: the whole chain in
+       one column scrolled. The Spectrum heading's tooltip gives the real order. */
     var colTail = [
       buildPxModule("Filter", x.filter, [
         R({ label: "low", k: "low", min: 20, max: 20000, def: 20, log: true, fmt: fx.hz }, x.filter),
@@ -5766,76 +5912,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       ], commitLive)
     ]);
 
-    var note = document.createElement("p");
-    note.className = "hint";
-    note.textContent = "Always heard through the PaulXStretch engine. Stretch ×1 plays at the " +
-      "recording's own speed with randomised phase; the spectrum chain and ratios act on every " +
-      "frame; extras are FieldArc's own.";
-    colStretch.push(note);
-
-    /* One screen, always (C-8): three columns where there is room, tabs where there is not. A
-       rotated phone is short, not narrow, so height decides too. Measured at 501x695 with three
-       tabs, every tab still scrolled (23/53/100 px) under the shared "This point" block, so
-       tabbed mode takes that block into a tab of its own, splits Ratios from the output stage,
-       and gives each tab two fixed sub-columns when the screen is wide enough. Splits are fixed
-       indexes, not CSS columns: a control must not move column while it is being dragged. */
-    var tabbed = innerWidth < 1000 || innerHeight < 700;
-    var twoUp = tabbed && innerWidth >= 700;
-    /* A phone on its side (measured 832x390): the waveform shrinks and its heading goes — the
+    /* One screen, always (C-8): four columns where there is room, tabs where there is not.
+       Measured at 501x695 with three tabs, every tab still scrolled (23/53/100 px), so tabbed
+       mode gives This point a tab of its own, splits Ratios from the output stage, and gives
+       each tab two fixed sub-columns when the screen is wide enough. Splits are fixed indexes,
+       not CSS columns: a control must not move column while it is being dragged.
+       A phone on its side (measured 832x390): the waveform shrinks and its heading goes — the
        waveform and the tab bar already say what this is. Spectrum overflowed by 20 px without. */
     if (tabbed && innerHeight < 500) { wave.classList.add("short"); mhead.hidden = true; }
-    var sections = tabbed ? [
-      { title: "Point", nodes: pointBlock ? [pointBlock] : [], split: 0 },
-      { title: "Stretch", nodes: colStretch, split: colStretch.indexOf(extrasHeading) },
+    soundColumns(body, "soundscape", tabbed ? [
+      { title: "Point", nodes: point, split: 0 },
+      { title: "Stretch", nodes: colStretch.concat(colExtras), split: colStretch.length },
       { title: "Spectrum", nodes: colSpectrum, split: 3 },
       { title: "Ratios", nodes: [colRatios[0]], split: 0 },
       { title: "Output", nodes: colRatios.slice(1), split: 2 }
     ] : [
+      { title: "Point", nodes: point.concat(colExtras) },
       { title: "Stretch", nodes: colStretch },
       { title: "Spectrum", nodes: colSpectrum },
       { title: "Ratios", nodes: colRatios }
-    ];
-    var cols = document.createElement("div");
-    cols.className = "ppcols";
-    cols.style.setProperty("--ppcols", tabbed ? 1 : 3);
-    var panes = sections.map(function (s) {
-      var col = document.createElement("div");
-      col.className = "ppcol";
-      if (twoUp && s.split > 0) {
-        col.classList.add("pxtwo");
-        var a = document.createElement("div"), b2 = document.createElement("div");
-        s.nodes.forEach(function (n, i) { (i < s.split ? a : b2).appendChild(n); });
-        col.appendChild(a); col.appendChild(b2);
-      } else {
-        s.nodes.forEach(function (n) { col.appendChild(n); });
-      }
-      cols.appendChild(col);
-      return col;
-    });
-    if (tabbed) {
-      var tabs = document.createElement("div");
-      tabs.className = "pptabs";
-      tabs.setAttribute("role", "tablist");
-      tabs.style.setProperty("--tabs", sections.length);
-      var pick = function (k) {
-        pxTab = k;
-        panes.forEach(function (pane, i) { pane.hidden = i !== k; });
-        Array.prototype.forEach.call(tabs.children, function (t, i) {
-          t.setAttribute("aria-selected", String(i === k));
-        });
-      };
-      sections.forEach(function (s, i) {
-        var t = document.createElement("button");
-        t.type = "button";
-        t.setAttribute("role", "tab");
-        t.textContent = s.title;
-        t.addEventListener("click", function () { pick(i); });
-        tabs.appendChild(t);
-      });
-      body.appendChild(tabs);
-      pick(Math.min(pxTab, sections.length - 1));
-    }
-    body.appendChild(cols);
+    ]);
 
     /* Drawn last, once wave is already laid out inside the (already visible) #rp-body —
        clientWidth/Height read the real box the same way grainWaveDraw's own measurement
@@ -5886,7 +5982,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
-  var swRAF = null, pxTab = 1;   /* tabbed panels open on Stretch */
+  var swRAF = null;
   function soundscapeWaveTick() {
     if ($("#rhythmpanel").hidden || !document.querySelector("#rp-body .ppwave")) {
       swRAF = null; return;
@@ -6124,6 +6220,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var name = document.createElement("span");
     name.textContent = fl.label;
     row.appendChild(name);
+    if (fl.hint) { row.title = fl.hint; }
     var val = document.createElement("i"), input;
     if (fl.toggle) {
       input = document.createElement("button");
@@ -6142,15 +6239,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         input.appendChild(op);
       });
       input.value = r[fl.k];
-      input.addEventListener("change", function () { r[fl.k] = input.value; commitR(); });
+      /* As on the patch: the name stays in the select, its length in seconds goes to the
+         readout column, which for a select row was empty. */
+      var side = function () { if (fl.side) { val.textContent = fl.side(input.value); } };
+      side();
+      input.addEventListener("change", function () { r[fl.k] = input.value; side(); commitR(); });
     } else {
       input = document.createElement("input");
       input.type = "range"; input.min = fl.min; input.max = fl.max; input.step = fl.step;
       input.value = r[fl.k];
-      input.dataset.def = defaultRhythm()[fl.k];
+      var def = fl.def !== undefined ? fl.def : defaultRhythm()[fl.k];
+      if (def !== undefined) { input.dataset.def = def; }
       input.title = "Shift-drag for fine steps · double-click to reset";
+      /* fmt and unit were declared on the fields and never read here, so grain size showed
+         "175" and the envelope "0.00" — the units existed and nothing printed them. */
       var show = function () {
-        val.textContent = fl.step < 1 ? (+input.value).toFixed(2) : input.value;
+        var v = +input.value;
+        val.textContent = fl.fmt ? fl.fmt(v)
+          : (fl.step < 1 ? v.toFixed(2) : String(v)) + (fl.unit || "");
       };
       show();
       input.addEventListener("input", function () {
