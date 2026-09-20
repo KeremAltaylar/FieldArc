@@ -31,3 +31,12 @@ test("a device that turned it on stays on", () => {
 test("the key joins the existing lowercase family", () => {
   assert.match(html, /var WORLD_KEY = "fieldarc\.world";/);
 });
+
+test("the map carries its own frame on a desktop, and not on the phone layout", () => {
+  const rule = html.slice(html.indexOf("#map {"), html.indexOf("}", html.indexOf("#map {")) + 1);
+  assert.match(rule, /border-right: 1px solid var\(--bdr\)/);
+  assert.match(rule, /border-bottom: 1px solid var\(--bdr\)/);
+  const phone = html.slice(html.indexOf("#map { grid-row: 2; grid-column: 1;"));
+  assert.match(phone.slice(0, 400), /#map \{ grid-row: 2; grid-column: 1; border-right: 0; border-bottom: 0; \}/,
+    "the phone layout keeps its edges, where the map meets the sheet");
+});

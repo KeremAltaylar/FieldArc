@@ -874,7 +874,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 
 /* ---- Map ---- */
-#map { position: relative; background: var(--sunk); }
+/* Framed on all four sides. The right and bottom edges were missing, so at a desktop width the
+   map ran to the window edge and the frame read as unfinished. */
+#map {
+  position: relative; background: var(--sunk);
+  border-right: 1px solid var(--bdr); border-bottom: 1px solid var(--bdr);
+}
 #map.mode-point  .maplibregl-canvas { cursor: crosshair; }
 #map.mode-route  .maplibregl-canvas { cursor: crosshair; }
 
@@ -1579,7 +1584,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      narrow phone it would clip rather than shrink. Wrapping is what keeps it on screen. */
   .basemaps, .overlays { margin: 0; flex-wrap: wrap; }
 
-  #map { grid-row: 2; grid-column: 1; }
+  #map { grid-row: 2; grid-column: 1; border-right: 0; border-bottom: 0; }
   #readout { display: none; }          /* a cursor readout means nothing on a touch screen */
 
   /* The sheet */
