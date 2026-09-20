@@ -2454,7 +2454,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var SETTER_ONLY = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
       "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit", "#photo-add",
-      ".rowdel"];
+      ".rowdel", "#place-list", "#place-list-label"];
     var show = setter.signedIn;
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
@@ -3526,7 +3526,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var q = foldTurkish($("#place-search").value.trim());
     var ul = $("#place-list");
     /* A listener browses routes, not parks: a park with nothing published in it is a dead end,
-       and the route rows already name the park each one belongs to. */
+       and the route rows already name the park each one belongs to. applyModeGating()'s
+       SETTER_ONLY list also carries #place-list/#place-list-label, so a sign-in or sign-out
+       reconciles this hidden state even while the menu sits open across it (setter.signedIn
+       there agrees with setterTools() here whenever applyModeGating() actually runs — it
+       returns early in the gatingDeclined branch, which is exactly the state this render-time
+       check still has to cover on its own, such as the very first render). Two writers, same
+       value, no fight. */
     if (!setterTools()) { $("#place-list").hidden = true; $("#place-list-label").hidden = true; }
     else { $("#place-list").hidden = false; $("#place-list-label").hidden = false; }
     ul.textContent = "";
@@ -3604,6 +3610,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function openPlaceMenu() {
     $("#place-menu").hidden = false;
     $("#place-btn").setAttribute("aria-expanded", "true");
+    /* The markup's aria-pressed="true" is only a default for a device that has never chosen;
+       a device that turned Open world off must see the switch reflect that, the same way
+       gpsSet() drives #gps-btn from the stored GPS_KEY rather than trusting the markup. */
+    $("#world-switch").setAttribute("aria-pressed", String(worldOn()));
     $("#place-search").value = "";
     renderPlaceList();
     fetchAllRoutes().then(function () {

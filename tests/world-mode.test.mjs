@@ -51,3 +51,12 @@ test("the picker carries the switch, and a listener sees routes but no park list
   assert.match(click.slice(0, 400), /setWorld\(/);
   assert.match(click.slice(0, 400), /applyWorld\(\)/);
 });
+
+test("the switch is synced from worldOn() every time the menu renders, not left at its markup default", () => {
+  /* A device that previously turned Open world off must see the switch reflect that on the
+     next open — the markup's aria-pressed="true" is only the never-chosen default, the same
+     way #gps-btn is driven from the stored GPS_KEY rather than trusted from markup. */
+  const open = src("openPlaceMenu");
+  assert.match(open, /\$\("#world-switch"\)\.setAttribute\("aria-pressed", String\(worldOn\(\)\)\)/,
+    "openPlaceMenu must re-read worldOn() and drive the switch from it, not just from the click handler");
+});
