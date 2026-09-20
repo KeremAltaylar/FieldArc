@@ -65,11 +65,11 @@ test("retired features go to the local trash and leave the manifest, so nothing 
   assert.match(src, /commit\(\)/);
 });
 
-function runVisible({ signedIn, manifest, features, placeId = "P" }) {
+function runVisible({ signedIn, manifest, features, placeId = "P", worldOn = false }) {
   const b = body("visible");
-  const fn = new Function("fc", "place", "setterTools", "loadManifest", "shownTo", b.src);
+  const fn = new Function("fc", "place", "setterTools", "loadManifest", "shownTo", "worldOn", b.src);
   return fn({ features }, { properties: { id: placeId } }, () => signedIn, () => manifest,
-            extractFn("shownTo"))
+            extractFn("shownTo"), () => worldOn)
     .map((f) => f.properties.name);
 }
 

@@ -60,3 +60,20 @@ test("the switch is synced from worldOn() every time the menu renders, not left 
   assert.match(open, /\$\("#world-switch"\)\.setAttribute\("aria-pressed", String\(worldOn\(\)\)\)/,
     "openPlaceMenu must re-read worldOn() and drive the switch from it, not just from the click handler");
 });
+
+test("in open world every shown feature is visible, in place mode only the open park's", () => {
+  const vis = src("visible");
+  assert.match(vis, /worldOn\(\) \|\| !place/,
+    "the place filter is skipped in open world");
+  assert.match(vis, /f\.properties\.place == null/,
+    "a free point passes either way, because no park owns it");
+  assert.match(src("fetchWorld"), /from\("public_features"\)\.select\("\*"\)/);
+  assert.ok(!src("fetchWorld").includes('.eq("place"'), "every place at once");
+  assert.match(src("applyWorld"), /fetchWorld\(\)/);
+});
+
+test("a free point is shown even when a park is open", () => {
+  const shown = src("visible");
+  assert.match(shown, /f\.properties\.place == null/,
+    "a point belonging to nothing is not hidden by a park filter");
+});

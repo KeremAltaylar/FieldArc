@@ -2080,7 +2080,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function visible() {
     var man = setterTools() ? null : loadManifest();
     return fc.features.filter(function (f) {
-      return (!place || f.properties.place === place.properties.id) && shownTo(f, man);
+      /* Open world shows everything; a place shows its own; and a feature that belongs to no
+         place (a free point) is never hidden by a park filter, because no park owns it. */
+      var here = worldOn() || !place || f.properties.place == null ||
+                 f.properties.place === place.properties.id;
+      return here && shownTo(f, man);
     });
   }
 
@@ -2291,6 +2295,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          "Error: rejection: ..." toast on every load or place switch. Best-effort background
          sync: fail silently and keep whatever is already local. */
       .catch(function () { /* offline in a forest is the normal case */ });
+  }
+
+  /* Open world needs every published feature, not one place's. One query: public_features is
+     already filtered to what is published, and the catalogue is small (measure before paging). */
+  function fetchWorld() {
+    if (!sb) { return Promise.resolve(); }
+    return sb.from("public_features").select("*")
+      .then(function (r) {
+        if (r.error || !r.data) { return; }
+        mergeRemote(r.data);
+        map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+        renderList();
+      })
+      .catch(function () { /* offline is the normal case in a forest */ });
   }
 
   /* The corpus lives in one browser and can vanish with a cleared cache, so the panel
@@ -3416,6 +3434,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var want = (link && link.place) || localStorage.getItem(PLACE_KEY) || DEFAULT_PLACE;
       var p = byId(want) || byId(DEFAULT_PLACE) || places[0];
       setPlace(p, true).then(function () {
+        /* Open world's own fetch, plus the map/list redraw that depends on it, needs the
+           map's "features" source to exist — it does by now, since setPlace (and the
+           map.on("load") handler around loadPlaces()) has already run. */
+        applyWorld();
         /* feature() reads fc.features, which mergeRemote (inside fetchPublished) has just
            populated for a fresh browser — the exact gap stage 3 closed for the map, now
            closed for a link too. A route id that names nothing (stale link, wrong place)
@@ -3636,7 +3658,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   document.addEventListener("click", function (e) {
     if (!$("#place-menu").hidden && !e.target.closest(".placepick")) { closePlaceMenu(); }
   });
-  function applyWorld() { renderPlaceList(); }
+  /* Everything that differs between the modes, in one place: what the map holds, what the
+     picker lists, and — once Task 8 lands — which walker is running. */
+  function applyWorld() {
+    var on = worldOn();
+    $("#world-switch").setAttribute("aria-pressed", String(on));
+    document.body.classList.toggle("world", on);
+    if (on) { fetchWorld(); }
+    map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+    renderPlaceList();
+    renderList();
+  }
   $("#world-switch").addEventListener("click", function () {
     var on = this.getAttribute("aria-pressed") !== "true";
     setWorld(on);
