@@ -1,10 +1,13 @@
-import { test } from "node:test";
+import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { service } from "./clients.mjs";
 
 const ID = "0f0e0d0c-0b0a-4009-8008-700600500400";
 const db = service();
 const asSetter = service;
+
+before(async () => { await db.from("features").delete().eq("id", ID); });
+after(async () => { await db.from("features").delete().eq("id", ID); });
 
 test("a point with no place publishes and comes back published", async () => {
   const c = await asSetter();
@@ -22,6 +25,4 @@ test("a point with no place publishes and comes back published", async () => {
   const pub = await db.from("public_features").select("id,place").eq("id", ID).single();
   assert.equal(pub.error, null, "a free point is visible to a listener");
   assert.equal(pub.data.place, null);
-
-  await db.from("features").delete().eq("id", ID);
 });
