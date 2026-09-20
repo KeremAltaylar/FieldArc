@@ -86,6 +86,32 @@ test("a listener never sees a draft this device did not publish; a setter sees e
   assert.deepEqual(runVisible({ signedIn: true, manifest, features }), ["server", "published-here", "draft"]);
 });
 
+test("open world does not weaken the listener/setter boundary", () => {
+  /* worldOn() only ever widens `here` (the place filter). It must never reach shownTo(), which
+     is the actual listener/setter gate — a park being open to everyone is not the same thing as
+     a draft being published. Every feature below sits in "P" (the open park), "Q" (a park that
+     is not open) or no park at all (place: null, a free point), crossed with published
+     (id in manifest) vs. an unpublished draft (not remote, not in the manifest). */
+  const f = (name, extra = {}) => ({ properties: Object.assign({ id: name, name }, extra) });
+  const features = [
+    f("published-here", { place: "P" }),
+    f("published-elsewhere", { place: "Q" }),        // the new behaviour: open world must show this
+    f("draft-elsewhere", { place: "Q" }),             // unpublished, another park — must stay hidden
+    f("free-draft", { place: null })                  // unpublished, no park at all — must stay hidden
+  ];
+  const manifest = { "published-here": "h", "published-elsewhere": "h2" };
+
+  var listener = runVisible({ signedIn: false, manifest, features, worldOn: true }).sort();
+  assert.deepEqual(listener, ["published-elsewhere", "published-here"],
+    "a listener in open world sees every published feature, cross-park included, " +
+    "but neither unpublished draft — not the one in another park, not the free one");
+
+  var setter = runVisible({ signedIn: true, manifest, features, worldOn: true }).sort();
+  assert.deepEqual(setter,
+    ["draft-elsewhere", "free-draft", "published-elsewhere", "published-here"],
+    "a setter still sees their own unpublished work in open world, cross-park and free alike");
+});
+
 test("the place picker's counts follow the same rule as the map", () => {
   const src = body("renderPlaceList").src;
   assert.match(src, /shownTo\(/);
