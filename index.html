@@ -1926,6 +1926,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      service worker's tile cache, which holds a forest's worth of downloaded map. */
   var STORE = "fieldarc.v1";
   var PLACE_KEY = "fieldarc.place";
+  /* Open world: every published route at once, and points that belong to no park. The default
+     on a device that has never chosen (Kerem, 2026-09-20: "default opening will be the open
+     world mode"); the choice is remembered after that. Same lowercase key family as the rest —
+     see STORE's note for why these never take the new name. */
+  var WORLD_KEY = "fieldarc.world";
+
+  function worldOn() {
+    try { return localStorage.getItem("fieldarc.world") !== "0"; } catch (e) { return true; }
+  }
+  function setWorld(on) {
+    try { localStorage.setItem("fieldarc.world", on ? "1" : "0"); } catch (e) { /* private mode */ }
+  }
   /* The anon key is public by design — it ships to every visitor and is what row-level
      security is written against. The service key and the database URL never appear here. */
   var FA_CONFIG = {
