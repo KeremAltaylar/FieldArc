@@ -13,7 +13,7 @@ function src(name) {
 
 function load(stored) {
   const store = { getItem: () => stored, setItem: () => {} };
-  return new Function("localStorage", src("worldOn") + "; return worldOn;")(store);
+  return new Function("localStorage", 'var WORLD_KEY = "fieldarc.world";' + src("worldOn") + "; return worldOn;")(store);
 }
 
 test("open world is the default on a device that has never chosen", () => {

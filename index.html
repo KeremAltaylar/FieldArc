@@ -1933,10 +1933,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   var WORLD_KEY = "fieldarc.world";
 
   function worldOn() {
-    try { return localStorage.getItem("fieldarc.world") !== "0"; } catch (e) { return true; }
+    try { return localStorage.getItem(WORLD_KEY) !== "0"; } catch (e) { return true; }
   }
   function setWorld(on) {
-    try { localStorage.setItem("fieldarc.world", on ? "1" : "0"); } catch (e) { /* private mode */ }
+    try { localStorage.setItem(WORLD_KEY, on ? "1" : "0"); } catch (e) { /* private mode */ }
   }
   /* The anon key is public by design — it ships to every visitor and is what row-level
      security is written against. The service key and the database URL never appear here. */
