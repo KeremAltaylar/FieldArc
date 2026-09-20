@@ -6579,6 +6579,31 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return list;
   }
 
+  /* Open world has no line to measure against, so a point is in reach when the walker is inside
+     what it carries — the same radius its level already fades across, times the margin the zone
+     engine uses everywhere else, so a point is admitted exactly when it could be heard.
+     Takes the feature list rather than reading visible() itself, so the tests can feed it. */
+  function zonesNear(features, pos) {
+    var list = [];
+    features.forEach(function (g) {
+      if (g.geometry.type !== "Point") { return; }
+      var q = soundOf(g);
+      if (segment(pos, g.geometry.coordinates) > q.radius * ZONE_MARGIN) { return; }
+      list.push({
+        id: g.properties.id, lonlat: g.geometry.coordinates, r: q.zoneR,
+        name: label(g), icon: g.properties.icon || null,
+        has_audio: !!g.properties.has_audio,
+        mode: (g.properties.audio_mode === "hits" || g.properties.audio_mode === "grains")
+          ? g.properties.audio_mode : "soundscape",
+        has_hits: !!(g.properties.hits && HIT_SLOTS.some(function (k) {
+          return g.properties.hits[k];
+        })),
+        inside: false, firedAt: 0
+      });
+    });
+    return list;
+  }
+
   function segmentCoords(m, t0, t1) {
     var d0 = t0 * m.total, d1 = t1 * m.total;
     var out = [pointAlong(m, t0)];
