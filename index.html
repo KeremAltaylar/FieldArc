@@ -6523,6 +6523,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return best;
   }
 
+  /* Which route the walker is listening to in open world. The current one keeps the walk until
+     a challenger is clearly nearer — the same hysteresis the sections use, and for the same
+     reason: two routes that run close together would otherwise swap the key back and forth at
+     every step. Self-contained apart from projectToRoute, so the tests can run it directly. */
+  function nearestRoute(list, pos, currentId, marginM) {
+    var best = null, current = null;
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i], pr = projectToRoute(r.m, pos);
+      var cand = { id: r.id, f: r.f, m: r.m, t: pr.t, dist: pr.dist };
+      if (!best || cand.dist < best.dist) { best = cand; }
+      if (currentId && r.id === currentId) { current = cand; }
+    }
+    if (!best) { return null; }
+    if (current && best.id !== current.id && current.dist - best.dist < marginM) { return current; }
+    return best;
+  }
+
   function pointAlong(m, t) {
     var d = Math.max(0, Math.min(1, t)) * m.total;
     for (var i = 1; i < m.coords.length; i++) {
