@@ -43,21 +43,37 @@ test("no routes at all is not an error", () => {
   assert.equal(nearestRoute.nearestRoute([], [29, 41], null, 20), null);
 });
 
+/* zonesNear leans on segment and ZONE_MARGIN, so the harness hands it the real segment and the
+   real margin, and stubs the rest (soundOf, label, visible, HIT_SLOTS) the way the brief's test
+   does. Shared across the zonesNear tests below rather than rebuilt per test. */
+const zonesNear = new Function(
+  src("segment") + "var ZONE_MARGIN = 1.3;" +
+  "var HIT_SLOTS = [\"low\", \"mid\", \"high\", \"rand\"];" +
+  "function soundOf(f){ return { radius: f.properties.sound.radius, gain: 0.9, zoneR: 25 }; }" +
+  "function label(f){ return f.properties.name; }" +
+  "function visible(){ return arguments[0]; }" +
+  src("zonesNear") + "; return zonesNear;")();
+const pt = (name, lon, lat, radius) => ({ type: "Feature",
+  properties: { id: name, name, kind: "point", sound: { radius }, has_audio: true },
+  geometry: { type: "Point", coordinates: [lon, lat] } });
+
 test("a point is in reach when the walker is inside what it carries", () => {
-  const zonesNear = new Function(
-    src("segment") + "var ZONE_MARGIN = 1.3;" +
-    "var HIT_SLOTS = [\"low\", \"mid\", \"high\", \"rand\"];" +
-    "function soundOf(f){ return { radius: f.properties.sound.radius, gain: 0.9, zoneR: 25 }; }" +
-    "function label(f){ return f.properties.name; }" +
-    "function visible(){ return arguments[0]; }" +
-    src("zonesNear") + "; return zonesNear;")();
-  const pt = (name, lon, lat, radius) => ({ type: "Feature",
-    properties: { id: name, name, kind: "point", sound: { radius }, has_audio: true },
-    geometry: { type: "Point", coordinates: [lon, lat] } });
   /* 0.0018 deg of latitude is about 200 m. */
   const near = pt("near", 29.000, 41.0000, 300);
   const far = pt("far", 29.000, 41.0018, 120);
   const got = zonesNear([near, far], [29.000, 41.0000]);
   assert.deepEqual(got.map((z) => z.id), ["near"], "the 120 m point 200 m away is out of reach");
   assert.equal(got[0].r, 25, "a zone keeps its own event radius");
+});
+
+test("a point past its own radius but still inside the margin is in reach", () => {
+  /* 0.00126 deg of latitude, measured via segment(), is 140.10560757237056 m: past this point's
+     120 m radius but inside 120 * ZONE_MARGIN (156 m). Without the margin, or with >= in place
+     of >, this point would still be excluded/included the same as with the margin applied for
+     "near"/"far" above — this fixture is the one that actually depends on ZONE_MARGIN being
+     applied at all. */
+  const edge = pt("edge", 29.000, 41.00126, 120);
+  const got = zonesNear([edge], [29.000, 41.0000]);
+  assert.deepEqual(got.map((z) => z.id), ["edge"],
+    "140 m is past the 120 m radius but inside the 156 m margin");
 });
