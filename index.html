@@ -250,6 +250,14 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 /* A chip that is off should look off. Bordered and dim when unset, filled when set — a
    pair of identical-looking buttons tells you nothing about the state you are in. */
 .chips { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+/* The mixer row carries its own label, because "mute" alone on a card of authoring controls
+   reads as something that gets saved. */
+.mixrow { align-items: center; margin-bottom: var(--s-2); }
+.mixrow .eyebrow { margin: 0; }
+.mixnote {
+  font-family: var(--font-mono); font-size: var(--t-xs); color: var(--faint);
+  letter-spacing: 0.04em;
+}
 .chips button {
   text-transform: lowercase;
   letter-spacing: 0.04em;
@@ -1613,7 +1621,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
 <div id="app">
   <header>
-    <h1 class="wordmark">Field<em>Arc</em></h1>
+    <h1 class="wordmark">Field<em>scape</em></h1>
     <div class="placepick">
       <button type="button" id="place-btn" aria-haspopup="listbox" aria-expanded="false">
         <span id="place-name">Belgrad Ormanı</span><span class="caret">▾</span>
@@ -1735,6 +1743,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <span class="eyebrow">Where and when</span>
         <p class="cardmeta" id="f-meta"></p>
       </div>
+      <!-- Listening, not authoring: these are not gated, and nothing here is saved. -->
+      <div class="chips mixrow">
+        <span class="eyebrow">Mix</span>
+        <button type="button" id="f-mute" aria-pressed="false"
+          title="Silence this source while you listen — not saved, not published">mute</button>
+        <button type="button" id="f-solo" aria-pressed="false"
+          title="Hear only what is soloed — not saved, not published">solo</button>
+        <span class="mixnote" id="f-mixnote" hidden>silenced by a solo</span>
+      </div>
+
       <div class="chips">
         <button type="button" id="f-sensitive" aria-pressed="false"
           title="A nest, den or rare species — its position is fuzzed when the archive is published">sensitive</button>
@@ -6772,7 +6790,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       " &nbsp; <b>zones</b> " + pacer.zones.filter(function (z) { return z.inside; }).length +
       "/" + pacer.zones.length +
       (gps.on ? " &nbsp; <b>gps</b> " +
-        (gps.held ? "<em>holding · " + gps.held + "</em>" : "live") : "");
+        (gps.held ? "<em>holding · " + gps.held + "</em>" : "live") +
+        /* What the fade is doing, in the one place that already says where you are. */
+        (gps.level < 0.999 ? " · <em>" + Math.round(gps.level * 100) + "%</em>" : "") : "");
   }
 
   /* Entry and exit are deliberately asymmetric. Standing on a boundary otherwise retriggers
@@ -6814,17 +6834,40 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      near enough to the route; otherwise the walker holds where it is and the readout says
      which gate stopped it. Holding, never jumping and never falling silent — A-15. */
   var GPS_ACC_MAX = 40;      /* metres of reported accuracy */
-  var GPS_LEASH = 120;       /* metres the fix may sit off the route */
+  var GPS_FADE_FROM = 60;    /* metres off the route where the piece starts to fade */
+  var GPS_LEASH = 120;       /* metres the fix may sit off the route; silent here */
+  var WALK_FADE = 0.6;       /* seconds of ramp — slow enough that a wobbling fix is not a tremolo */
   var GPS_KEY = "fieldarc.gps";
-  var gps = { on: false, watch: null, held: null };
+  var gps = { on: false, watch: null, held: null, level: 1 };
+
+  /* How much of the piece is heard this far off the route (Kerem, 2026-09-20: "when he leaves
+     the route slowly sound fade out and visa versa when he catches it fade in"). Full level
+     until `from`, silent at `leash`, a cosine in between so there is no corner at either end
+     to hear. Self-contained: the tests run it directly. */
+  function walkLevel(dist, from, leash) {
+    if (!(dist > from)) { return 1; }
+    if (dist >= leash) { return 0; }
+    return (1 + Math.cos(Math.PI * (dist - from) / (leash - from))) / 2;
+  }
+
+  /* Ramped, never set: a step on a gain is a click (A-2). */
+  function setWalkLevel(level) {
+    gps.level = level;
+    if (bed && bed.walk) { bed.walk.gain.rampTo(level, WALK_FADE); }
+  }
 
   function gpsFix(pos) {
     if (!pacer) { return; }
     var acc = pos.coords.accuracy || 0;
     showHere(pos);             /* you are drawn with your uncertainty either way */
+    /* An imprecise fix says nothing about where you are, so it must not move the level either:
+       the walk holds at whatever it was until a fix worth trusting arrives. */
     if (acc > GPS_ACC_MAX) { gps.held = "±" + Math.round(acc) + "m"; pacerReadout(); return; }
     var pr = projectToRoute(pacer.m, [+pos.coords.longitude.toFixed(6),
                                       +pos.coords.latitude.toFixed(6)]);
+    setWalkLevel(walkLevel(pr.dist, GPS_FADE_FROM, GPS_LEASH));
+    /* Past the leash the walker still holds rather than jumping (A-15) — it is only the level
+       that has reached zero, and walking back fades it in again through the same curve. */
     if (pr.dist > GPS_LEASH) { gps.held = fmtLen(pr.dist) + " off"; pacerReadout(); return; }
     gps.held = null;
     pacerSet(pr.t);            /* the identical call the drag makes */
@@ -6836,6 +6879,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (gps.watch !== null) { navigator.geolocation.clearWatch(gps.watch); gps.watch = null; }
     gps.on = on;
     gps.held = null;
+    /* The fade belongs to GPS mode. Switching it off hands the walk back to the marker, where
+       there is no "off the route" to be, so the level comes back rather than leaving someone
+       dragging a silent walk and wondering what broke. */
+    if (!on) { setWalkLevel(1); }
     $("#gps-btn").setAttribute("aria-pressed", String(on));
     /* A trace being recorded, or an active listening session, may still own the lock;
        releasing it here regardless would end either one in a pocket. */
@@ -6943,7 +6990,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     window.__fa.projectToRoute = projectToRoute;
     /* Measurable without walking: feed a fix and read where the walker went. */
     window.__fa.gps = { set: gpsSet, fix: gpsFix, state: function () { return gps; },
-                        limits: { acc: GPS_ACC_MAX, leash: GPS_LEASH } };
+                        level: walkLevel, setLevel: setWalkLevel,
+                        limits: { acc: GPS_ACC_MAX, leash: GPS_LEASH, fadeFrom: GPS_FADE_FROM,
+                                  fade: WALK_FADE } };
 
     /* You walked out with it on; you should not have to switch it on again at the trailhead. */
     var wanted = null;
@@ -7040,11 +7089,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var limiter = new Tone.Limiter(-1).toDestination();
           var meter = new Tone.Meter();
           limiter.connect(meter);
-          bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: limiter,
-                  meter: meter, Tone: Tone };
+          /* Everything the walk plays meets here before the limiter, so straying off the route
+             fades the whole piece with one ramp rather than each voice arguing with its own
+             proximity curve. At 1 it is not audible in the signal path at all. */
+          var walk = new Tone.Gain(1).connect(limiter);
+          /* The route's own voices meet here, so the route card's mute and solo have one place
+             to act — the points keep their own gains, which is what makes them separate
+             sources in the mixer. */
+          var synth = new Tone.Gain(1).connect(walk);
+          bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: walk,
+                  walk: walk, synth: synth, limiter: limiter, meter: meter, Tone: Tone };
         }
         bed.on = true;
         window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
+        window.__fa.mixer = { state: mixer, level: mixLevel, apply: applyMixer,
+                              route: MIX_ROUTE };
 
         var patch = pacer ? pacer.patch : defaultPatch();
         /* A-1: the Transport is a lookahead scheduler. Never a UI callback or a draw loop. */
@@ -7728,9 +7787,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function buildVoice(Tone, patch) {
-    var fx = buildFxChain(Tone, patch.fx, patch.tempo, bed.master);
-    var fx2 = buildFxChain(Tone, patch.fx2, patch.tempo, bed.master);
-    var fx3 = buildFxChain(Tone, patch.fx3, patch.tempo, bed.master);
+    var fx = buildFxChain(Tone, patch.fx, patch.tempo, bed.synth);
+    var fx2 = buildFxChain(Tone, patch.fx2, patch.tempo, bed.synth);
+    var fx3 = buildFxChain(Tone, patch.fx3, patch.tempo, bed.synth);
 
     var bus = new Tone.Gain(patch.voice.gain).connect(fx.delay);
     /* Modulation gets its own node. The patch panel owns bus.gain and the morphs own this
@@ -8294,6 +8353,45 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }, (tim.dur + 3) * 1000);
   }
 
+  /* ---------- The live mixer ----------
+     Mute and solo on the info cards (Kerem, 2026-09-20). A listening tool, not an edit: nothing
+     here is written to a feature, published, or survives a reload. Muting a point is a way to
+     hear what the walk is without it — if a point should be silent for everyone, that is the
+     published flag on its card, which is a different question and stays where it is.
+
+     Sources are the points, by feature id, plus the route's own synth voices as one. */
+  var mixer = { mute: {}, solo: {} };
+  var MIX_ROUTE = "route";
+
+  /* Mute wins over solo: a muted source stays silent whether or not it is soloed, so a solo
+     cannot resurrect something deliberately switched off. With nothing soloed everything plays;
+     with anything soloed, only what is soloed does. Self-contained for the tests. */
+  function mixLevel(mix, id) {
+    if (mix.mute[id]) { return 0; }
+    var anySolo = false;
+    for (var k in mix.solo) { if (mix.solo[k]) { anySolo = true; break; } }
+    return (!anySolo || mix.solo[id]) ? 1 : 0;
+  }
+
+  /* Heard at the moment of the click rather than at the next proximity tick: each voice keeps
+     the level its distance earned (base), and the mixer only scales it. */
+  function applyMixer() {
+    if (!bed) { return; }
+    if (bed.synth) { bed.synth.gain.rampTo(mixLevel(mixer, MIX_ROUTE), BED.fade); }
+    Object.keys(bed.voices || {}).forEach(function (id) {
+      var v = bed.voices[id];
+      if (v && v.gain && v.base !== undefined) {
+        v.gain.gain.rampTo(v.base * mixLevel(mixer, id), BED.fade);
+      }
+    });
+    Object.keys(bed.rhythms || {}).forEach(function (id) {
+      var R = bed.rhythms[id];
+      if (R && R.gain && R.base !== undefined) {
+        R.gain.gain.rampTo(R.base * mixLevel(mixer, id), BED.fade);
+      }
+    });
+  }
+
   function ensureVoice(z, d) {
     var Tone = bed.Tone, q = soundOfZone(z);
     var prox = Math.max(0, 1 - d / q.radius);
@@ -8303,7 +8401,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (v) {
       if (v.ready) {
         /* A-2: every gain change ramps. A direct assignment on a live parameter zips. */
-        v.gain.gain.rampTo(g, BED.fade);
+        v.base = g;
+        v.gain.gain.rampTo(g * mixLevel(mixer, z.id), BED.fade);
         v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * prox, BED.fade);
         if (v.stretch && v.stretch.ready) {
           v.stretch.node.port.postMessage({ type: "params", params: pxParams(q, v) });
@@ -8344,7 +8443,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var dd = segment(pacer ? pacer.pos : z.lonlat, z.lonlat);
           var q2 = soundOfZone(z);
           var pr = Math.max(0, 1 - dd / q2.radius);
-          v.gain.gain.rampTo(Math.pow(pr, 1.5) * q2.gain, BED.fade);
+          v.base = Math.pow(pr, 1.5) * q2.gain;
+          v.gain.gain.rampTo(v.base * mixLevel(mixer, z.id), BED.fade);
           v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * pr, BED.fade);
           v.stretchBlend.fade.rampTo(v.stretch.failed ? 0 : 1, BED.fade);
         }
@@ -9272,7 +9372,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var q3 = soundOfZone(x.z);
         var prox = Math.max(0, 1 - x.d / q3.radius);
         var g = Math.pow(prox, 1.5) * q3.gain * (r && r.on ? (r.gain === undefined ? 0.85 : r.gain) : 0);
-        R.gain.gain.rampTo(g, BED.fade);
+        R.base = g;
+        R.gain.gain.rampTo(g * mixLevel(mixer, x.z.id), BED.fade);
       });
     Object.keys(bed.rhythms).forEach(function (id) {
       if (!want[id]) { disposeRhythm(id); }
@@ -11798,6 +11899,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#f-tags").value = (f.properties.tags || []).join(", ");
     $("#f-sensitive").setAttribute("aria-pressed", String(!!f.properties.sensitive));
     $("#f-published").setAttribute("aria-pressed", String(!!f.properties.published));
+    renderMix();
 
     $("#f-walk").hidden = f.properties.kind !== "route";
     $("#f-patch").hidden = f.properties.kind !== "route";
@@ -11897,6 +11999,37 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
   flagToggle("#f-sensitive", "sensitive");
   flagToggle("#f-published", "published");
+
+  /* ---- The mixer row on a card ----
+     A route's sources are its own synth voices, as one; a point is itself. No claimEdit, no
+     save, no commit: this is what you are hearing, not what the archive holds. */
+  function mixIdOf(f) { return f.properties.kind === "route" ? MIX_ROUTE : f.properties.id; }
+
+  function renderMix() {
+    var f = selected ? feature(selected) : null;
+    var row = $(".mixrow");
+    if (row) { row.hidden = !f; }
+    if (!f) { return; }
+    var id = mixIdOf(f);
+    $("#f-mute").setAttribute("aria-pressed", String(!!mixer.mute[id]));
+    $("#f-solo").setAttribute("aria-pressed", String(!!mixer.solo[id]));
+    /* Why a source you did not mute is silent anyway. Without this, a solo somewhere else reads
+       as a broken point. */
+    $("#f-mixnote").hidden = !!mixer.mute[id] || mixLevel(mixer, id) === 1;
+  }
+
+  function mixToggle(sel, which) {
+    $(sel).addEventListener("click", function () {
+      var f = selected ? feature(selected) : null;
+      if (!f) { return; }
+      var id = mixIdOf(f);
+      if (mixer[which][id]) { delete mixer[which][id]; } else { mixer[which][id] = true; }
+      applyMixer();
+      renderMix();
+    });
+  }
+  mixToggle("#f-mute", "mute");
+  mixToggle("#f-solo", "solo");
 
   /* Defence in depth, and the reason is the review finding this wave closes: every one of these
      actions was gated only by whether its trigger was visible, and three separate places turned
