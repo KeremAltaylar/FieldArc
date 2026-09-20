@@ -1,4 +1,4 @@
-/* How much of the Supabase Free plan FieldArc is using.
+/* How much of the Supabase Free plan Fieldscape is using.
 
      npm run usage
 
@@ -70,7 +70,7 @@ const week = (counts.result || []).reduce((a, d) => ({
 
 const day = Number(dl && dl.total) || 0, dayAudio = Number(dl && dl.audio) || 0;
 const out = [
-  "FieldArc — Supabase Free plan usage, " + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC",
+  "Fieldscape — Supabase Free plan usage, " + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC",
   "project    " + project.status + " (" + project.region + ")",
   "",
   pad("database", 11) + pad(mb(s.db) + " / " + mb(LIMITS.db), 22) + pct(s.db, LIMITS.db),

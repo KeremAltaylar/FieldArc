@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FieldArc — Belgrad Ormanı</title>
+<title>Fieldscape — Belgrad Ormanı</title>
 
 <link rel="manifest" href="./manifest.webmanifest">
 <meta name="theme-color" content="#0d1310">
@@ -1900,6 +1900,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 (function () {
   "use strict";
 
+  /* The app is called Fieldscape (2026-09-20); these keys still say fieldarc, and must. They
+     name data already sitting in people's browsers — the local archive, the trash, the export
+     state, the publish manifest, the IndexedDB store holding every recording. Renaming a key
+     does not move what it points at: it points at nothing, so a device would open to an empty
+     archive with its unpublished work stranded behind the old name. The same goes for the
+     service worker's tile cache, which holds a forest's worth of downloaded map. */
   var STORE = "fieldarc.v1";
   var PLACE_KEY = "fieldarc.place";
   /* The anon key is public by design — it ships to every visitor and is what row-level
@@ -1929,7 +1935,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   var ZOOM = 12.4;
 
   /* The other half of 404.html's redirect: turn "?p=/R8845862/<route-id>" back into
-     "/FieldArc/R8845862/<route-id>" in the address bar, with no second navigation and no
+     "/Fieldscape/R8845862/<route-id>" in the address bar, with no second navigation and no
      entry added to history — a listener who taps back should leave the app, not land on
      the redirect's own intermediate URL. */
   (function restoreDeepLinkPath() {
@@ -1943,12 +1949,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   })();
 
   /* Matches 404.html's pathSegmentsToKeep = 1: the deployed GitHub Pages project page is
-     rooted one segment deep ("/FieldArc"), so a deep link's own segments start after that.
+     rooted one segment deep ("/Fieldscape"), so a deep link's own segments start after that.
      Local development (npx serve . from the repo root) is rooted at "/", with no base
      segment at all. Hardcoded rather than counted from the current path, because counting
      cannot tell "a bare place link at the site root" apart from "the site root with no link"
      — both are exactly one path segment, and only knowing which host this is resolves it. */
-  var BASE_PATH = location.hostname === "keremaltaylar.github.io" ? "/FieldArc" : "";
+  var BASE_PATH = location.hostname === "keremaltaylar.github.io" ? "/Fieldscape" : "";
 
   /* A relative fetch (places.geojson, ./sw.js) resolves against document.baseURI, which
      tracks whatever history.pushState/replaceState last put in the address bar — not the URL
@@ -2468,7 +2474,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!email) { toast("Enter the email you were invited with."); return; }
     sb.auth.signInWithOtp({
       email: email,
-      /* Back to this page, not to the origin: FieldArc lives at /FieldArc/ on Pages, and a
+      /* Back to this page, not to the origin: Fieldscape lives at /Fieldscape/ on Pages, and a
          bare origin would land the setter on a 404 holding a valid token. */
       options: { emailRedirectTo: location.origin + location.pathname }
     }).then(function (r) {
@@ -3416,7 +3422,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     place = p;
     localStorage.setItem(PLACE_KEY, p.properties.id);
     $("#place-name").textContent = p.properties.name;
-    document.title = "FieldArc — " + p.properties.name;
+    document.title = "Fieldscape — " + p.properties.name;
     $("#place-btn").title = p.properties.name + " · " + p.properties.area_km2 + " km² · " +
       p.properties.source;
 
@@ -4269,6 +4275,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function db() {
     if (!dbp) {
       dbp = new Promise(function (res, rej) {
+        /* Not "fieldscape": see STORE's note. This database holds every recording on the
+           device, and a renamed database is an empty one. */
         var r = indexedDB.open("fieldarc", 2);
         r.onupgradeneeded = function () {
           var d = r.result;
@@ -4290,7 +4298,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         /* onupgradeneeded can't run at all while another tab holds the previous version
            open — indexedDB.open then just hangs with no event and no error, silently
            stalling every audio/offline-download/staleness operation that awaits db(). */
-        r.onblocked = function () { toast("Close FieldArc's other open tab to finish updating storage"); };
+        r.onblocked = function () { toast("Close Fieldscape's other open tab to finish updating storage"); };
       });
     }
     return dbp;
@@ -5819,7 +5827,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var colStretch = [
       heading("Stretch", "Always heard through the PaulXStretch engine. Stretch ×1 plays at the " +
         "recording's own speed with randomised phase; the spectrum chain and ratios act on every " +
-        "frame; extras are FieldArc's own."),
+        "frame; extras are Fieldscape's own."),
       R({ label: "stretch", k: "stretch", min: 0, max: 1, step: 0.005, def: 0,
         fmt: function (v) { return fx.x(Math.pow(1024, v)); },
         hint: "×1 plays at the recording's own speed; ×1024 is PaulXStretch's maximum" }, q),
@@ -5839,17 +5847,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       R({ label: "loop xfade", k: "xfade", min: 0, max: 1, step: 0.001, def: 0.01, fmt: fx.sec,
         hint: "how long the end of the loop fades into its start" }, x)
     ];
-    var extrasHeading = heading("Extras", "FieldArc's own, on top of the PaulXStretch engine");
+    var extrasHeading = heading("Extras", "Fieldscape's own, on top of the PaulXStretch engine");
     var colExtras = [
       extrasHeading,
       R({ label: "warp", k: "warp", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
-        hint: "FieldArc's own: the whole spectrum drifts slowly, up to ±300 Hz" }, q),
+        hint: "Fieldscape's own: the whole spectrum drifts slowly, up to ±300 Hz" }, q),
       R({ label: "morph", k: "morph", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
-        hint: "FieldArc's own: reads through the recording faster than the stretch alone" }, q),
+        hint: "Fieldscape's own: reads through the recording faster than the stretch alone" }, q),
       R({ label: "field", k: "field", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
-        hint: "FieldArc's own: each frame is taken from a wandering position around the true one" }, q),
+        hint: "Fieldscape's own: each frame is taken from a wandering position around the true one" }, q),
       R({ label: "grit", k: "grit", min: 0, max: 1, step: 0.02, def: 0, fmt: fx.two,
-        hint: "FieldArc's own: bitcrush and drive on the stretched signal" }, q)
+        hint: "Fieldscape's own: bitcrush and drive on the stretched signal" }, q)
     ];
 
     var colSpectrum = [
@@ -12033,7 +12041,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var out = {
       type: "FeatureCollection",
       properties: {
-        generator: "FieldArc",
+        generator: "Fieldscape",
         exported_at: new Date().toISOString(),
         license: LICENSE,
         note: "Coordinates carry position_source and, for GPS fixes, accuracy_m. " +
@@ -12044,7 +12052,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/geo+json" });
     var a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "fieldarc-belgrad-" + new Date().toISOString().slice(0, 10) + ".geojson";
+    a.download = "fieldscape-belgrad-" + new Date().toISOString().slice(0, 10) + ".geojson";
     a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
     setExportState({ at: new Date().toISOString(), changes: 0 });

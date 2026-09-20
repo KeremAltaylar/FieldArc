@@ -1,6 +1,6 @@
 {
-  "name": "FieldArc",
-  "short_name": "FieldArc",
+  "name": "Fieldscape",
+  "short_name": "Fieldscape",
   "description": "A field-recording archive keyed to geography.",
   "start_url": "./",
   "scope": "./",

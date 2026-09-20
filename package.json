@@ -1,5 +1,5 @@
 {
-  "name": "fieldarc",
+  "name": "fieldscape",
   "private": true,
   "type": "module",
   "description": "Tests and tools only. The deployed artifact is still a static file set — there is no build step.",

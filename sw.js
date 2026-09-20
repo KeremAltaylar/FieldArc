@@ -1,4 +1,4 @@
-/* FieldArc service worker.
+/* Fieldscape service worker.
    Tiles are cache-first and permanent — a forest has no signal, and a map you cannot see is
    the same as no map. Everything else is network-first so updates still arrive when online,
    falling back to cache when they do not. */

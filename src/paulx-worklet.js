@@ -1,4 +1,4 @@
-/* FieldArc's port of PaulXStretch — github.com/essej/paulxstretch (GPL-2; Nasca Octavian Paul,
+/* Fieldscape's port of PaulXStretch — github.com/essej/paulxstretch (GPL-2; Nasca Octavian Paul,
    Xenakios). Every function names what it ports.
 
    One file, two jobs: the AudioWorklet module the page loads through Tone's context, and the
@@ -434,7 +434,7 @@ PxStretcher.prototype.hopJob = function* (reader, p, out) {
   }
   var start = Math.floor(this.remained * b);
   if (start >= b) { start = b - 1; }
-  /* FieldArc extra "field": the analysis frame wanders around its true position. */
+  /* Fieldscape extra "field": the analysis frame wanders around its true position. */
   if (p.field > 0) {
     start += Math.round((this.jit.unit() - 0.5) * p.field * b);
     start = Math.max(0, Math.min(b - 1, start));
@@ -449,7 +449,7 @@ PxStretcher.prototype.hopJob = function* (reader, p, out) {
   f[0] = 0;
   for (i = 1; i < b; i++) { f[i] = Math.sqrt(re[i] * re[i] + im[i] * im[i]); }
   yield* pxChainSteps(this.ws, b, this.sr, p, f);
-  /* FieldArc extra "warp": the whole spectrum drifts by a few Hz; vacated bins stay empty. */
+  /* Fieldscape extra "warp": the whole spectrum drifts by a few Hz; vacated bins stay empty. */
   var shift = Math.round((p.warpHz || 0) / (this.sr / N));
   if (shift) {
     var tmp = this.ws.tmp;
