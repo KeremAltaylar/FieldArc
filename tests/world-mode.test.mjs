@@ -40,3 +40,14 @@ test("the map carries its own frame on a desktop, and not on the phone layout", 
   assert.match(phone.slice(0, 400), /#map \{ grid-row: 2; grid-column: 1; border-right: 0; border-bottom: 0; \}/,
     "the phone layout keeps its edges, where the map meets the sheet");
 });
+
+test("the picker carries the switch, and a listener sees routes but no park list", () => {
+  assert.match(html, /<button type="button" id="world-switch" aria-pressed="true">/);
+  assert.match(html, /Open world/);
+  const render = src("renderPlaceList");
+  assert.match(render, /if \(!setterTools\(\)\) \{ \$\("#place-list"\)\.hidden = true;/,
+    "a park list is a dead end for a listener");
+  const click = html.slice(html.indexOf('$("#world-switch").addEventListener'));
+  assert.match(click.slice(0, 400), /setWorld\(/);
+  assert.match(click.slice(0, 400), /applyWorld\(\)/);
+});

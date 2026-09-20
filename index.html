@@ -130,6 +130,11 @@ header {
   border-radius: 3px;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
 }
+.worldrow {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--bdr);
+}
+.worldrow .hint { margin: 0; }
 #place-search { width: 100%; margin-bottom: var(--s-2); }
 #place-list { list-style: none; margin: 0; padding: 0; max-height: 21rem; overflow-y: auto; }
 
@@ -1632,7 +1637,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <span id="place-name">Belgrad Ormanı</span><span class="caret">▾</span>
       </button>
       <div id="place-menu" hidden>
+        <div class="worldrow">
+          <button type="button" id="world-switch" aria-pressed="true">Open world</button>
+          <span class="hint">all routes at once</span>
+        </div>
         <input type="text" id="place-search" placeholder="Search forests, korular and routes…" aria-label="Search places and routes">
+        <p id="place-list-label" class="hint">Places</p>
         <ul id="place-list" role="listbox"></ul>
         <p id="route-list-label" class="hint" hidden>Routes</p>
         <ul id="route-list" role="listbox"></ul>
@@ -3515,6 +3525,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function renderPlaceList() {
     var q = foldTurkish($("#place-search").value.trim());
     var ul = $("#place-list");
+    /* A listener browses routes, not parks: a park with nothing published in it is a dead end,
+       and the route rows already name the park each one belongs to. */
+    if (!setterTools()) { $("#place-list").hidden = true; $("#place-list-label").hidden = true; }
+    else { $("#place-list").hidden = false; $("#place-list-label").hidden = false; }
     ul.textContent = "";
     var counts = {}, man = setterTools() ? null : loadManifest();
     fc.features.forEach(function (f) {
@@ -3611,6 +3625,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   $("#place-search").addEventListener("input", renderPlaceList);
   document.addEventListener("click", function (e) {
     if (!$("#place-menu").hidden && !e.target.closest(".placepick")) { closePlaceMenu(); }
+  });
+  function applyWorld() { renderPlaceList(); }
+  $("#world-switch").addEventListener("click", function () {
+    var on = this.getAttribute("aria-pressed") !== "true";
+    setWorld(on);
+    this.setAttribute("aria-pressed", String(on));
+    applyWorld();
   });
 
   map.on("load", function () {
