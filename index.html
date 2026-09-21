@@ -2674,9 +2674,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      tracked. Nothing here runs without a session, and nothing here blocks capture. */
   var MANIFEST_KEY = "fieldarc.manifest";
 
+  /* I4: visible() calls loadManifest() for every listener-side filter, and worldMove calls
+     visible() on every position update — pointer-move rate while dragging, sub-second while
+     GPS is running. Re-parsing the same localStorage string that many times a second bought
+     nothing; saveManifest() is this device's only writer, so caching here and updating the
+     cache there (rather than invalidating and re-parsing) keeps loadManifest() truthful without
+     paying JSON.parse per move. */
+  var manifestCache = null;
   function loadManifest() {
-    try { return JSON.parse(localStorage.getItem(MANIFEST_KEY)) || {}; }
-    catch (e) { return {}; }
+    if (manifestCache) { return manifestCache; }
+    try { manifestCache = JSON.parse(localStorage.getItem(MANIFEST_KEY)) || {}; }
+    catch (e) { manifestCache = {}; }
+    return manifestCache;
   }
   /* A failed write here used to be swallowed, and the swallow was the worst possible outcome:
      the publish itself succeeded, so the toast said "Published 12", while the record of what
@@ -2689,6 +2698,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function saveManifest(m) {
     try {
       localStorage.setItem(MANIFEST_KEY, JSON.stringify(m));
+      manifestCache = m;   /* keep the cache truthful — the only writer, so the only invalidator */
       return true;
     } catch (e) {
       toast("Published — but this device could not record that it did, so the same changes " +
@@ -6717,9 +6727,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return c;
   }
 
-  /* Which park the walker is standing in, if any. Ninety polygons is cheap, and open world only
-     asks when the walker has actually moved (worldMove). Outside every park this is null, and
-     the sector voice rests — there is no boundary to divide. */
+  /* Which park the walker is standing in, if any. Ninety polygons is cheap, but worldMove runs
+     at pointer-move/GPS-fix rate, so it only calls this once the walker has actually covered
+     PLACE_CHECK_M (I4) rather than on every tick. Outside every park this is null, and the
+     sector voice rests — there is no boundary to divide. */
   function placeAt(pos) {
     for (var i = 0; i < places.length; i++) {
       var g = places[i].geometry;
@@ -7356,14 +7367,25 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (prior) { z.inside = prior.inside; z.firedAt = prior.firedAt; }
     });
     /* The park underfoot owns the sections. Recut only when it changes — the solve is up to
-       129 ms and a walker crosses a boundary rarely. */
-    var here = placeAt(pos);
-    var hereId = here ? here.properties.id : null;
-    if (hereId !== pacer.placeId) {
-      pacer.placeId = hereId;
-      if (here) { setPlaceFrame(here); sectorGeometry(pacer.m || { coords: [pos] }, pacer.patch.sect.n); }
-      else { sect.seeds = null; sect.cells = null; sect.key = null; sect.idx = null; }
-      drawSectors();
+       129 ms and a walker crosses a boundary rarely.
+
+       I4: worldMove runs at pointer-move rate (marker.on("drag") fires on every pointermove;
+       a GPS watch can fire under a second apart too), and placeAt ray-casts all 90 catalogue
+       multipolygons — there is no reason to pay that on every single tick when the walker has
+       barely moved. Gated on PLACE_CHECK_M: recompute only once the walker has covered a few
+       metres since the last check, per the spec ("recomputed only when the walker moves more
+       than a few metres"). pacer.placeCheckedAt is undefined on a fresh pacer, so the very
+       first move after a walk starts always checks. */
+    if (!pacer.placeCheckedAt || segment(pacer.placeCheckedAt, pos) >= PLACE_CHECK_M) {
+      pacer.placeCheckedAt = pos;
+      var here = placeAt(pos);
+      var hereId = here ? here.properties.id : null;
+      if (hereId !== pacer.placeId) {
+        pacer.placeId = hereId;
+        if (here) { setPlaceFrame(here); sectorGeometry(pacer.m || { coords: [pos] }, pacer.patch.sect.n); }
+        else { sect.seeds = null; sect.cells = null; sect.key = null; sect.idx = null; }
+        drawSectors();
+      }
     }
     pacerCheckZones();
     sectorUpdate();
