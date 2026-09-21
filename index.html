@@ -3484,15 +3484,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return null;
   }
 
-  function setPlace(p, initial) {
-    if (!p) { return; }
-    place = p;
-    localStorage.setItem(PLACE_KEY, p.properties.id);
-    $("#place-name").textContent = p.properties.name;
-    document.title = "Fieldscape — " + p.properties.name;
-    $("#place-btn").title = p.properties.name + " · " + p.properties.area_km2 + " km² · " +
-      p.properties.source;
-
+  /* The boundary half of setPlace, on its own because open world also needs it: the walker
+     crossing into a park loads that park's frame without selecting the park. */
+  function setPlaceFrame(p) {
     map.getSource("forest").setData({ type: "FeatureCollection", features: [p] });
 
     var rings = [], b = new maplibregl.LngLatBounds();
@@ -3516,12 +3510,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (pacer) { sectorGeometry(pacer.m, pacer.patch.sect.n); sect.idx = null; }
     drawSectors();
 
+    window.__fa.frameStats = { place: p.properties.name, ringPoints: main.length,
+                               framePoints: frame.length };
+    return b;
+  }
+
+  function setPlace(p, initial) {
+    if (!p) { return; }
+    place = p;
+    localStorage.setItem(PLACE_KEY, p.properties.id);
+    $("#place-name").textContent = p.properties.name;
+    document.title = "Fieldscape — " + p.properties.name;
+    $("#place-btn").title = p.properties.name + " · " + p.properties.area_km2 + " km² · " +
+      p.properties.source;
+
+    var b = setPlaceFrame(p);
 
     forestBounds = b;
     if (!b.isEmpty()) { map.fitBounds(b, { padding: 28, duration: initial ? 0 : 700 }); }
-
-    window.__fa.frameStats = { place: p.properties.name, ringPoints: main.length,
-                               framePoints: frame.length };
 
     setSelected(null);
     closePlaceMenu();
@@ -6638,6 +6644,32 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      the counterpoint comes from: two partitions of the same ground that do not line up. */
   var sect = { idx: null, centre: null, radius: 0, frame: null };
 
+  /* Ray casting, the same rule equalAreaSectors uses on its samples. */
+  function pointInRing(pt, ring) {
+    var c = false;
+    for (var k = 0, j = ring.length - 1; k < ring.length; j = k++) {
+      if ((ring[k][1] > pt[1]) !== (ring[j][1] > pt[1]) &&
+          pt[0] < (ring[j][0] - ring[k][0]) * (pt[1] - ring[k][1]) / (ring[j][1] - ring[k][1]) + ring[k][0]) {
+        c = !c;
+      }
+    }
+    return c;
+  }
+
+  /* Which park the walker is standing in, if any. Ninety polygons is cheap, and open world only
+     asks when the walker has actually moved (worldMove). Outside every park this is null, and
+     the sector voice rests — there is no boundary to divide. */
+  function placeAt(pos) {
+    for (var i = 0; i < places.length; i++) {
+      var g = places[i].geometry;
+      var polys = g.type === "Polygon" ? [g.coordinates] : g.coordinates;
+      for (var j = 0; j < polys.length; j++) {
+        if (pointInRing(pos, polys[j][0])) { return places[i]; }
+      }
+    }
+    return null;
+  }
+
   /* The whole place, divided into n sections of equal area (equalAreaSectors below). Until
      2026-09-19 the seeds were placed along the route and the cells trimmed to a box around it,
      so the sections covered only the ground near the walk and differed in size by design;
@@ -7250,6 +7282,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var prior = wasZone[z.id];
       if (prior) { z.inside = prior.inside; z.firedAt = prior.firedAt; }
     });
+    /* The park underfoot owns the sections. Recut only when it changes — the solve is up to
+       129 ms and a walker crosses a boundary rarely. */
+    var here = placeAt(pos);
+    var hereId = here ? here.properties.id : null;
+    if (hereId !== pacer.placeId) {
+      pacer.placeId = hereId;
+      if (here) { setPlaceFrame(here); sectorGeometry(pacer.m || { coords: [pos] }, pacer.patch.sect.n); }
+      else { sect.seeds = null; sect.cells = null; sect.key = null; sect.idx = null; }
+      drawSectors();
+    }
     pacerCheckZones();
     sectorUpdate();
     updateBed();
