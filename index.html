@@ -3642,6 +3642,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         "<span>" + (rt.name || "Untitled route").replace(/</g, "&lt;") + "</span>" +
         '<span class="pmeta">' + p.properties.name.replace(/</g, "&lt;") + "</span>";
       b.addEventListener("click", function () {
+        /* In open world everything stays on the map: picking a route centres it, selects it and
+           moves the walker to its start, so it is the one you are listening to. Turning the
+           switch off is what narrows the map to a single place and route. */
+        if (worldOn()) {
+          closePlaceMenu();
+          setSelected(rt.id, true);
+          var f = feature(rt.id);
+          if (f && f.geometry && f.geometry.coordinates.length) {
+            worldMove(f.geometry.coordinates[0]);
+            map.flyTo({ center: f.geometry.coordinates[0], duration: 700 });
+          }
+          return;
+        }
         setPlace(p).then(function () { setSelected(rt.id, true); });
       });
       li.appendChild(b);

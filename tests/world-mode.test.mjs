@@ -77,3 +77,12 @@ test("a free point is shown even when a park is open", () => {
   assert.match(shown, /f\.properties\.place == null/,
     "a point belonging to nothing is not hidden by a park filter");
 });
+
+test("a route picked in open world centres and selects without leaving the mode", () => {
+  const list = src("renderRouteList");
+  assert.match(list, /if \(worldOn\(\)\) \{/, "open world does not fall through to setPlace");
+  assert.match(list, /setSelected\(rt\.id, true\)/);
+  assert.match(list, /worldMove\(/, "the walker moves to the route the listener picked");
+  assert.ok(!/worldOn\(\)[\s\S]{0,200}setWorld\(false\)/.test(list),
+    "picking a route must not switch the mode off");
+});
