@@ -132,7 +132,7 @@ test("C1: fetchWorld rebuilds worldRoutes once every park's routes are actually 
   assert.match(fw, /worldRoutes = computeWorldRoutes\(\)/,
     "fetchWorld's .then must rebuild worldRoutes from every place now in fc, not leave " +
     "worldStart's boot-time snapshot (one park's routes) standing forever");
-  assert.match(fw, /if \(pacer && pacer\.world\) \{ worldMove\(pacer\.pos\); \}/,
+  assert.match(fw, /if\s*\(pacer\s*&&\s*pacer\.world\)\s*\{\s*worldMove\(pacer\.pos\);\s*\}/,
     "and re-run nearestRoute against wherever the walker already is, or a route from a park " +
     "that only just arrived can never become the nearest one");
   /* computeWorldRoutes must be the one true builder — worldStart() has to use it too, or a
@@ -147,13 +147,42 @@ test("I2: Walk is a no-op in open world — it must never replace the world walk
      doing — sections, zones, the synth crossfade) while the switch still read Open world; a
      second click then called pacerStop() on that route walk and left no walker running at all. */
   const click = html.slice(html.indexOf('$("#f-walk").addEventListener'), html.indexOf('$("#f-patch").addEventListener'));
-  assert.match(click, /if \(worldOn\(\)\) \{ return; \}/,
+  const WORLD_GUARD = /if\s*\(worldOn\(\)\)\s*\{\s*return;\s*\}/;
+  assert.match(click, WORLD_GUARD,
     "the click handler must return before ever touching pacerStart/pacerStop while open world is on");
-  const guardAt = click.search(/if \(worldOn\(\)\) \{ return; \}/);
+  const guardAt = click.search(WORLD_GUARD);
   const pacerStartAt = click.search(/pacerStart\(f\)/);
   assert.ok(guardAt !== -1 && pacerStartAt !== -1 && guardAt < pacerStartAt,
     "the guard must come before pacerStart/pacerStop, not after — a guard placed after either " +
     "call runs too late to prevent the walker swap");
+});
+
+test("applyWorld reasserts renderDetail() so an open card's #f-walk state cannot survive the toggle stale", () => {
+  /* #f-walk's disabled flag and title are written only inside renderDetail() (see the I2 test
+     above for the click-handler side of this). applyWorld() itself only ever called
+     renderPlaceList() and renderList() — never renderDetail() — so `selected` survived the
+     toggle with #f-walk left exactly as renderDetail() last drew it: switching Open world ON
+     with a route card open left #f-walk enabled with an empty title (pressable, does nothing);
+     switching it OFF left #f-walk disabled with the open-world title (unusable until the
+     listener deselected and reselected). This is the same reassertion applyModeGating() already
+     performs after ITS OWN blanket rewrite — `if (selected) { renderDetail(); }` — so applyWorld
+     must do it too, and it must run regardless of which way the switch just moved (not tucked
+     inside only the on-branch or only the off-branch). */
+  const aw = src("applyWorld");
+  assert.match(aw, /if\s*\(selected\)\s*\{\s*renderDetail\(\);\s*\}/,
+    "applyWorld must re-render the open card so #f-walk's disabled/title state tracks the mode " +
+    "it is called with, not the mode that was active when the card was last drawn");
+  const reassertAt = aw.search(/if\s*\(selected\)\s*\{\s*renderDetail\(\);\s*\}/);
+  const elseMatch = aw.match(/\}\s*else\s*\{/);
+  let ifElseEnd = -1;
+  if (elseMatch) {
+    let i = elseMatch.index + elseMatch[0].length - 1, d = 0;
+    for (; i < aw.length; i++) { if (aw[i] === "{") { d++; } else if (aw[i] === "}") { d--; if (!d) { break; } } }
+    ifElseEnd = i + 1;
+  }
+  assert.ok(ifElseEnd !== -1 && reassertAt >= ifElseEnd,
+    "the reassertion must sit after the on/off branch, not nested inside only one arm of it — " +
+    "otherwise it only fires for one direction of the toggle");
 });
 
 test("I3: leaving open world restores the selected park's own frame and sections", () => {
@@ -165,9 +194,10 @@ test("I3: leaving open world restores the selected park's own frame and sections
      still said the originally selected park — and the next route walk in THAT park cut its
      sections out of the wrong park's ring. */
   const aw = src("applyWorld");
-  const elseAt = aw.indexOf("} else {");
-  assert.ok(elseAt !== -1, "applyWorld must have a real off-branch, not a bare else-if");
-  let i = aw.indexOf("{", elseAt + "} else ".length), d = 0;
+  const elseMatch = aw.match(/\}\s*else\s*\{/);
+  assert.ok(elseMatch, "applyWorld must have a real off-branch, not a bare else-if");
+  const elseAt = elseMatch.index;
+  let i = elseAt + elseMatch[0].length - 1, d = 0;
   for (; i < aw.length; i++) { if (aw[i] === "{") { d++; } else if (aw[i] === "}") { d--; if (!d) { break; } } }
   const offBranch = aw.slice(elseAt, i + 1);
   assert.match(offBranch, /worldStop\(\)/, "the world walker must still be stopped");
@@ -181,11 +211,105 @@ test("I4: worldMove gates placeAt to real movement, and caches the manifest rath
   assert.match(wm, /segment\(pacer\.placeCheckedAt, pos\) >= PLACE_CHECK_M/,
     "placeAt must not run on every pointer-move/GPS tick — only once the walker has covered " +
     "PLACE_CHECK_M metres since the last check");
-  assert.match(html, /var PLACE_CHECK_M = 5;/);
+  /* Not pinned to the literal 5 — only that it is a small positive number of metres. The exact
+     figure is a tuning choice, not a contract this test should freeze. */
+  const pcm = html.match(/var PLACE_CHECK_M = (\d+(?:\.\d+)?);/);
+  assert.ok(pcm, "PLACE_CHECK_M must be declared as a plain numeric literal");
+  const placeCheckM = Number(pcm[1]);
+  assert.ok(placeCheckM > 0 && placeCheckM <= 20,
+    "PLACE_CHECK_M must be a small positive distance, not zero, negative, or huge");
   const lm = src("loadManifest");
-  assert.match(lm, /if \(manifestCache\) \{ return manifestCache; \}/,
+  assert.match(lm, /if\s*\(manifestCache\)\s*\{\s*return manifestCache;\s*\}/,
     "loadManifest must serve a cached parse rather than re-parsing localStorage on every call " +
     "worldMove's own visible() makes");
   assert.match(src("saveManifest"), /manifestCache = m;/,
     "the cache must be kept truthful by its one writer, not merely left to go stale forever");
+});
+
+test("I4: the movement gate assigns placeCheckedAt only when the check actually runs, not on every move", () => {
+  /* The I4 test above asserts only that the gate's condition reads
+     `segment(pacer.placeCheckedAt, pos) >= PLACE_CHECK_M` — it never asserts that
+     `pacer.placeCheckedAt = pos` sits INSIDE that if's branch. Hoist that one assignment a line
+     up, out of the if, and the condition above still matches verbatim (the string is untouched),
+     every other I4 assertion still passes, but the gate's meaning inverts: placeCheckedAt now
+     tracks the position as of the PREVIOUS single call rather than the position as of the last
+     time the branch actually ran, so a walker taking sub-5 m steps (a drag handler firing on
+     every pointermove, or a GPS watch under a second apart) never accumulates enough distance
+     between consecutive calls to trip the check again — it silently becomes "distance since last
+     move" instead of "distance since last place check", and a park crossing made of small steps
+     is never noticed.
+
+     This executes the real gate — extracted verbatim from worldMove's own source, not
+     reimplemented — over a sequence of real 1 m steps (real haversine distance, via the actual
+     segment() the app ships) and counts how many times the expensive branch (placeAt) actually
+     fires. Correct: roughly once every PLACE_CHECK_M metres. Hoisted: at most once, ever. */
+  const wm = src("worldMove");
+  const gateStart = wm.indexOf("if (!pacer.placeCheckedAt");
+  assert.ok(gateStart !== -1, "worldMove's place-check gate was not found in its expected shape");
+  const openBrace = wm.indexOf("{", gateStart);
+  let i = openBrace, d = 0;
+  for (; i < wm.length; i++) { if (wm[i] === "{") { d++; } else if (wm[i] === "}") { d--; if (!d) { break; } } }
+  const gate = wm.slice(gateStart, i + 1);
+  const headerLen = openBrace + 1 - gateStart;   /* "if (...) {" — no braces inside the condition */
+  assert.match(gate.slice(headerLen), /pacer\.placeCheckedAt\s*=\s*pos;/,
+    "the gate must assign placeCheckedAt inside its own branch, not merely somewhere in its text");
+
+  const segment = new Function("return (" + src("segment") + ");")();
+  const pcm = html.match(/var PLACE_CHECK_M = (\d+(?:\.\d+)?);/);
+  const PLACE_CHECK_M = Number(pcm[1]);
+
+  function runGate(gateSrc) {
+    var calls = 0;
+    var placeAt = function () { calls++; return null; };
+    var sect = { seeds: null, cells: null, key: null, idx: null };
+    var sectorGeometry = function () {};
+    var drawSectors = function () {};
+    var setPlaceFrame = function () {};
+    var pacer = { placeId: undefined, patch: { sect: { n: 8 } } };
+    var fn = new Function(
+      "pacer", "pos", "PLACE_CHECK_M", "segment", "placeAt", "sect",
+      "sectorGeometry", "drawSectors", "setPlaceFrame", gateSrc
+    );
+    /* One degree of latitude is ~111.2 km near the equator; find the step size that the app's
+       OWN segment() calls 1 metre, by bisection, rather than trusting an approximated constant
+       that could quietly drift from what segment() actually computes. */
+    var lo = 0, hi = 0.001;
+    for (var b = 0; b < 60; b++) {
+      var mid = (lo + hi) / 2;
+      if (segment([0, 0], [0, mid]) < 1) { lo = mid; } else { hi = mid; }
+    }
+    var stepDeg = (lo + hi) / 2;
+    var fires = [];
+    for (var step = 1; step <= 20; step++) {
+      var pos = [0, stepDeg * step];
+      fn(pacer, pos, PLACE_CHECK_M, segment, placeAt, sect, sectorGeometry, drawSectors, setPlaceFrame);
+      fires.push(calls);
+    }
+    return fires;
+  }
+
+  const fires = runGate(gate);
+  const totalFires = fires[fires.length - 1];
+  /* 20 one-metre steps cover 20 metres; the correct gate fires on step 1 (placeCheckedAt is
+     unset) and then again roughly every PLACE_CHECK_M metres — several times, not once, and
+     nowhere near once per step. */
+  assert.ok(totalFires >= 3 && totalFires <= 8,
+    "over 20 one-metre steps the gate should fire a handful of times (about one per " +
+    PLACE_CHECK_M + " m covered), not on every step and not just once — got " + totalFires);
+  /* The hoisted bug: move the assignment out of the if, one line up, exactly as the reviewer
+     described — built by index, not by a regex that would choke on the condition's own nested
+     parens in segment(pacer.placeCheckedAt, pos). The header ("if (...) {") is untouched, so a
+     test that only regex-matches the condition string cannot see this. */
+  const header = gate.slice(0, headerLen);
+  const bodyAndClose = gate.slice(headerLen);
+  const assignRe = /pacer\.placeCheckedAt\s*=\s*pos;\s*/;
+  assert.match(bodyAndClose, assignRe, "expected the assignment inside the gate's body");
+  const bodyWithoutAssign = bodyAndClose.replace(assignRe, "");
+  const hoisted = "pacer.placeCheckedAt = pos; " + header + bodyWithoutAssign;
+  assert.notEqual(hoisted, gate, "the hoist transform must actually change the gate's text");
+  const hoistedFires = runGate(hoisted);
+  const hoistedTotal = hoistedFires[hoistedFires.length - 1];
+  assert.ok(hoistedTotal < totalFires,
+    "the hoisted (buggy) gate must fire fewer times than the real one over the same steps — " +
+    "if it does not, this test cannot tell the two apart");
 });

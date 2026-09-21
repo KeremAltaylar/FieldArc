@@ -1775,6 +1775,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           title="Include this feature when the archive is published">published</button>
       </div>
 
+      <p class="hint" id="f-walk-note" hidden>This route is already live in Open world — turn the switch off to walk it alone.</p>
       <div class="actions">
         <button type="button" class="ghost" id="f-walk" hidden>Walk</button>
         <button type="button" class="ghost" id="f-patch" hidden>Patch</button>
@@ -3738,6 +3739,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          park's own boundary and re-cuts sect.frame from it, the same as a fresh setPlace would. */
       if (place) { setPlaceFrame(place); }
     }
+    /* #f-walk's disabled/title state (and now #f-walk-note, below) is written only inside
+       renderDetail() — this function never touches it directly. Toggling the switch with a
+       route card open left both stale in either direction: switching Open world on left
+       #f-walk enabled with an empty title (pressable, does nothing); switching it off left
+       #f-walk disabled with the open-world title (unusable until the listener deselected and
+       reselected). Reassert here the same way applyModeGating() reasserts renderDetail()'s
+       other card state after its own blanket rewrite. */
+    if (selected) { renderDetail(); }
     renderPlaceList();
     renderList();
   }
@@ -12388,6 +12397,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#f-walk").title = worldOn()
       ? "Open world already follows the nearest route — turn it off to walk one route alone"
       : "";
+    /* The title attribute above is the only place that explained the disabled state, and a
+       title never appears on a phone — a greyed button with no visible reason. Say the same
+       thing where it can actually be read: a line by the button, shown only for the case it
+       applies to (a route selected, Open world on). */
+    if ($("#f-walk-note")) {
+      $("#f-walk-note").hidden = !(worldOn() && f.properties.kind === "route");
+    }
 
     /* A free point standing inside a park can join it — one tap, and then it behaves like any
        other point of that park (its offline download, its place filter). */
