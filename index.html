@@ -85,6 +85,12 @@ body {
   grid-template-columns: 21rem 1fr;
   grid-template-rows: auto 1fr;
   height: 100dvh;
+  /* The frame's right and bottom bands. The header is a band of --ground across the top and the
+     panel is one down the left; without these two the map simply ran off the window and the
+     composition was open on two sides. --s-2 rather than the header's own padding: a band as
+     tall as the header would cost the map real height for no more legibility. */
+  padding: 0 var(--s-2) var(--s-2) 0;
+  background: var(--ground);
 }
 
 header {
@@ -776,6 +782,18 @@ input[type="range"]:active::-webkit-slider-thumb {
   }
 }
 
+/* iOS zooms the whole page into any field it considers too small to read — under 16 px — and
+   then leaves you there, which is what makes tapping a name or a note on a phone feel like the
+   card lunges at you (Kerem, 2026-09-21: "sometimes it is zoom in to cards"). The cure is the
+   field being 16 px at the moment it is focused, not a viewport lock: maximum-scale would also
+   take away pinch-zoom on the map, which is the one gesture this app cannot lose. Only where the
+   pointer is a thumb, so the desk keeps its typography. */
+@media (pointer: coarse) {
+  input[type="text"], input[type="email"], input[type="search"], textarea, select {
+    font-size: 1rem;
+  }
+}
+
 /* A select should not be the only element on a panel wearing the operating system's clothes. */
 select {
   font: inherit; font-size: var(--t-xs); font-family: var(--font-mono);
@@ -891,8 +909,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 
 /* ---- Map ---- */
-/* Framed on all four sides. The right and bottom edges were missing, so at a desktop width the
-   map ran to the window edge and the frame read as unfinished. */
+/* Framed on all four sides, and the right and bottom read as the same frame the header and the
+   panel already draw — a band of ground with a hairline on it, not a hairline alone at the very
+   edge of the window where it disappears (Kerem, 2026-09-21: "a frame that is good in ui ...
+   in proportion with the upper frame"). The gutter comes from #app's padding, in the ground
+   colour; the map keeps its own hairline against it. */
 #map {
   position: relative; background: var(--sunk);
   border-right: 1px solid var(--bdr); border-bottom: 1px solid var(--bdr);
@@ -1601,6 +1622,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      narrow phone it would clip rather than shrink. Wrapping is what keeps it on screen. */
   .basemaps, .overlays { margin: 0; flex-wrap: wrap; }
 
+  /* No frame bands on a phone: the map meets the sheet and the window edges, and every pixel of
+     height is the walk. */
+  #app { padding: 0; }
   #map { grid-row: 2; grid-column: 1; border-right: 0; border-bottom: 0; }
   #readout { display: none; }          /* a cursor readout means nothing on a touch screen */
 
@@ -1672,7 +1696,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     <div class="overlays" role="group" aria-label="Forest boundary">
       <button type="button" data-forest="off"   aria-pressed="false" title="No boundary">Off</button>
       <button type="button" data-forest="frame" aria-pressed="true"  title="Outer frame — the main body of the forest">Frame</button>
-      <button type="button" class="ghost" id="fit-forest" title="Fit the view to the forest">Fit</button>
+      <button type="button" class="ghost" id="fit-forest" title="Fit the view to everything shown — every route and point in open world, the forest otherwise">Fit</button>
     </div>
     </div>
   </header>
@@ -12796,7 +12820,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     b.addEventListener("click", function () { setForest(b.dataset.forest); });
   });
 
+  /* Fit means "show me what I am looking at", and in open world that is every route and point on
+     the map, not the boundary of whichever park happens to be selected (Kerem, 2026-09-21: "when
+     in open world mode we can zoom out in map to all routes centered so all of them fits"). */
+  function shownBounds() {
+    var b = new maplibregl.LngLatBounds();
+    visible().forEach(function (f) {
+      var g = f.geometry;
+      if (!g) { return; }
+      if (g.type === "Point") { b.extend(g.coordinates); return; }
+      if (g.type === "LineString") { g.coordinates.forEach(function (c) { b.extend(c); }); }
+    });
+    return b;
+  }
+
   $("#fit-forest").addEventListener("click", function () {
+    if (worldOn()) {
+      var all = shownBounds();
+      /* With nothing published anywhere there is nothing to frame; the park's own outline is
+         still the honest answer. */
+      if (!all.isEmpty()) { map.fitBounds(all, { padding: 40, duration: 700 }); return; }
+    }
     if (forestBounds && !forestBounds.isEmpty()) { map.fitBounds(forestBounds, { padding: 28 }); }
   });
 
