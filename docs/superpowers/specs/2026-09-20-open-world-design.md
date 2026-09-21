@@ -115,7 +115,25 @@ map meets the sheet, stays as it is.
 - **Cost.** Every route's line is measured and projected on every position update. With four
   routes this is nothing; the measurement is cached per route and the projection is O(vertices).
   If the catalogue grows to hundreds of routes, the projection set is pre-filtered by a bounding
-  box before the exact pass. Verified by measurement, not assumption.
+  box before the exact pass. "Verified by measurement, not assumption" was written here on
+  2026-09-20 with no measurement behind it — the whole-branch review (I4) caught it. It also
+  caught a second, unmeasured cost this bullet never mentioned: worldMove runs on every position
+  update too, at pointer-move/GPS-fix rate, and until the fix below it paid for a 90-polygon
+  point-in-park search (`placeAt`) and a `JSON.parse` of the publish manifest on every single
+  tick, neither gated on the walker having actually moved. Both are now measured, node harness
+  against the real 90-polygon catalogue (`places.geojson`) and a 500-entry manifest, 20,000
+  calls each, warmed up first:
+
+  | | Per call | Old per-move cost | New per-move cost |
+  | --- | --- | --- | --- |
+  | `placeAt()`, 90 polygons | 0.026 ms | paid every tick | gated to one call per `PLACE_CHECK_M` (5 m) — 0.0026 ms amortised at a 0.5 m/tick drag |
+  | `loadManifest()`, 500-entry parse | 0.127 ms | paid every tick | cached after the first call — ~0 ms thereafter |
+  | **Total** | | **0.153 ms/move** | **0.0026 ms/move — a 59× reduction, 98.3% less work** |
+
+  Route projection itself (measure-and-project onto each route's own line) was already O(vertices)
+  and stays ungated — with the live catalogue's route count (2, see the C1 note below) it is not
+  worth the complexity a pre-filter would add; revisit if the catalogue grows into the hundreds,
+  per the bounding-box plan above.
 - **A crossfade on every step.** Two routes that cross leave the walker flipping between them.
   The nearest-route choice takes the same hysteresis the sections already use: the challenger
   must be clearly nearer (by the same 8–40 m margin) before it takes over.
@@ -143,7 +161,7 @@ point 1.8 km from either, because the live archive has no free point yet. 386 un
 
 | Claim | Measured |
 | --- | --- |
-| Opens in Open world when the key was never set | switch `aria-pressed=true`, `body.world`, walker running with `world: true`, both routes loaded |
+| Opens in Open world when the key was never set | switch `aria-pressed=true`, `body.world`, walker running with `world: true`, both routes loaded — true of this harness only, see the C1 correction below |
 | The transport is reachable in a world walk | `#pacerbar` and `#patchbar` both visible; Sound started audio (meter −28 dB) |
 | Fit | `scrollHeight − innerHeight` = 0 at 1428×729, 501×729 and 832×390 |
 | Map frame | desktop border right/bottom present (0.8 px at this DPR); 0 px on the phone layout, as intended |
@@ -151,5 +169,34 @@ point 1.8 km from either, because the live archive has no free point yet. 386 un
 | Continuous motion does not starve the swap | moved every 250 ms for 2.5 s: route became B, synth returned to 1.000 |
 | A free point with no route near | 1835 m from either route: synth 0.000, free point voice 0.900, meter −11 dB, walk gain 1.000 |
 
-Not measured: a real GPS walk (Kerem's phone), and the free-point path against the live server —
-the harness proves the client, the migration test proves the server, nothing yet proves them together.
+**Correction (whole-branch review, 2026-09-21, C1).** "both routes loaded" above was true only
+of this harness, which pre-seeded both synthetic routes into `fc` before `worldStart()` ran.
+It was never true of the real boot path: `applyWorld()` calls `worldStart()` synchronously,
+in the same tick as firing `fetchWorld()` off — `worldStart()`'s snapshot of `worldRoutes` only
+ever saw whatever `fetchPublished(place)` had already merged for the one park `setPlace` opened.
+Measured against the live database as a listener (`anon`, the same client the real boot path
+uses): `DEFAULT_PLACE` (Belgrad Ormanı) currently has **zero** published routes, and both of the
+catalogue's two published routes belong to two *other* parks — so a real listener's first boot
+saw a map showing both routes and a walker that could pick **neither** as nearest, permanently,
+until something else refetched. Fixed: `fetchWorld()`'s own `.then` now rebuilds `worldRoutes`
+from every park once the request actually resolves, and re-runs `nearestRoute` against wherever
+the walker already is. Not re-measured in the Chrome harness above (no browser session was run
+for this fix wave); proven instead by a node-level discriminating test
+(`tests/world-mode.test.mjs`, "C1: fetchWorld rebuilds worldRoutes...") that fails against the
+pre-fix source and passes against the fix — a browser re-run of the original Measured table
+(`worldRoutes` holding 1 then 2 routes as `fetchWorld` resolves) is still owed before this row
+can be marked verified the same way the rest of the table was.
+
+**Correction (whole-branch review, 2026-09-21, I7).** "the migration test proves the server"
+overstated what ran: the free-point round trip above went entirely through `service()`, which
+bypasses RLS — it proved the `0018_place_is_optional.sql` migration itself (the column accepts
+`NULL`), but not that a real setter's insert clears `features_setter_all`, nor that a real
+listener's read clears the `anon` grant on `public_features`. Fixed: the insert now goes through
+a signed-in setter (a real user, added to `public.setters`, authenticated via
+`signInWithPassword`) and the read through `anon()`. Both now pass against the live database —
+the free-point path is proven through the access-control paths a listener and a setter actually
+use, not only through the schema.
+
+Not measured: a real GPS walk (Kerem's phone). The free-point path against the live server is
+now measured (see the I7 correction above) — the remaining gap is a live device in the field,
+not the server.
