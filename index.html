@@ -3950,7 +3950,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       type: "Feature",
       properties: {
         id: uid(), kind: "route", name: "", note: "",
-        place: place ? place.properties.id : DEFAULT_PLACE,
+        /* I5: in open world `place` is the picker's stale selection, not the park the setter is
+           actually standing in and drawing over — that park is pacer.placeId, kept current by
+           worldMove every time it changes. Place mode has no pacer.placeId (pacer.world is
+           falsy, or there is no pacer at all), so it falls through to `place` exactly as before. */
+        place: (pacer && pacer.world && pacer.placeId) || (place ? place.properties.id : DEFAULT_PLACE),
         created_at: new Date().toISOString(),
         position_source: "manual",
         length_m: Math.round(lineLength(coords)),
@@ -4249,7 +4253,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var f = { type: "Feature",
       properties: {
         id: uid(), kind: "route", name: "", note: "",
-        place: place ? place.properties.id : DEFAULT_PLACE,
+        /* I5: same fix as finishRoute() — pacer.placeId is the park underfoot in open world, and
+           `place` (the picker's stale selection) is only the fallback place mode still uses. */
+        place: (pacer && pacer.world && pacer.placeId) || (place ? place.properties.id : DEFAULT_PLACE),
         created_at: new Date(t.started).toISOString(),
         position_source: "device_fix",
         length_m: Math.round(lineLength(t.pts)),
@@ -12744,9 +12750,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             (t.source === "bwf" ? " (BWF " + fmtWhen(new Date(when).toISOString()) + ")" : ""));
           return;
         }
+        /* I6: this is not marking — at.from names a trace this recording was already matched
+           to by time, and that trace's own park is known, not absent. worldOn() ? null : ...
+           is the free-point rule for a point someone places with no route in reach; applying it
+           here turned an entire imported session's worth of recordings unattached even when
+           every one of them matched a route that belongs to a real park. Fall back to the park
+           underfoot (pacer.placeId, open world) or the stale selected place (place mode) only
+           if the trace itself somehow carries no place — never to null. */
+        var trace = feature(at.from);
         var f = { type: "Feature", properties: {
           id: uid(), kind: "point", name: "", note: "",
-          place: worldOn() ? null : (place ? place.properties.id : DEFAULT_PLACE),
+          place: (trace && trace.properties.place) ||
+            (pacer && pacer.world && pacer.placeId) || (place ? place.properties.id : DEFAULT_PLACE),
           created_at: new Date(when).toISOString(),
           position_source: "interpolated",   /* matched to a trace, not a fix of its own */
           matched_to: at.from,

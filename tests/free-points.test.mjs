@@ -32,8 +32,9 @@ test("a point with no place publishes and comes back published", async () => {
 test("marking in open world makes a free point, and the card offers to attach it", () => {
   const matches = html.match(/place: worldOn\(\) \? null : \(place \? place\.properties\.id : DEFAULT_PLACE\)/g);
   assert.ok(matches, "a point marked in open world belongs to no park");
-  assert.equal(matches.length, 3,
-    "exactly the point-creation sites get this treatment — a route must keep its park");
+  assert.equal(matches.length, 2,
+    "exactly the two genuine marking sites (map click, GPS mark) get this treatment — a route " +
+    "must keep its park, and an audio import matched to a known trace is not marking (I6)");
   assert.match(html, /<button type="button" class="ghost" id="f-attach" hidden>/);
   const click = html.slice(html.indexOf('$("#f-attach").addEventListener'));
   assert.match(click.slice(0, 500), /f\.properties\.place = p\.properties\.id/);
@@ -109,4 +110,52 @@ test("the .geojson import path applies the identical missing/empty/null rule", (
   normalise(empty, null, "R8845862", placeUnset);
   assert.equal(empty.properties.place, "R8845862",
     "an imported feature with place: \"\" also gets the fallback, not a free pass");
+});
+
+/* I5: a route always belongs to a park — never null — so it cannot use the worldOn() ? null : …
+   rule the point-marking sites use. In open world the picker's `place` is stale (it is not
+   necessarily the park the setter is standing in and drawing over); pacer.placeId, kept current
+   by worldMove every time the walker crosses a boundary, is. Extracted verbatim and executed for
+   real, the same way placeUnset() is above, so a future rewrite back to a bare `place` is caught
+   here rather than only in review. */
+function extractRoutePlace() {
+  const expr = "(pacer && pacer.world && pacer.placeId) || (place ? place.properties.id : DEFAULT_PLACE)";
+  /* The full "place: …," form, not the bare expression: I6's fallback chain below embeds this
+     same expression as its own second link, so counting the bare expression would find three. */
+  const full = "place: " + expr + ",";
+  const count = html.split(full).length - 1;
+  assert.equal(count, 2,
+    "exactly the two route-creation sites (map-drawn finishRoute, GPS-traced stopTrack) must " +
+    "resolve the park this way — a route can never be a free point");
+  return new Function("pacer", "place", "DEFAULT_PLACE", "return " + expr + ";");
+}
+
+test("a route drawn or recorded in open world belongs to the park underfoot, not the stale selected park", () => {
+  const routePlace = extractRoutePlace();
+  assert.equal(routePlace({ world: true, placeId: "PARK_B" }, { properties: { id: "PARK_A" } }, "DEFAULT"),
+    "PARK_B", "open world: the park the walker is standing in wins over the picker's selection");
+  assert.equal(routePlace(null, { properties: { id: "PARK_A" } }, "DEFAULT"),
+    "PARK_A", "place mode (no world pacer): the selected place, exactly as before");
+  assert.equal(routePlace({ world: false, placeId: "PARK_B" }, { properties: { id: "PARK_A" } }, "DEFAULT"),
+    "PARK_A", "a place-mode pacer (pacer.world falsy) must not leak placeId into the fallback");
+  assert.equal(routePlace(null, null, "DEFAULT"),
+    "DEFAULT", "no pacer and no place: the last-resort default, same as always");
+});
+
+test("audio import attributes a matched recording to the trace's own park, not null and not the stale picker", () => {
+  const start = html.indexOf("place: (trace && trace.properties.place) ||");
+  assert.ok(start !== -1, "the matched trace's own place must be tried first — this is not marking, the park is known");
+  const end = html.indexOf("created_at:", start);
+  const expr = html.slice(start, end).replace(/^place:\s*/, "").replace(/,\s*$/, "");
+  assert.doesNotMatch(html.slice(start, end), /worldOn\(\) \? null/,
+    "I6: the free-point rule does not apply to an import matched to an existing trace");
+  const importPlace = new Function("trace", "pacer", "place", "DEFAULT_PLACE", "return " + expr + ";");
+  assert.equal(
+    importPlace({ properties: { place: "PARK_C" } }, { world: true, placeId: "PARK_B" },
+      { properties: { id: "PARK_A" } }, "DEFAULT"),
+    "PARK_C", "the trace's own park always wins when it has one");
+  assert.equal(
+    importPlace({ properties: {} }, { world: true, placeId: "PARK_B" },
+      { properties: { id: "PARK_A" } }, "DEFAULT"),
+    "PARK_B", "a placeless trace in open world falls back to the park underfoot, never to null");
 });
