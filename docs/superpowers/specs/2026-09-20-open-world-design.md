@@ -200,3 +200,17 @@ use, not only through the schema.
 Not measured: a real GPS walk (Kerem's phone). The free-point path against the live server is
 now measured (see the I7 correction above) — the remaining gap is a live device in the field,
 not the server.
+
+### The cold-boot measurement the C1 fix owed (2026-09-21, controller, real page + live server)
+
+Taken in Chrome against the real `index.html` with Supabase live, after clearing localStorage and
+every IndexedDB database — a device that has never opened Fieldscape:
+
+| | Before the fix (reasoned from the code, and from the data) | After the fix (measured) |
+| --- | --- | --- |
+| Routes available to the walker on a cold boot | the default park's published routes only. The live archive has two published routes, in `W153690111` and `W248012830`; the default park `R8845862` has **none** — so the walker had nothing to choose at all | **2**, one from each of those two parks |
+| Walker running in Open world | — | yes, and it had already taken `e4263b06…` as its current route |
+| Transport reachable | — | yes |
+
+So the failure C1 described was not "some routes missing": on this archive it was every route missing,
+on every first visit. Still owed: a walk on a real phone over GPS.
