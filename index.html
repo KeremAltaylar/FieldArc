@@ -7291,7 +7291,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
               zones: buildZones(m), log: [], patch: patchOf(f) };
     sectorGeometry(m, patchOf(f).sect.n);
     sect.idx = null;
-    BED.maxVoices = pacer.patch.bed.voices;
+    BED.maxVoices = voiceBudget(pacer.patch.bed.voices);
     harmony.idx = null; harmony.chord = null; harmony.tones = null;
     harmony.last = { bass: null, top: null };
     cellsSet(!!(pacer.patch.morph && pacer.patch.morph.cells));
@@ -7363,7 +7363,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        sect.frame is missing. */
     if (sect.frame && sect.frame.length > 2) { sectorGeometry(null, pacer.patch.sect.n); }
     sect.idx = null;
-    BED.maxVoices = pacer.patch.bed.voices;
+    BED.maxVoices = voiceBudget(pacer.patch.bed.voices);
     harmony.idx = null; harmony.chord = null; harmony.tones = null;
     harmony.last = { bass: null, top: null };
     cellsSet(!!(pacer.patch.morph && pacer.patch.morph.cells));
@@ -7511,7 +7511,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!still || still.id !== near.id) { return; }
       pacer.routeId = near.id;
       pacer.patch = patchOf(near.f);
-      BED.maxVoices = pacer.patch.bed.voices;
+      BED.maxVoices = voiceBudget(pacer.patch.bed.voices);
       harmony.idx = null; harmony.chord = null; harmony.tones = null;
       sect.idx = null;
       setSynthLevel(walkLevel(still.dist, GPS_FADE_FROM, GPS_LEASH));
@@ -7543,6 +7543,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   var BED = { radius: 140, maxVoices: 4, gain: 0.9, fade: 0.35 };
+
+  /* A soundscape voice holds its whole recording for as long as it plays — 73 MB for Kerem's
+     6m40s stereo one, after the Int16 change, and the engine cannot stream what PaulXStretch
+     reads out of order. Four at once is unremarkable on a desktop and is how a phone runs out
+     of memory: the tab is killed mid-walk, and on the reload the archive looks empty, which is
+     exactly what Kerem saw in Koşuyolu on 2026-09-21. The patch's own number stays the ceiling;
+     this only lowers it on a device that cannot pay. deviceMemory is absent on iOS, so a coarse
+     pointer on a small screen counts as a phone too. */
+  function voiceBudget(n) {
+    var mem = navigator.deviceMemory;
+    var small = (mem !== undefined && mem <= 4) ||
+      (window.matchMedia && window.matchMedia("(pointer: coarse)").matches &&
+       Math.min(screen.width, screen.height) <= 500);
+    return small ? Math.min(n, 2) : n;
+  }
 
   function bedStop() {
     wantSound = false;
@@ -9021,9 +9036,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
              for the few milliseconds before the original is collected, which is exactly when a
              phone is most likely to fall over. The AudioBuffer is discarded here anyway, so
              handing its arrays to the worklet costs nothing. */
+          /* Handed over as Int16, which halves what the voice holds for as long as it plays —
+             146 MB to 73 MB for a 6m40s stereo recording. The engine scales back to ±1 on read
+             and works in float64 throughout, so what changes is the source's own quantisation
+             (a floor near -96 dBFS), not the processing. The decoded buffer's arrays are read
+             straight into it and then dropped, so no full-length float copy is ever alive
+             beside this one. */
           var channels = [];
           for (var ci = 0; ci < Math.min(2, audioBuffer.numberOfChannels); ci++) {
-            channels.push(audioBuffer.getChannelData(ci));
+            var f32 = audioBuffer.getChannelData(ci);
+            var i16 = new Int16Array(f32.length);
+            for (var si = 0; si < f32.length; si++) {
+              var sv = f32[si];
+              i16[si] = sv < -1 ? -32768 : (sv > 1 ? 32767 : Math.round(sv * 32767));
+            }
+            channels.push(i16);
           }
           /* Two output channels, both always written by the processor (a mono source is
              duplicated), so nothing depends on how the graph up-mixes. */
@@ -11565,7 +11592,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     save();
     if (pacer && pacer.f === f) {
       pacer.patch = patch;
-      BED.maxVoices = patch.bed.voices;
+      BED.maxVoices = voiceBudget(patch.bed.voices);
       pacer.zones.forEach(function (z) { z.r = soundOfZone(z).zoneR; });
       if (!sect.seeds || sect.seeds.length !== patch.sect.n) {
         sectorGeometry(pacer.m, patch.sect.n);

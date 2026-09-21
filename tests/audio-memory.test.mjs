@@ -52,10 +52,41 @@ test("the engine starting is what makes the voice ready", () => {
     "and the fallback path still does, for a device where the engine cannot run");
 });
 
-test("the worklet is handed the decoded arrays, not copies of them", () => {
-  assert.match(ensureVoice, /channels\.push\(audioBuffer\.getChannelData\(ci\)\);/,
-    "a copy doubles the peak at the worst possible moment");
-  assert.doesNotMatch(ensureVoice, /new Float32Array\(audioBuffer\.length\)/);
+/* The source is handed over as Int16 — half the bytes for the life of the voice — and no
+   full-length FLOAT copy is ever alive beside the decoded buffer. */
+test("the worklet is handed an Int16 source, and no second float copy is made", () => {
+  assert.match(ensureVoice, /new Int16Array\(f32\.length\)/);
+  assert.doesNotMatch(ensureVoice, /new Float32Array\(audioBuffer\.length\)/,
+    "a full-length float copy doubles the peak at the worst possible moment");
+  assert.match(ensureVoice, /channels\.map\(function \(c\) \{ return c\.buffer; \}\)/,
+    "and the buffers are transferred, not structured-cloned");
+});
+
+test("the engine scales an Int16 source back to ±1 and leaves a float source alone", () => {
+  const worklet = readFileSync("src/paulx-worklet.js", "utf8").replace(/\r\n/g, "\n");
+  const ctor = worklet.slice(worklet.indexOf("function PxReader(data, sr)"),
+                             worklet.indexOf("PxReader.prototype.setRange"));
+  assert.match(ctor, /data instanceof Int16Array\) \? 1 \/ 32768 : 1/,
+    "the scale comes from the array type, so a caller cannot get it wrong");
+  const next = worklet.slice(worklet.indexOf("PxReader.prototype.next"),
+                             worklet.indexOf("PxReader.prototype.read"));
+  assert.match(next, /d\[p\] \* this\.scale/);
+  assert.match(next, /d\[this\.s0 \+ \(p - z\)\] \* this\.scale \* t/,
+    "the loop crossfade reads through the same scale, or its tail would be 32768x too loud");
+});
+
+/* A phone cannot hold four of these at once; the tab is killed and the archive looks emptied. */
+test("the voice budget lowers the patch's number on a small device, never raises it", () => {
+  const fn = src("voiceBudget");
+  const budget = new Function("navigator", "window", "screen", fn + "; return voiceBudget;");
+  const desktop = budget({ deviceMemory: 16 }, { matchMedia: () => ({ matches: false }) }, { width: 2560, height: 1440 });
+  const phone = budget({ deviceMemory: 4 }, { matchMedia: () => ({ matches: true }) }, { width: 390, height: 844 });
+  const iphone = budget({}, { matchMedia: () => ({ matches: true }) }, { width: 390, height: 844 });
+  assert.equal(desktop(4), 4, "a desktop keeps what the patch asked for");
+  assert.equal(phone(4), 2);
+  assert.equal(iphone(4), 2, "iOS reports no deviceMemory, so a coarse pointer on a small screen counts");
+  assert.equal(phone(1), 1, "never raises the patch's own number");
+  assert.equal(desktop(8), 8);
 });
 
 test("disposal tolerates a voice that never needed a player", () => {
