@@ -7601,6 +7601,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!still || still.id !== near.id) { return; }
       pacer.routeId = near.id;
       pacer.patch = patchOf(near.f);
+      /* The fade out has already run; this is the moment the new route's sound is allowed to
+         differ from the old one's, so the instrument changes here rather than at the next
+         patch-panel edit that may never come. */
+      applyPatchToVoice(pacer.patch);
       BED.maxVoices = voiceBudget(pacer.patch.bed.voices);
       harmony.idx = null; harmony.chord = null; harmony.tones = null;
       sect.idx = null;
@@ -7746,7 +7750,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
            whatever the patch says, because construction only sets what the constructor
            takes and the drive is three nodes deep. */
         applyRhythmFx(patch);
+        /* Built from this patch the first time; told this patch every time after, because
+           bedStop leaves the voice standing and the next Sound press may well belong to a
+           different route than the one that built it. */
         if (!bed.voice) { bed.voice = buildVoice(Tone, patch); }
+        else { applyPatchToVoice(patch); }
         if (!bed.loop) {
           bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
           bed.barLoop = Tone.Transport.scheduleRepeat(harmonyBar, "1m");
@@ -11598,6 +11606,59 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* An instrument is swapped only when it actually changed, and the pad is told to re-attack
      afterwards: its notes are held, so a swap mid-chord would otherwise leave the new synth
      silent until the chord moved. */
+  /* Everything a patch says that an already-built voice can simply be told — the levels, the
+     three effect chains, the reverb decays, the sector grid, the instruments themselves.
+
+     This used to live inside commitPatch, which meant it ran only when a setter moved a
+     control in the patch panel. Measured on the live app, 2026-09-21: bed.voice and its FX
+     chains are built once per page session (bedStart guards with `if (!bed.voice)`) and
+     bedStop clears neither, so stopping a walk and starting another route returned the
+     identical voice object and the identical chain — same reverb decay, same fx3 wet. Every
+     route after the first in a session was played on the first one's instrument. voiceStep
+     reads pacer.patch live, so the notes followed the route while the sound did not, which is
+     why this hid for so long.
+
+     Called from all three places a voice can outlive the patch that built it: pressing Sound
+     on a voice an earlier walk built, and crossing into another route's reach in open world,
+     as well as the patch panel it came from. */
+  function applyPatchToVoice(patch) {
+    if (!bed || !bed.voice) { return; }
+    bed.Tone.Transport.bpm.rampTo(patch.tempo, 0.2);
+    bed.voice.bus.gain.rampTo(patch.voice.on ? patch.voice.gain : 0, 0.2);
+    bed.voice.synth.bass.gain.gain.rampTo(patch.voice.bass, 0.2);
+    bed.voice.synth.top.gain.gain.rampTo(patch.voice.top, 0.2);
+    bed.voice.sect.gain.gain.rampTo(patch.sect.on ? patch.sect.gain : 0, 0.2);
+    bed.voice.fx.delay.delayTime.rampTo(delaySeconds(patch), 0.2);
+    bed.voice.fx.delay.wet.rampTo(patch.fx.delayWet, 0.2);
+    bed.voice.fx.delay.feedback.rampTo(patch.fx.delayFb, 0.2);
+    bed.voice.fx.reverb.wet.rampTo(patch.fx.revWet, 0.2);
+    if (bed.voice.v3) {
+      bed.voice.v3.bus.gain.rampTo(patch.v3.on ? patch.v3.gain : 0, 0.2);
+    }
+    if (bed.voice.fx3) {
+      bed.voice.fx3.delay.delayTime.rampTo(Math.min(MAX_DELAY_S - 0.01,
+        divSeconds(patch.fx3.delayDiv, patch.tempo)), 0.2);
+      bed.voice.fx3.delay.wet.rampTo(patch.fx3.delayWet, 0.2);
+      bed.voice.fx3.delay.feedback.rampTo(patch.fx3.delayFb, 0.2);
+      bed.voice.fx3.reverb.wet.rampTo(patch.fx3.revWet, 0.2);
+    }
+    applySynths(patch);
+    if (bed.voice.fx2) {
+      bed.voice.fx2.delay.delayTime.rampTo(Math.min(MAX_DELAY_S - 0.01,
+        divSeconds(patch.fx2.delayDiv, patch.tempo)), 0.2);
+      bed.voice.fx2.delay.wet.rampTo(patch.fx2.delayWet, 0.2);
+      bed.voice.fx2.delay.feedback.rampTo(patch.fx2.delayFb, 0.2);
+      bed.voice.fx2.reverb.wet.rampTo(patch.fx2.revWet, 0.2);
+    }
+    applyRevDecay(patch);
+    applySectRhythm(patch);
+    applyRhythmFx(patch);
+    Object.keys(bed.rhythms || {}).forEach(function (id) {
+      var rf = feature(id);
+      if (rf) { applyHitFx(bed.rhythms[id], rhythmOf(rf)); }
+    });
+  }
+
   function applySynths(patch) {
     var V = bed.voice;
     if (V.synthType !== patch.voice.synth) {
@@ -11692,42 +11753,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       drawProgSegments();
       drawSectors();
       if (bed && bed.on) {
-        bed.Tone.Transport.bpm.rampTo(patch.tempo, 0.2);
-        if (bed.voice) {
-          bed.voice.bus.gain.rampTo(patch.voice.on ? patch.voice.gain : 0, 0.2);
-          bed.voice.synth.bass.gain.gain.rampTo(patch.voice.bass, 0.2);
-          bed.voice.synth.top.gain.gain.rampTo(patch.voice.top, 0.2);
-          bed.voice.sect.gain.gain.rampTo(patch.sect.on ? patch.sect.gain : 0, 0.2);
-          bed.voice.fx.delay.delayTime.rampTo(delaySeconds(patch), 0.2);
-          bed.voice.fx.delay.wet.rampTo(patch.fx.delayWet, 0.2);
-          bed.voice.fx.delay.feedback.rampTo(patch.fx.delayFb, 0.2);
-          bed.voice.fx.reverb.wet.rampTo(patch.fx.revWet, 0.2);
-          if (bed.voice.v3) {
-            bed.voice.v3.bus.gain.rampTo(patch.v3.on ? patch.v3.gain : 0, 0.2);
-          }
-          if (bed.voice.fx3) {
-            bed.voice.fx3.delay.delayTime.rampTo(Math.min(MAX_DELAY_S - 0.01,
-              divSeconds(patch.fx3.delayDiv, patch.tempo)), 0.2);
-            bed.voice.fx3.delay.wet.rampTo(patch.fx3.delayWet, 0.2);
-            bed.voice.fx3.delay.feedback.rampTo(patch.fx3.delayFb, 0.2);
-            bed.voice.fx3.reverb.wet.rampTo(patch.fx3.revWet, 0.2);
-          }
-          applySynths(patch);
-          if (bed.voice.fx2) {
-            bed.voice.fx2.delay.delayTime.rampTo(Math.min(MAX_DELAY_S - 0.01,
-              divSeconds(patch.fx2.delayDiv, patch.tempo)), 0.2);
-            bed.voice.fx2.delay.wet.rampTo(patch.fx2.delayWet, 0.2);
-            bed.voice.fx2.delay.feedback.rampTo(patch.fx2.delayFb, 0.2);
-            bed.voice.fx2.reverb.wet.rampTo(patch.fx2.revWet, 0.2);
-          }
-          applyRevDecay(patch);
-          applySectRhythm(patch);
-          applyRhythmFx(patch);
-          Object.keys(bed.rhythms || {}).forEach(function (id) {
-            var rf = feature(id);
-            if (rf) { applyHitFx(bed.rhythms[id], rhythmOf(rf)); }
-          });
-        }
+        applyPatchToVoice(patch);
         updateBed();
       }
     }

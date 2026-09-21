@@ -133,9 +133,15 @@ test("rhythmStep applies each point's fx once it is ready, without adding new sc
     "this plan must never add a new Transport scheduling call");
 });
 
-test("commitPatch re-applies each in-range point's hit fx, so a tempo change reaches the per-slot delay", () => {
-  const src = slice("function commitPatch(f, patch)", "\n  }\n");
-  assert.match(src, /applyRhythmFx\(patch\)/, "the shared room must still re-apply on commit");
+/* These ramps moved out of commitPatch into applyPatchToVoice on 2026-09-21, so that pressing
+   Sound on a route a previous walk did not build, and crossing routes in open world, apply them
+   too — not only a setter moving a patch-panel control. commitPatch still reaches them, through
+   the one call this test also pins. */
+test("applying a patch re-applies each in-range point's hit fx, so a tempo change reaches the per-slot delay", () => {
+  const src = slice("function applyPatchToVoice(patch)", "\n  }\n");
+  assert.match(src, /applyRhythmFx\(patch\)/, "the shared room must still re-apply");
   assert.match(src, /bed\.rhythms/, "must reach into the live rhythm points, not just the shared room");
   assert.match(src, /applyHitFx\(/, "must re-apply each point's per-slot fx too, not just the shared room's");
+  assert.match(slice("function commitPatch(f, patch)", "\n  }\n"), /applyPatchToVoice\(patch\)/,
+    "and a patch-panel edit must still reach all of it");
 });

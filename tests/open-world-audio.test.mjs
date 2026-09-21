@@ -195,6 +195,11 @@ function buildSwapSandboxFactory() {
        navigator/screen — neither exists here. The sandbox supplies the identity, because what
        this file tests is the swap timer, not the budget; tests/audio-memory.test.mjs owns that. */
     "function voiceBudget(n) { return n; }" +
+    /* take() now also hands the adopted patch to the standing voice — the defect measured on
+       2026-09-21, where every route after the first in a session played on the first one's
+       instrument. It reaches deep into a live Tone graph, which does not exist here; this file
+       tests the swap timer, and tests/patch-follows-route.test.mjs owns what it applies. */
+    "function applyPatchToVoice() {}" +
     src("sectorHold") + decls + src("setSynthLevel") + src("worldSwap") +
     "; return { worldSwap: worldSwap, setSynthLevel: setSynthLevel };"
   );
