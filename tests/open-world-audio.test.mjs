@@ -147,3 +147,23 @@ test("pacerStart and worldStart share one setup function rather than duplicating
      missing them, which was exactly review item 4. */
   assert.doesNotMatch(src("pacerStart"), /window\.__fa\.gps = /);
 });
+
+test("a route handover fades the synths out and back, and distance fades the synths not the walk", () => {
+  assert.match(html, /var WORLD_SWAP = 1\.5;/);
+  const swap = src("worldSwap");
+  assert.match(swap, /setSynthLevel\(0\)/, "out before the patch changes");
+  assert.match(swap, /pacer\.patch = patchOf\(near\.f\)/);
+  assert.match(swap, /setTimeout\(/, "and back after it");
+  const level = src("setSynthLevel");
+  assert.match(level, /bed\.synth\.gain\.rampTo\(/);
+  assert.match(level, /mixLevel\(mixer, MIX_ROUTE\)/, "a muted route stays muted through a swap");
+  const move = src("worldMove");
+  assert.match(move, /setSynthLevel\(walkLevel\(pacer\.routeDist, GPS_FADE_FROM, GPS_LEASH\)\)/,
+    "in open world the distance fade belongs to the synths; points keep their own");
+});
+
+test("applyMixer scales the synth stage by its own level, not just the mixer, so a mute/solo toggle cannot slam a fade or crossfade back to full", () => {
+  const apply = src("applyMixer");
+  assert.match(apply,
+    /bed\.synth\.gain\.rampTo\(\(bed\.synthLevel === undefined \? 1 : bed\.synthLevel\) \* mixLevel\(mixer, MIX_ROUTE\), BED\.fade\)/);
+});

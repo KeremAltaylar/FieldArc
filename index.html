@@ -6998,7 +6998,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       +pos.coords.latitude.toFixed(6)]); return; }
     var pr = projectToRoute(pacer.m, [+pos.coords.longitude.toFixed(6),
                                       +pos.coords.latitude.toFixed(6)]);
-    setWalkLevel(walkLevel(pr.dist, GPS_FADE_FROM, GPS_LEASH));
+    /* In open world the fade belongs to the synths — a free point beside you must still sound
+       when no route is anywhere near. In place mode the whole walk fades, as shipped. */
+    if (!(pacer && pacer.world)) {
+      setWalkLevel(walkLevel(pr.dist, GPS_FADE_FROM, GPS_LEASH));
+    }
     /* Past the leash the walker still holds rather than jumping (A-15) — it is only the level
        that has reached zero, and walking back fades it in again through the same curve. */
     if (pr.dist > GPS_LEASH) { gps.held = fmtLen(pr.dist) + " off"; pacerReadout(); return; }
@@ -7059,6 +7063,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!pacer) { return; }
     gpsSet(false);             /* while the marker still exists to hand dragging back to */
     pacer.marker.remove();
+    /* A route handover in flight belongs to the walk that scheduled it — not to whatever
+       starts next, whether that is silence or a fresh walk with its own routeId. */
+    clearTimeout(worldSwapTimer);
     pacer = null;
     window.__fa.pacer = null;
     drawProgSegments();
@@ -7218,8 +7225,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       pacer.t = near.t;
       pacer.m = near.m;
       pacer.routeDist = near.dist;
+      /* While a swap is pending, pacer.routeId still names the route being left, not the one
+         near.id just picked — worldSwap owns the fade until its timer lands. Once routeId has
+         caught up, distance from the route is the synths' business, not the whole walk's. */
+      if (near.id === pacer.routeId) {
+        setSynthLevel(walkLevel(pacer.routeDist, GPS_FADE_FROM, GPS_LEASH));
+      }
     } else {
       pacer.routeDist = Infinity;
+      setSynthLevel(0);
     }
     /* zonesNear rebuilds the zone list fresh from position on every move, so a straight
        reassignment would reset inside/firedAt on every fix and fire pacerCheckZones's enter
@@ -7239,12 +7253,48 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     pacerReadout();
   }
 
-  /* Placeholder: takes the new route outright. The next task replaces this body with a
-     crossfade between the old patch and the new one. */
+  var WORLD_SWAP = 1.5;      /* seconds — a change of key is a transition, not a jump cut */
+  var worldSwapTimer = null;
+
+  /* The synth stage's own level. Multiplied by the mixer, so muting the route on its card still
+     means muted while a swap or a fade is running. */
+  function setSynthLevel(level) {
+    if (!bed || !bed.synth) { return; }
+    bed.synthLevel = level;
+    bed.synth.gain.rampTo(level * mixLevel(mixer, MIX_ROUTE), BED.fade);
+  }
+
+  /* Crossfades the route's synth voices across a change of patch, instead of swapping the patch
+     out from under a voice that is still sounding: fade the synths to nothing, only then hand
+     the patch to the new route, and fade back in at whatever level the new route's own distance
+     earns. Scheduled on a timer, which leaves two ways for the swap to go stale before it lands:
+     the walk can stop or restart (pacerStop clears worldSwapTimer, and `mine` below catches
+     anything already in flight when it does — a stopped or a brand-new pacer is never `pacer`
+     any more), or the walker can cross back toward the route this swap is leaving before the
+     timer fires — worldMove will not call worldSwap again for that, because pacer.routeId still
+     names the route being left until `take` runs, so nearestRoute's own hysteresis never sees a
+     change. `take` re-asks nearestRoute the same question at fire time, from where the walker
+     actually is by then; if that is no longer near.id, the swap is dropped rather than applied
+     late to a route the walker already left again. */
   function worldSwap(near) {
-    pacer.routeId = near.id;
-    pacer.patch = patchOf(near.f);
-    BED.maxVoices = pacer.patch.bed.voices;
+    var wasRunning = pacer.routeId !== null;
+    setSynthLevel(0);
+    clearTimeout(worldSwapTimer);
+    var mine = pacer;
+    var take = function () {
+      if (pacer !== mine || !pacer.world) { return; }
+      var still = nearestRoute(worldRoutes, pacer.pos, pacer.routeId, sectorHold());
+      if (!still || still.id !== near.id) { return; }
+      pacer.routeId = near.id;
+      pacer.patch = patchOf(near.f);
+      BED.maxVoices = pacer.patch.bed.voices;
+      harmony.idx = null; harmony.chord = null; harmony.tones = null;
+      sect.idx = null;
+      setSynthLevel(walkLevel(still.dist, GPS_FADE_FROM, GPS_LEASH));
+    };
+    /* The first route of a session needs no fade out — there is nothing playing to fade. */
+    if (!wasRunning) { take(); return; }
+    worldSwapTimer = setTimeout(take, WORLD_SWAP * 1000);
   }
 
   /* ---------- The bed ----------
@@ -8617,7 +8667,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      the level its distance earned (base), and the mixer only scales it. */
   function applyMixer() {
     if (!bed) { return; }
-    if (bed.synth) { bed.synth.gain.rampTo(mixLevel(mixer, MIX_ROUTE), BED.fade); }
+    if (bed.synth) {
+      bed.synth.gain.rampTo((bed.synthLevel === undefined ? 1 : bed.synthLevel) * mixLevel(mixer, MIX_ROUTE), BED.fade);
+    }
     Object.keys(bed.voices || {}).forEach(function (id) {
       var v = bed.voices[id];
       if (v && v.gain && v.base !== undefined) {

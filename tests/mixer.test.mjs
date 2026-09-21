@@ -55,8 +55,12 @@ test("clearing the last solo brings everything back", () => {
 
 test("the mixer scales what distance earned, and every change is ramped", () => {
   const apply = src("applyMixer");
-  assert.match(apply, /bed\.synth\.gain\.rampTo\(mixLevel\(mixer, MIX_ROUTE\), BED\.fade\)/,
-    "the route's synths are one source");
+  /* Task 9 gives the synth stage its own level (bed.synthLevel), set by distance and by a
+     route handover's crossfade. A mute/solo toggle must scale that level, not replace it —
+     otherwise flipping a mute mid-fade would slam the synths back to full. */
+  assert.match(apply,
+    /bed\.synth\.gain\.rampTo\(\(bed\.synthLevel === undefined \? 1 : bed\.synthLevel\) \* mixLevel\(mixer, MIX_ROUTE\), BED\.fade\)/,
+    "the route's synths are one source, scaled by their own level");
   assert.match(apply, /v\.gain\.gain\.rampTo\(v\.base \* mixLevel\(mixer, id\), BED\.fade\)/);
   assert.match(apply, /R\.gain\.gain\.rampTo\(R\.base \* mixLevel\(mixer, id\), BED\.fade\)/);
   /* The proximity paths must keep the mixer applied, or the next tick would undo a mute. */
