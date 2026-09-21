@@ -105,7 +105,12 @@ pre {
 <div id="map"></div>
 <pre id="maplog">not loaded</pre>
 
-<h2>5 · Errors</h2>
+<h2>5 · Audio budget</h2>
+<div id="audioenv"></div>
+<button type="button" id="aud-run">Run the audio budget test</button>
+<pre id="audlog">not run — tap the button (it needs a tap to start audio)</pre>
+
+<h2>6 · Errors</h2>
 <pre id="errlog">none</pre>
 
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
@@ -125,7 +130,7 @@ pre {
     $("#env").appendChild(d);
   }
 
-  /* ---- 5. errors first, so anything below that throws is still reported ---- */
+  /* ---- 6. errors first, so anything below that throws is still reported ---- */
   var errs = [];
   function pushErr(what) {
     errs.push(what);
@@ -261,6 +266,235 @@ pre {
   });
   m.on("error", function (e) {
     pushErr("map: " + ((e && e.error && e.error.message) || "unknown"));
+  });
+
+  /* ---- 5. audio budget -------------------------------------------------------------------
+     Kerem's Android glitches where his iPhone and every desktop browser do not, and guessing
+     how much further to cut the synth layer from a dev machine is how the last two rounds went.
+     This measures it on the phone itself.
+
+     The method is the one that produced the numbers we have been working from: render a stack
+     offline and time it. An OfflineAudioContext renders as fast as the CPU allows, so the wall
+     time to produce N seconds of audio, over N, is the share of one core that stack needs — and
+     unlike anything timed against a live AudioContext it does not depend on the output device.
+     Anything at or above 100 % cannot keep up; in practice a phone needs headroom well under
+     that, because the main thread, the map and the GPS are all on the same chip.
+
+     The stack built below is not buildVoice() itself — diag.html deliberately depends on
+     nothing from index.html — but it is the same node types in the same counts: three effect
+     chains (a room, and a delay line where the platform still has one), the pad's two synths,
+     the sector line, the third voice, each through a waveshaper, a warp and a filter, plus the
+     rhythm room. If buildVoice changes shape, this needs the same change. */
+  function audLine(label, value, good) {
+    var d = document.createElement("div");
+    d.className = "row";
+    var b = document.createElement("b"); b.textContent = label;
+    var v = document.createElement("span");
+    v.textContent = String(value);
+    if (good === true) { v.className = "ok"; }
+    if (good === false) { v.className = "bad"; }
+    d.appendChild(b); d.appendChild(v);
+    $("#audioenv").appendChild(d);
+  }
+
+  /* Must match smallDevice() in index.html — that function decides whether this phone gets the
+     cheap rooms and the cheap warp at all, and a phone that fails it is running the desktop
+     stack without anyone noticing. That is the first thing worth knowing here. */
+  function smallDevice() {
+    var mem = navigator.deviceMemory;
+    return (mem !== undefined && mem <= 4) ||
+      (window.matchMedia && window.matchMedia("(pointer: coarse)").matches &&
+       Math.min(screen.width, screen.height) <= 500);
+  }
+
+  audLine("deviceMemory", navigator.deviceMemory === undefined ? "absent (normal on iOS)"
+                                                               : navigator.deviceMemory);
+  audLine("screen", screen.width + " x " + screen.height +
+          "  (min " + Math.min(screen.width, screen.height) + ")");
+  audLine("coarse pointer", matchMedia("(pointer: coarse)").matches);
+  audLine("mobile audio path", smallDevice() ? "YES — cheap rooms + Vibrato warp, no delays"
+                                             : "NO — this device runs the full desktop stack",
+          smallDevice());
+  audLine("AudioWorklet", typeof AudioWorklet !== "undefined", typeof AudioWorklet !== "undefined");
+
+  function audLog(s) {
+    var el = $("#audlog");
+    el.textContent = (el.textContent === "not run — tap the button (it needs a tap to start audio)"
+                      ? "" : el.textContent + "\n") + s;
+  }
+  function pct(ms, seconds) { return (ms / (seconds * 1000) * 100).toFixed(1) + "%"; }
+  function load(src) {
+    return new Promise(function (res, rej) {
+      var s = document.createElement("script");
+      s.src = src; s.onload = res; s.onerror = function () { rej(new Error("could not load " + src)); };
+      document.head.appendChild(s);
+    });
+  }
+
+  /* The route stack, in whichever shape this device would really build. */
+  function buildStack(T, mobile) {
+    var dest = new T.Gain(0.8).toDestination();
+    var lim = new T.Limiter(-1).connect(dest);
+    var meter = new T.Meter(); lim.connect(meter);
+    var walk = new T.Gain(1).connect(lim), bus = new T.Gain(1).connect(walk);
+    function room(decay) {
+      return mobile
+        ? new T.Freeverb({ roomSize: Math.max(0, Math.min(0.95, 0.45 + decay * 0.062)),
+                           dampening: 3000, wet: 0.4 })
+        : new T.Reverb({ decay: decay, wet: 0.4 });
+    }
+    function chain(c) {
+      var rev = room(c.d).connect(bus), dIn = new T.Gain(1);
+      if (mobile) { dIn.connect(rev); return dIn; }          /* a phone has no delay line */
+      var hp = new T.Filter({ type: "highpass", frequency: 170, Q: 0.7 });
+      var del = new T.FeedbackDelay({ maxDelay: 4, delayTime: c.t, feedback: c.fb, wet: 1 });
+      var send = new T.Gain(c.w);
+      dIn.connect(rev); dIn.connect(hp); hp.connect(del); del.connect(send); send.connect(rev);
+      return dIn;
+    }
+    var fx = chain({ d: 3.4, t: 0.3, fb: 0.72, w: 0.75 });
+    var fx2 = chain({ d: 0.4, t: 0.2, fb: 0.70, w: 0.40 });
+    var fx3 = chain({ d: 7.6, t: 0.5, fb: 0.70, w: 0.68 });
+    function voice(into, n, rate) {
+      var vb = new T.Gain(0.8).connect(into), mod = new T.Gain(1).connect(vb);
+      var filt = new T.Filter(1200, "lowpass").connect(mod);
+      var warp = mobile ? new T.Vibrato({ frequency: rate, depth: 0.6, wet: 0.3 })
+                        : new T.Chorus({ frequency: rate, delayTime: 5.5, depth: 0.6, wet: 0.3 });
+      if (!mobile) { warp.start(); }
+      warp.connect(filt);
+      var drive = new T.Gain(1).connect(warp);
+      var ws = new T.WaveShaper(function (x) { return Math.tanh(x * 2.6); }, 2048).connect(drive);
+      for (var i = 0; i < n; i++) {
+        var s = new T.FMSynth({ harmonicity: 1, modulationIndex: 4 }).connect(ws);
+        s.triggerAttack(110 * (i + 1), 0);
+      }
+    }
+    voice(fx, 2, 0.55);          /* the pad: bass and top */
+    voice(fx2, 1, 1.7);          /* the sector counter-line */
+    voice(fx3, 1, 0.35);         /* the third voice */
+    var rr = room(1.2).connect(bus);
+    var rd = new T.FeedbackDelay({ delayTime: 0.25, feedback: 0.34, wet: 0.22 }).connect(rr);
+    var rf = new T.Filter(9000, "lowpass").connect(rd);
+    var rs = new T.NoiseSynth().connect(rf); rs.triggerAttack(0);
+  }
+
+  function renderCost(T, mobile, seconds) {
+    var ctx = new OfflineAudioContext(2, 48000 * seconds, 48000);
+    var prev = T.getContext();
+    T.setContext(ctx);
+    buildStack(T, mobile);
+    /* A convolver's impulse is rendered before the clock starts, so this measures the cost of
+       running the stack and not the one-off cost of building it. */
+    var ready = [];
+    if (!mobile) { ready.push(new Promise(function (r) { setTimeout(r, 400); })); }
+    return Promise.all(ready).then(function () {
+      var t0 = performance.now();
+      return ctx.startRendering().then(function () {
+        var ms = performance.now() - t0;
+        T.setContext(prev);
+        return ms;
+      });
+    });
+  }
+
+  /* One stretch voice, driven directly — the same measurement the Node benchmark makes, and the
+     reason it is done this way rather than through a worklet node is that an OfflineAudioContext
+     does not reliably deliver the source message before it starts rendering. */
+  function stretchCost(seconds) {
+    var PX = globalThis.PaulX;
+    if (!PX) { return null; }
+    var sr = 48000, bufsize = 16384;             /* fft 0.7, the patch default */
+    var src = new Float32Array(sr * 8), seed = 3;
+    for (var i = 0; i < src.length; i++) {
+      seed = (seed * 16807) % 2147483647;
+      src[i] = 0.3 * Math.sin(2 * Math.PI * 440 * i / sr) + 0.1 * (seed / 2147483647 * 2 - 1);
+    }
+    var rd = new PX.PxReader(src, sr), st = new PX.PxStretcher(bufsize, sr, 7);
+    rd.setRange(0, 1, 0.01);
+    st.prime(rd);
+    var p = { stretch: 32, freeze: false, onset: 0, morph: 0, field: 0, warpHz: 0,
+              mods: { fshift: { on: true, hz: 0 }, pitch: { on: true, st: 0 } } };
+    var hop = new Float64Array(bufsize);
+    PX.pxRun(st.hopJob(rd, p, hop));                      /* warm up, outside the clock */
+    var hops = Math.ceil(sr * seconds / bufsize), t0 = performance.now();
+    for (var h = 0; h < hops; h++) { PX.pxRun(st.hopJob(rd, p, hop)); }
+    return { ms: performance.now() - t0, produced: hops * bufsize / sr };
+  }
+
+  $("#aud-run").addEventListener("click", function () {
+    var btn = this;
+    btn.disabled = true;
+    var began = performance.now();
+    $("#audlog").textContent = "running — this takes about half a minute, leave the screen on";
+
+    /* The live context first, because it is the only way to see what buffer this phone actually
+       hands out for the latencyHint the app asks for. */
+    var AC = window.AudioContext || window.webkitAudioContext;
+    var live = new AC({ latencyHint: 0.05 });
+    live.resume();
+    audLog("sample rate      " + live.sampleRate + " Hz");
+    audLog("base latency     " + (live.baseLatency * 1000).toFixed(1) + " ms  (app asks for 50)");
+    audLog("output latency   " + (live.outputLatency ? (live.outputLatency * 1000).toFixed(1) + " ms"
+                                                     : "not reported"));
+
+    /* Chrome's own render meter, where it exists: averageLoad and peakLoad are fractions of the
+       render budget, and underrunRatio is the glitching itself, counted rather than described. */
+    var cap = live.renderCapacity;
+    if (cap) {
+      cap.onupdate = function (e) {
+        audLog("render load      avg " + (e.averageLoad * 100).toFixed(0) + "%  peak " +
+               (e.peakLoad * 100).toFixed(0) + "%  underruns " +
+               (e.underrunRatio * 100).toFixed(1) + "%");
+        cap.onupdate = null;
+        cap.stop();
+      };
+      cap.start({ updateInterval: 2 });
+    } else {
+      audLog("render load      renderCapacity not available in this browser");
+    }
+
+    var SECONDS = 4, results = {};
+    load("https://unpkg.com/tone@15/build/Tone.js")
+      .then(function () { return load("src/paulx-worklet.js"); })
+      .then(function () {
+        audLog("");
+        return renderCost(window.Tone, true, SECONDS);
+      })
+      .then(function (ms) {
+        results.mobile = ms;
+        audLog("PHONE stack      " + pct(ms, SECONDS) + " of one core");
+        return renderCost(window.Tone, false, SECONDS);
+      })
+      .then(function (ms) {
+        results.desktop = ms;
+        audLog("desktop stack    " + pct(ms, SECONDS) + "  (what this phone would have run before)");
+        var s = stretchCost(4);
+        if (s) {
+          results.stretch = s.ms / (s.produced * 1000) * 100;
+          audLog("one recording    " + (results.stretch).toFixed(1) + "% each, two play at once");
+        }
+        var total = results.mobile / (SECONDS * 1000) * 100 + 2 * (results.stretch || 0);
+        audLog("");
+        audLog("TOTAL, as it runs now: " + total.toFixed(0) + "% of one core");
+        audLog(total < 50 ? "comfortable — something else is causing the glitching"
+             : total < 75 ? "tight but workable — glitches under load, not constantly"
+             : total < 100 ? "no headroom — expect glitching whenever the map or GPS is busy"
+                           : "over budget — it cannot keep up, and will glitch continuously");
+        audLog("");
+        audLog("If it needs cutting further, the next two are the third voice and the");
+        audLog("sector counter-line, worth roughly a quarter of the stack between them.");
+        /* The "running" line has stopped being true; say how long it took instead. */
+        $("#audlog").textContent = $("#audlog").textContent.replace(/^running — [^\n]*/,
+          "measured in " + ((performance.now() - began) / 1000).toFixed(0) + "s");
+        $("#audlog").className = total < 75 ? "ok" : "bad";
+        btn.disabled = false;
+        live.close();
+      })
+      .catch(function (e) {
+        pushErr("audio budget: " + (e && e.message ? e.message : e));
+        audLog("FAILED: " + (e && e.message ? e.message : e));
+        btn.disabled = false;
+      });
   });
 }());
 </script>
