@@ -1779,6 +1779,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <button type="button" class="ghost" id="f-walk" hidden>Walk</button>
         <button type="button" class="ghost" id="f-patch" hidden>Patch</button>
         <button type="button" class="ghost" id="f-rhythm" hidden>Rhythm</button>
+        <button type="button" class="ghost" id="f-attach" hidden>Attach to this park</button>
         <button type="button" class="ghost" id="f-zoom">Zoom to</button>
         <button type="button" class="danger" id="f-delete">Delete</button>
       </div>
@@ -3844,7 +3845,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         type: "Feature",
         properties: {
           id: uid(), kind: "point", name: "", note: "",
-          place: place ? place.properties.id : DEFAULT_PLACE,
+          place: worldOn() ? null : (place ? place.properties.id : DEFAULT_PLACE),
           created_at: new Date().toISOString(),
           position_source: "manual"        // Section 1, decision 2 — always know where a coordinate came from
         },
@@ -4126,7 +4127,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var f = { type: "Feature",
         properties: {
           id: uid(), kind: "point", name: "", note: "",
-          place: place ? place.properties.id : DEFAULT_PLACE,
+          place: worldOn() ? null : (place ? place.properties.id : DEFAULT_PLACE),
           created_at: new Date(pos.timestamp).toISOString(),
           position_source: "device_fix",     /* never confused with a mouse-drawn point */
           accuracy_m: pos.coords.accuracy != null ? +pos.coords.accuracy.toFixed(1) : null,
@@ -12284,6 +12285,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderAudioMode(f);
     $("#f-walk").setAttribute("aria-pressed", String(!!pacer && pacer.f === f));
 
+    /* A free point standing inside a park can join it — one tap, and then it behaves like any
+       other point of that park (its offline download, its place filter). */
+    var host = (f.properties.kind === "point" && f.properties.place == null && setterTools())
+      ? placeAt(f.geometry.coordinates) : null;
+    $("#f-attach").hidden = !host;
+    if (host) { $("#f-attach").textContent = "Attach to " + host.properties.name; }
+
     $("#f-kind").textContent = f.properties.kind === "route" ? "Route" : "Point";
     $("#g-type").hidden = f.properties.kind !== "point";
     $("#card-icons").hidden = f.properties.kind !== "point";
@@ -12454,6 +12462,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!f || f.properties.kind !== "route") { return; }
     $("#patchpanel").hidden = false;
     renderPatchPanel();
+  });
+
+  $("#f-attach").addEventListener("click", function () {
+    var f = feature(selected);
+    if (!f || !setterTools() || f.properties.place != null) { return; }
+    var p = placeAt(f.geometry.coordinates);
+    if (!p) { return; }
+    claimEdit(f);
+    f.properties.place = p.properties.id;
+    commit();
+    renderDetail();
+    toast(label(f) + " joined " + p.properties.name);
   });
 
   $("#f-zoom").addEventListener("click", function () {
@@ -12641,7 +12661,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         }
         var f = { type: "Feature", properties: {
           id: uid(), kind: "point", name: "", note: "",
-          place: place ? place.properties.id : DEFAULT_PLACE,
+          place: worldOn() ? null : (place ? place.properties.id : DEFAULT_PLACE),
           created_at: new Date(when).toISOString(),
           position_source: "interpolated",   /* matched to a trace, not a fix of its own */
           matched_to: at.from,
