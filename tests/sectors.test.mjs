@@ -70,3 +70,15 @@ test("the whole place is divided, not a box around the route, and a new place re
   assert.match(g, /equalAreaSectors\(ring\.map\(toPlanar\), n\)/);
   assert.match(html, /if \(pacer\) \{ sectorGeometry\(pacer\.m, pacer\.patch\.sect\.n\); sect\.idx = null; \}/);
 });
+
+test("the park under the walker is found from the catalogue, and nothing outside one", () => {
+  const placeAt = new Function("places",
+    src("pointInRing") + src("placeAt") + "; return placeAt;")(places.features);
+  /* A point far out in the Black Sea belongs to no park. [28.5, 40.5], the brief's own choice,
+     turned out to lie inside R19349776 (Marmara Denizi ve Adalar Özel Çevre Koruma Bölgesi, a
+     12,231 km² catalogue entry covering the whole Marmara Sea and its islands) — confirmed by
+     running placeAt against the live catalogue, not assumed. This point sits north of every
+     place's bbox (max lat 41.25358 across all 90). */
+  assert.equal(placeAt([29.0, 41.6]), null);
+  assert.ok(placeAt([29.0434, 41.0155]), "a point inside Validebağ resolves to a park");
+});

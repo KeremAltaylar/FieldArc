@@ -130,6 +130,11 @@ header {
   border-radius: 3px;
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
 }
+.worldrow {
+  display: flex; align-items: center; gap: var(--s-3);
+  padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--bdr);
+}
+.worldrow .hint { margin: 0; }
 #place-search { width: 100%; margin-bottom: var(--s-2); }
 #place-list { list-style: none; margin: 0; padding: 0; max-height: 21rem; overflow-y: auto; }
 
@@ -874,7 +879,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 
 /* ---- Map ---- */
-#map { position: relative; background: var(--sunk); }
+/* Framed on all four sides. The right and bottom edges were missing, so at a desktop width the
+   map ran to the window edge and the frame read as unfinished. */
+#map {
+  position: relative; background: var(--sunk);
+  border-right: 1px solid var(--bdr); border-bottom: 1px solid var(--bdr);
+}
 #map.mode-point  .maplibregl-canvas { cursor: crosshair; }
 #map.mode-route  .maplibregl-canvas { cursor: crosshair; }
 
@@ -1579,7 +1589,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      narrow phone it would clip rather than shrink. Wrapping is what keeps it on screen. */
   .basemaps, .overlays { margin: 0; flex-wrap: wrap; }
 
-  #map { grid-row: 2; grid-column: 1; }
+  #map { grid-row: 2; grid-column: 1; border-right: 0; border-bottom: 0; }
   #readout { display: none; }          /* a cursor readout means nothing on a touch screen */
 
   /* The sheet */
@@ -1627,7 +1637,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <span id="place-name">Belgrad Ormanı</span><span class="caret">▾</span>
       </button>
       <div id="place-menu" hidden>
+        <div class="worldrow">
+          <button type="button" id="world-switch" aria-pressed="true">Open world</button>
+          <span class="hint">all routes at once</span>
+        </div>
         <input type="text" id="place-search" placeholder="Search forests, korular and routes…" aria-label="Search places and routes">
+        <p id="place-list-label" class="hint">Places</p>
         <ul id="place-list" role="listbox"></ul>
         <p id="route-list-label" class="hint" hidden>Routes</p>
         <ul id="route-list" role="listbox"></ul>
@@ -1760,10 +1775,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           title="Include this feature when the archive is published">published</button>
       </div>
 
+      <p class="hint" id="f-walk-note" hidden>This route is already live in Open world — turn the switch off to walk it alone.</p>
       <div class="actions">
         <button type="button" class="ghost" id="f-walk" hidden>Walk</button>
         <button type="button" class="ghost" id="f-patch" hidden>Patch</button>
         <button type="button" class="ghost" id="f-rhythm" hidden>Rhythm</button>
+        <button type="button" class="ghost" id="f-attach" hidden>Attach to this park</button>
         <button type="button" class="ghost" id="f-zoom">Zoom to</button>
         <button type="button" class="danger" id="f-delete">Delete</button>
       </div>
@@ -1926,6 +1943,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      service worker's tile cache, which holds a forest's worth of downloaded map. */
   var STORE = "fieldarc.v1";
   var PLACE_KEY = "fieldarc.place";
+  /* Open world: every published route at once, and points that belong to no park. The default
+     on a device that has never chosen (Kerem, 2026-09-20: "default opening will be the open
+     world mode"); the choice is remembered after that. Same lowercase key family as the rest —
+     see STORE's note for why these never take the new name. */
+  var WORLD_KEY = "fieldarc.world";
+
+  function worldOn() {
+    try { return localStorage.getItem(WORLD_KEY) !== "0"; } catch (e) { return true; }
+  }
+  function setWorld(on) {
+    try { localStorage.setItem(WORLD_KEY, on ? "1" : "0"); } catch (e) { /* private mode */ }
+  }
   /* The anon key is public by design — it ships to every visitor and is what row-level
      security is written against. The service key and the database URL never appear here. */
   var FA_CONFIG = {
@@ -2044,16 +2073,33 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (raw) { fc = JSON.parse(raw); }
   } catch (e) { /* private mode or corrupt payload — start empty rather than break */ }
 
+  /* A feature's place can be unset three different ways, and only two of them mean "nobody has
+     said" — the one this fallback exists to fix. Key absent: a feature recorded before places
+     existed, or written by code that never set the field. Empty string: some external tool
+     (a foreign .geojson export, hand-edited data) wrote nothing rather than omitting the key —
+     the same "nobody has said" as a missing key, just spelled differently. Explicit null: a free
+     point, marked deliberately in open world to belong to no park — this one must survive every
+     reload untouched, or the whole free-point feature silently undoes itself. Do not "simplify"
+     this back to a bare `!f.properties.place` truthiness check — that coerces null the same as
+     the other two and re-annexes every free point into Belgrad on its next load. */
+  function placeUnset(f) {
+    return !("place" in f.properties) || f.properties.place === "";
+  }
+
   /* Features recorded before places existed belong to Belgrad. Assign once, never guess again. */
   fc.features.forEach(function (f) {
-    if (!f.properties.place) { f.properties.place = DEFAULT_PLACE; }
+    if (placeUnset(f)) { f.properties.place = DEFAULT_PLACE; }
   });
 
   /* The map and the archive list show one place at a time; `fc` keeps them all. */
   function visible() {
     var man = setterTools() ? null : loadManifest();
     return fc.features.filter(function (f) {
-      return (!place || f.properties.place === place.properties.id) && shownTo(f, man);
+      /* Open world shows everything; a place shows its own; and a feature that belongs to no
+         place (a free point) is never hidden by a park filter, because no park owns it. */
+      var here = worldOn() || !place || f.properties.place == null ||
+                 f.properties.place === place.properties.id;
+      return here && shownTo(f, man);
     });
   }
 
@@ -2266,6 +2312,35 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       .catch(function () { /* offline in a forest is the normal case */ });
   }
 
+  /* Open world needs every published feature, not one place's. One query: public_features is
+     already filtered to what is published, and the catalogue is small (measure before paging).
+
+     C1: applyWorld() calls worldStart() synchronously, right after firing this off — it cannot
+     wait on the network, because a world walk needs its marker and its transport on screen
+     immediately (see worldStart's own comment on that). At the moment worldStart() snapshots
+     worldRoutes, fc holds only whatever fetchPublished(place) merged for the one park setPlace
+     opened, plus this device's own drafts: every route belonging to any other park is missing,
+     and a listener who walks there gets a map showing the route but a walker that can never
+     pick it as nearest — the synth stage sits at 0 forever. So this .then rebuilds worldRoutes
+     itself, once every published feature is actually in, and re-asks nearestRoute for wherever
+     the walker already is — which also covers a route published or unpublished elsewhere since
+     the walk began: applyWorld() re-runs fetchWorld() every time the switch is turned back on,
+     and this refresh is what makes that re-fetch actually reach the walker instead of only the
+     map layer. */
+  function fetchWorld() {
+    if (!sb) { return Promise.resolve(); }
+    return sb.from("public_features").select("*")
+      .then(function (r) {
+        if (r.error || !r.data) { return; }
+        mergeRemote(r.data);
+        map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+        renderList();
+        worldRoutes = computeWorldRoutes();
+        if (pacer && pacer.world) { worldMove(pacer.pos); }
+      })
+      .catch(function () { /* offline is the normal case in a forest */ });
+  }
+
   /* The corpus lives in one browser and can vanish with a cleared cache, so the panel
      always says how far it has drifted from the last export. */
   function exportState() {
@@ -2427,7 +2502,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var SETTER_ONLY = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
       "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit", "#photo-add",
-      ".rowdel"];
+      ".rowdel", "#place-list", "#place-list-label", "#f-attach"];
     var show = setter.signedIn;
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
@@ -2600,9 +2675,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      tracked. Nothing here runs without a session, and nothing here blocks capture. */
   var MANIFEST_KEY = "fieldarc.manifest";
 
+  /* I4: visible() calls loadManifest() for every listener-side filter, and worldMove calls
+     visible() on every position update — pointer-move rate while dragging, sub-second while
+     GPS is running. Re-parsing the same localStorage string that many times a second bought
+     nothing; saveManifest() is this device's only writer, so caching here and updating the
+     cache there (rather than invalidating and re-parsing) keeps loadManifest() truthful without
+     paying JSON.parse per move. */
+  var manifestCache = null;
   function loadManifest() {
-    try { return JSON.parse(localStorage.getItem(MANIFEST_KEY)) || {}; }
-    catch (e) { return {}; }
+    if (manifestCache) { return manifestCache; }
+    try { manifestCache = JSON.parse(localStorage.getItem(MANIFEST_KEY)) || {}; }
+    catch (e) { manifestCache = {}; }
+    return manifestCache;
   }
   /* A failed write here used to be swallowed, and the swallow was the worst possible outcome:
      the publish itself succeeded, so the toast said "Published 12", while the record of what
@@ -2615,6 +2699,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function saveManifest(m) {
     try {
       localStorage.setItem(MANIFEST_KEY, JSON.stringify(m));
+      manifestCache = m;   /* keep the cache truthful — the only writer, so the only invalidator */
       return true;
     } catch (e) {
       toast("Published — but this device could not record that it did, so the same changes " +
@@ -3389,6 +3474,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var want = (link && link.place) || localStorage.getItem(PLACE_KEY) || DEFAULT_PLACE;
       var p = byId(want) || byId(DEFAULT_PLACE) || places[0];
       setPlace(p, true).then(function () {
+        /* Open world's own fetch, plus the map/list redraw that depends on it, needs the
+           map's "features" source to exist — it does by now, since setPlace (and the
+           map.on("load") handler around loadPlaces()) has already run. */
+        applyWorld();
         /* feature() reads fc.features, which mergeRemote (inside fetchPublished) has just
            populated for a fresh browser — the exact gap stage 3 closed for the map, now
            closed for a link too. A route id that names nothing (stale link, wrong place)
@@ -3435,15 +3524,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return null;
   }
 
-  function setPlace(p, initial) {
-    if (!p) { return; }
-    place = p;
-    localStorage.setItem(PLACE_KEY, p.properties.id);
-    $("#place-name").textContent = p.properties.name;
-    document.title = "Fieldscape — " + p.properties.name;
-    $("#place-btn").title = p.properties.name + " · " + p.properties.area_km2 + " km² · " +
-      p.properties.source;
-
+  /* The boundary half of setPlace, on its own because open world also needs it: the walker
+     crossing into a park loads that park's frame without selecting the park. */
+  function setPlaceFrame(p) {
     map.getSource("forest").setData({ type: "FeatureCollection", features: [p] });
 
     var rings = [], b = new maplibregl.LngLatBounds();
@@ -3467,12 +3550,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (pacer) { sectorGeometry(pacer.m, pacer.patch.sect.n); sect.idx = null; }
     drawSectors();
 
+    window.__fa.frameStats = { place: p.properties.name, ringPoints: main.length,
+                               framePoints: frame.length };
+    return b;
+  }
+
+  function setPlace(p, initial) {
+    if (!p) { return; }
+    place = p;
+    localStorage.setItem(PLACE_KEY, p.properties.id);
+    $("#place-name").textContent = p.properties.name;
+    document.title = "Fieldscape — " + p.properties.name;
+    $("#place-btn").title = p.properties.name + " · " + p.properties.area_km2 + " km² · " +
+      p.properties.source;
+
+    var b = setPlaceFrame(p);
 
     forestBounds = b;
     if (!b.isEmpty()) { map.fitBounds(b, { padding: 28, duration: initial ? 0 : 700 }); }
-
-    window.__fa.frameStats = { place: p.properties.name, ringPoints: main.length,
-                               framePoints: frame.length };
 
     setSelected(null);
     closePlaceMenu();
@@ -3498,6 +3593,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function renderPlaceList() {
     var q = foldTurkish($("#place-search").value.trim());
     var ul = $("#place-list");
+    /* A listener browses routes, not parks: a park with nothing published in it is a dead end,
+       and the route rows already name the park each one belongs to. applyModeGating()'s
+       SETTER_ONLY list also carries #place-list/#place-list-label, so a sign-in or sign-out
+       reconciles this hidden state even while the menu sits open across it (setter.signedIn
+       there agrees with setterTools() here whenever applyModeGating() actually runs — it
+       returns early in the gatingDeclined branch, which is exactly the state this render-time
+       check still has to cover on its own, such as the very first render). Two writers, same
+       value, no fight. */
+    if (!setterTools()) { $("#place-list").hidden = true; $("#place-list-label").hidden = true; }
+    else { $("#place-list").hidden = false; $("#place-list-label").hidden = false; }
     ul.textContent = "";
     var counts = {}, man = setterTools() ? null : loadManifest();
     fc.features.forEach(function (f) {
@@ -3563,6 +3668,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         "<span>" + (rt.name || "Untitled route").replace(/</g, "&lt;") + "</span>" +
         '<span class="pmeta">' + p.properties.name.replace(/</g, "&lt;") + "</span>";
       b.addEventListener("click", function () {
+        /* In open world everything stays on the map: picking a route centres it, selects it and
+           moves the walker to its start, so it is the one you are listening to. Turning the
+           switch off is what narrows the map to a single place and route. */
+        if (worldOn()) {
+          closePlaceMenu();
+          setSelected(rt.id, true);
+          var f = feature(rt.id);
+          if (f && f.geometry && f.geometry.coordinates.length) {
+            worldMove(f.geometry.coordinates[0]);
+            map.flyTo({ center: f.geometry.coordinates[0], duration: 700 });
+          }
+          return;
+        }
         setPlace(p).then(function () { setSelected(rt.id, true); });
       });
       li.appendChild(b);
@@ -3573,6 +3691,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function openPlaceMenu() {
     $("#place-menu").hidden = false;
     $("#place-btn").setAttribute("aria-expanded", "true");
+    /* The markup's aria-pressed="true" is only a default for a device that has never chosen;
+       a device that turned Open world off must see the switch reflect that, the same way
+       gpsSet() drives #gps-btn from the stored GPS_KEY rather than trusting the markup. */
+    $("#world-switch").setAttribute("aria-pressed", String(worldOn()));
     $("#place-search").value = "";
     renderPlaceList();
     fetchAllRoutes().then(function () {
@@ -3594,6 +3716,45 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   $("#place-search").addEventListener("input", renderPlaceList);
   document.addEventListener("click", function (e) {
     if (!$("#place-menu").hidden && !e.target.closest(".placepick")) { closePlaceMenu(); }
+  });
+  /* Everything that differs between the modes, in one place: what the map holds, what the
+     picker lists, and — once Task 8 lands — which walker is running. */
+  function applyWorld() {
+    var on = worldOn();
+    $("#world-switch").setAttribute("aria-pressed", String(on));
+    document.body.classList.toggle("world", on);
+    if (on) { fetchWorld(); }
+    map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+    if (on) {
+      worldStart();
+    } else {
+      if (pacer && pacer.world) { worldStop(); }
+      /* I3: a world walk hands the map's boundary (and sect.frame, the ring the sections are
+         cut from) to whichever park the walker is standing in — worldMove's own place-change
+         block, never touching the module-level `place` the picker still shows as selected. Leave
+         open world with the walker somewhere in park B, and without this the app is left showing
+         park B's boundary while everything else (the picker, the place name, an offline download)
+         still says park A — and the NEXT route walk in park A cuts its sections out of park B's
+         ring: wrong sector polygons, a wrong chord. setPlaceFrame(place) restores the selected
+         park's own boundary and re-cuts sect.frame from it, the same as a fresh setPlace would. */
+      if (place) { setPlaceFrame(place); }
+    }
+    /* #f-walk's disabled/title state (and now #f-walk-note, below) is written only inside
+       renderDetail() — this function never touches it directly. Toggling the switch with a
+       route card open left both stale in either direction: switching Open world on left
+       #f-walk enabled with an empty title (pressable, does nothing); switching it off left
+       #f-walk disabled with the open-world title (unusable until the listener deselected and
+       reselected). Reassert here the same way applyModeGating() reasserts renderDetail()'s
+       other card state after its own blanket rewrite. */
+    if (selected) { renderDetail(); }
+    renderPlaceList();
+    renderList();
+  }
+  $("#world-switch").addEventListener("click", function () {
+    var on = this.getAttribute("aria-pressed") !== "true";
+    setWorld(on);
+    this.setAttribute("aria-pressed", String(on));
+    applyWorld();
   });
 
   map.on("load", function () {
@@ -3695,7 +3856,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        inspecting, not leaving — and since a point's rhythm is edited from its own card,
        stopping here meant you could never hear an edit you were making. Deselecting does
        not end it either: walking is a mode, and the Walk button is how you leave it. */
-    if (pacer && id && id !== pacer.f.properties.id) {
+    if (pacer && pacer.f && id && id !== pacer.f.properties.id) {
       var other = feature(id);
       if (other && other.properties.kind === "route") { pacerStop(); }
     }
@@ -3757,7 +3918,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         type: "Feature",
         properties: {
           id: uid(), kind: "point", name: "", note: "",
-          place: place ? place.properties.id : DEFAULT_PLACE,
+          place: worldOn() ? null : (place ? place.properties.id : DEFAULT_PLACE),
           created_at: new Date().toISOString(),
           position_source: "manual"        // Section 1, decision 2 — always know where a coordinate came from
         },
@@ -3808,7 +3969,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       type: "Feature",
       properties: {
         id: uid(), kind: "route", name: "", note: "",
-        place: place ? place.properties.id : DEFAULT_PLACE,
+        /* I5: in open world `place` is the picker's stale selection, not the park the setter is
+           actually standing in and drawing over — that park is pacer.placeId, kept current by
+           worldMove every time it changes. Place mode has no pacer.placeId (pacer.world is
+           falsy, or there is no pacer at all), so it falls through to `place` exactly as before. */
+        place: (pacer && pacer.world && pacer.placeId) || (place ? place.properties.id : DEFAULT_PLACE),
         created_at: new Date().toISOString(),
         position_source: "manual",
         length_m: Math.round(lineLength(coords)),
@@ -4039,7 +4204,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var f = { type: "Feature",
         properties: {
           id: uid(), kind: "point", name: "", note: "",
-          place: place ? place.properties.id : DEFAULT_PLACE,
+          place: worldOn() ? null : (place ? place.properties.id : DEFAULT_PLACE),
           created_at: new Date(pos.timestamp).toISOString(),
           position_source: "device_fix",     /* never confused with a mouse-drawn point */
           accuracy_m: pos.coords.accuracy != null ? +pos.coords.accuracy.toFixed(1) : null,
@@ -4107,7 +4272,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var f = { type: "Feature",
       properties: {
         id: uid(), kind: "route", name: "", note: "",
-        place: place ? place.properties.id : DEFAULT_PLACE,
+        /* I5: same fix as finishRoute() — pacer.placeId is the park underfoot in open world, and
+           `place` (the picker's stale selection) is only the fallback place mode still uses. */
+        place: (pacer && pacer.world && pacer.placeId) || (place ? place.properties.id : DEFAULT_PLACE),
         created_at: new Date(t.started).toISOString(),
         position_source: "device_fix",
         length_m: Math.round(lineLength(t.pts)),
@@ -6443,6 +6610,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return best;
   }
 
+  /* Which route the walker is listening to in open world. The current one keeps the walk until
+     a challenger is clearly nearer — the same hysteresis the sections use, and for the same
+     reason: two routes that run close together would otherwise swap the key back and forth at
+     every step. Self-contained apart from projectToRoute, so the tests can run it directly. */
+  function nearestRoute(list, pos, currentId, marginM) {
+    var best = null, current = null;
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i], pr = projectToRoute(r.m, pos);
+      var cand = { id: r.id, f: r.f, m: r.m, t: pr.t, dist: pr.dist };
+      if (!best || cand.dist < best.dist) { best = cand; }
+      if (currentId && r.id === currentId) { current = cand; }
+    }
+    if (!best) { return null; }
+    if (current && best.id !== current.id && current.dist - best.dist < marginM) { return current; }
+    return best;
+  }
+
   function pointAlong(m, t) {
     var d = Math.max(0, Math.min(1, t)) * m.total;
     for (var i = 1; i < m.coords.length; i++) {
@@ -6482,6 +6666,31 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return list;
   }
 
+  /* Open world has no line to measure against, so a point is in reach when the walker is inside
+     what it carries — the same radius its level already fades across, times the margin the zone
+     engine uses everywhere else, so a point is admitted exactly when it could be heard.
+     Takes the feature list rather than reading visible() itself, so the tests can feed it. */
+  function zonesNear(features, pos) {
+    var list = [];
+    features.forEach(function (g) {
+      if (g.geometry.type !== "Point") { return; }
+      var q = soundOf(g);
+      if (segment(pos, g.geometry.coordinates) > q.radius * ZONE_MARGIN) { return; }
+      list.push({
+        id: g.properties.id, lonlat: g.geometry.coordinates, r: q.zoneR,
+        name: label(g), icon: g.properties.icon || null,
+        has_audio: !!g.properties.has_audio,
+        mode: (g.properties.audio_mode === "hits" || g.properties.audio_mode === "grains")
+          ? g.properties.audio_mode : "soundscape",
+        has_hits: !!(g.properties.hits && HIT_SLOTS.some(function (k) {
+          return g.properties.hits[k];
+        })),
+        inside: false, firedAt: 0
+      });
+    });
+    return list;
+  }
+
   function segmentCoords(m, t0, t1) {
     var d0 = t0 * m.total, d1 = t1 * m.total;
     var out = [pointAlong(m, t0)];
@@ -6495,7 +6704,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function drawProgSegments() {
     if (!map.getSource("progseg")) { return; }
     var feats = [];
-    if (pacer && pacer.patch && pacer.patch.prog) {
+    /* pacer.m is null in open world until a route is in reach (Task 8) — nothing to draw a
+       route's chord segments onto until then. */
+    if (pacer && pacer.patch && pacer.patch.prog && pacer.m) {
       var n = pacer.patch.prog.length;
       for (var i = 0; i < n; i++) {
         feats.push({ type: "Feature",
@@ -6512,6 +6723,33 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      them on a completely different schedule from the sixteen chord segments, which is where
      the counterpoint comes from: two partitions of the same ground that do not line up. */
   var sect = { idx: null, centre: null, radius: 0, frame: null };
+
+  /* Ray casting, the same rule equalAreaSectors uses on its samples. */
+  function pointInRing(pt, ring) {
+    var c = false;
+    for (var k = 0, j = ring.length - 1; k < ring.length; j = k++) {
+      if ((ring[k][1] > pt[1]) !== (ring[j][1] > pt[1]) &&
+          pt[0] < (ring[j][0] - ring[k][0]) * (pt[1] - ring[k][1]) / (ring[j][1] - ring[k][1]) + ring[k][0]) {
+        c = !c;
+      }
+    }
+    return c;
+  }
+
+  /* Which park the walker is standing in, if any. Ninety polygons is cheap, but worldMove runs
+     at pointer-move/GPS-fix rate, so it only calls this once the walker has actually covered
+     PLACE_CHECK_M (I4) rather than on every tick. Outside every park this is null, and the
+     sector voice rests — there is no boundary to divide. */
+  function placeAt(pos) {
+    for (var i = 0; i < places.length; i++) {
+      var g = places[i].geometry;
+      var polys = g.type === "Polygon" ? [g.coordinates] : g.coordinates;
+      for (var j = 0; j < polys.length; j++) {
+        if (pointInRing(pos, polys[j][0])) { return places[i]; }
+      }
+    }
+    return null;
+  }
 
   /* The whole place, divided into n sections of equal area (equalAreaSectors below). Until
      2026-09-19 the seeds were placed along the route and the cells trimmed to a box around it,
@@ -6781,9 +7019,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var ch = harmony.chord != null && pacer.patch.prog[harmony.chord]
       ? " &nbsp; <b>chord</b> " + (harmony.chord + 1) + " " + chordLabel(pacer.patch, harmony.chord)
       : "";
+    /* Open world has no single route until one is in reach (Task 8): pacer.m is null until
+       nearestRoute finds one, or forever if the place has none at all. The along-route readout
+       only means anything once there is a route to be along. */
+    var along = pacer.m
+      ? "<b>along</b> " + fmtLen(pacer.t * pacer.m.total) + " / " + fmtLen(pacer.m.total) + ch +
+        " · " + Math.round(pacer.t * 100) + "%"
+      : "<b>world</b> no route in reach";
     $("#pacerbar").innerHTML =
-      "<b>along</b> " + fmtLen(pacer.t * pacer.m.total) + " / " + fmtLen(pacer.m.total) + ch +
-      " · " + Math.round(pacer.t * 100) + "%" +
+      along +
       (near ? " &nbsp; <b>nearest</b> " + near.z.name + " " + fmtLen(near.d) +
               (near.z.inside ? " · <em>inside</em>" : "") : "") +
       (sect.idx !== null ? " &nbsp; <b>sector</b> " + (sect.idx + 1) : "") +
@@ -6863,8 +7107,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* An imprecise fix says nothing about where you are, so it must not move the level either:
        the walk holds at whatever it was until a fix worth trusting arrives. */
     if (acc > GPS_ACC_MAX) { gps.held = "±" + Math.round(acc) + "m"; pacerReadout(); return; }
+    if (pacer && pacer.world) { worldMove([+pos.coords.longitude.toFixed(6),
+      +pos.coords.latitude.toFixed(6)]); return; }
     var pr = projectToRoute(pacer.m, [+pos.coords.longitude.toFixed(6),
                                       +pos.coords.latitude.toFixed(6)]);
+    /* In open world the fade belongs to the synths — a free point beside you must still sound
+       when no route is anywhere near. In place mode the whole walk fades, as shipped. No
+       `pacer.world` guard needed here: the world case already returned two lines up, so
+       reaching this point means place mode unconditionally. */
     setWalkLevel(walkLevel(pr.dist, GPS_FADE_FROM, GPS_LEASH));
     /* Past the leash the walker still holds rather than jumping (A-15) — it is only the level
        that has reached zero, and walking back fades it in again through the same curve. */
@@ -6926,6 +7176,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!pacer) { return; }
     gpsSet(false);             /* while the marker still exists to hand dragging back to */
     pacer.marker.remove();
+    /* A route handover in flight belongs to the walk that scheduled it — not to whatever
+       starts next, whether that is silence or a fresh walk with its own routeId. Clearing
+       pendingSwapId too: without it, a stale id could make a legitimate swap on the next walk
+       look like a repeat of one that never actually landed, and get silently skipped. */
+    clearTimeout(worldSwapTimer);
+    pendingSwapId = null;
     pacer = null;
     window.__fa.pacer = null;
     drawProgSegments();
@@ -6935,6 +7191,41 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#patchbar").hidden = true;
     $("#pacerbar").hidden = true;
     drawZones();
+  }
+
+  /* Exposed on the debug hook so the geometry and the hysteresis can be measured directly
+     rather than inferred from screenshots, and the GPS-resume that lets a returning listener
+     pick up where they left off. Shared by pacerStart and worldStart — opening straight into
+     Open World with a route walk never having run once still needs these. */
+  function pacerBoot() {
+    window.__fa.pacer = pacer;
+    window.__fa.harmony = harmony;   /* chord index, tones and last voiced pitches */
+    window.__fa.sect = sect;
+    window.__fa.counter = counter;
+    window.__fa.pacerSet = pacerSet;
+    /* Measurable: a morph is a pure function of time, so a test can ask for its value at
+       any instant instead of waiting out an eleven-minute period in real time. */
+    window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
+                          clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
+    window.__fa.rhythm = { euclid: euclid, rotated: rotated, of: rhythmOf, slots: HIT_SLOTS,
+                            metricWeight: metricWeight };
+    window.__fa.zoneFire = zoneFire;   /* which zones speak, testable without walking one */
+    window.__fa.grains = { fire: fireGrains, def: defaultGrains };   /* testable without an upload */
+    window.__fa.morph.trace = traceDraw;   /* measurable without waiting on a frame */
+    window.__fa.projectToRoute = projectToRoute;
+    /* Measurable without walking: feed a fix and read where the walker went. */
+    window.__fa.gps = { set: gpsSet, fix: gpsFix, state: function () { return gps; },
+                        level: walkLevel, setLevel: setWalkLevel,
+                        limits: { acc: GPS_ACC_MAX, leash: GPS_LEASH, fadeFrom: GPS_FADE_FROM,
+                                  fade: WALK_FADE } };
+    /* Measurable: feed a position and read which route lent the patch, without walking one. */
+    window.__fa.world = { start: worldStart, move: worldMove,
+                          routes: function () { return worldRoutes; } };
+
+    /* You walked out with it on; you should not have to switch it on again at the trailhead. */
+    var wanted = null;
+    try { wanted = localStorage.getItem(GPS_KEY); } catch (e) { /* private mode */ }
+    if (wanted === "1") { gpsSet(true); }
   }
 
   function pacerStart(f) {
@@ -6971,33 +7262,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       pacerSet(pr.t);
     });
 
-    /* Exposed on the debug hook so the geometry and the hysteresis can be measured
-       directly rather than inferred from screenshots. */
-    window.__fa.pacer = pacer;
-    window.__fa.harmony = harmony;   /* chord index, tones and last voiced pitches */
-    window.__fa.sect = sect;
-    window.__fa.counter = counter;
-    window.__fa.pacerSet = pacerSet;
-    /* Measurable: a morph is a pure function of time, so a test can ask for its value at
-       any instant instead of waiting out an eleven-minute period in real time. */
-    window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
-                          clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
-    window.__fa.rhythm = { euclid: euclid, rotated: rotated, of: rhythmOf, slots: HIT_SLOTS,
-                            metricWeight: metricWeight };
-    window.__fa.zoneFire = zoneFire;   /* which zones speak, testable without walking one */
-    window.__fa.grains = { fire: fireGrains, def: defaultGrains };   /* testable without an upload */
-    window.__fa.morph.trace = traceDraw;   /* measurable without waiting on a frame */
-    window.__fa.projectToRoute = projectToRoute;
-    /* Measurable without walking: feed a fix and read where the walker went. */
-    window.__fa.gps = { set: gpsSet, fix: gpsFix, state: function () { return gps; },
-                        level: walkLevel, setLevel: setWalkLevel,
-                        limits: { acc: GPS_ACC_MAX, leash: GPS_LEASH, fadeFrom: GPS_FADE_FROM,
-                                  fade: WALK_FADE } };
-
-    /* You walked out with it on; you should not have to switch it on again at the trailhead. */
-    var wanted = null;
-    try { wanted = localStorage.getItem(GPS_KEY); } catch (e) { /* private mode */ }
-    if (wanted === "1") { gpsSet(true); }
+    pacerBoot();
 
     $("#pacerbar").hidden = false;
     $("#patchbar").hidden = false;
@@ -7005,6 +7270,214 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     drawProgSegments();
     drawSectors();
     pacerSet(0);
+  }
+
+  /* ---------- The world walker ----------
+     No single route: the walker is a position in the city. Whichever route is nearest lends its
+     patch, the points in reach are the zones, and the synth stage fades with the distance to
+     that route (Task 9) so standing beside a free point in the middle of nowhere still sounds. */
+  var worldRoutes = [];
+
+  /* Every published route's line, measured. Shared by worldStart (the synchronous bootstrap,
+     which must not wait on the network) and fetchWorld's own .then (which is what actually
+     carries every park's routes in, once the request lands) — see the note on fetchWorld for
+     why the first call alone is not enough. */
+  function computeWorldRoutes() {
+    return visible().filter(function (f) { return f.properties.kind === "route"; })
+      .map(function (f) { return { id: f.properties.id, f: f, m: routeMetrics(f) }; })
+      .filter(function (r) { return r.m.total > 0; });
+  }
+
+  /* The same hold the sections use, so two routes that run close together do not swap the key
+     back and forth at every step. */
+  function sectorHold() { return Math.max(8, Math.min(40, 0.06 * (sect.width || 200))); }
+
+  /* I4: how far the walker must move before worldMove re-asks placeAt which park it is standing
+     in. "A few metres", per the spec. */
+  var PLACE_CHECK_M = 5;
+
+  function worldStart() {
+    pacerStop();
+    worldRoutes = computeWorldRoutes();
+
+    var el = document.createElement("div");
+    el.className = "pacer";
+    el.title = "Drag to listen from here";
+    var start = worldRoutes.length ? worldRoutes[0].m.coords[0] : map.getCenter().toArray();
+    var marker = new maplibregl.Marker({ element: el, draggable: true })
+      .setLngLat(start).addTo(map);
+    marker.on("drag", function () { worldMove(marker.getLngLat().toArray()); });
+
+    pacer = { f: null, world: true, routeId: null, m: null, t: 0, pos: start, marker: marker,
+              zones: [], log: [], patch: defaultPatch() };
+    /* The place-wide sections are cut from the place's own boundary, not from any one route's
+       box — unlike pacerStart, which always has a route's m to fall back to if the place frame
+       is not ready yet, a world walk only ever starts after setPlace has already run once: on
+       first load (loadPlaces calls setPlace(p, true), then applyWorld) and on the world switch
+       being turned on (its click handler calls applyWorld directly) — not on every place switch;
+       picking a different park from the picker calls setPlace() alone and never touches
+       applyWorld. Either way sect.frame is always set by the time this can be reached. Passing
+       null for m is safe only because of that ordering — sectorGeometry only touches m when
+       sect.frame is missing. */
+    if (sect.frame && sect.frame.length > 2) { sectorGeometry(null, pacer.patch.sect.n); }
+    sect.idx = null;
+    BED.maxVoices = pacer.patch.bed.voices;
+    harmony.idx = null; harmony.chord = null; harmony.tones = null;
+    harmony.last = { bass: null, top: null };
+    cellsSet(!!(pacer.patch.morph && pacer.patch.morph.cells));
+    pacerBoot();
+
+    /* Silent and invisible is worse than either alone: the transport bar carries Sound (the
+       only Tone.start()/bedStart() gesture), GPS and the readout, and the patch bar carries
+       the morph/cells toggle — a world walk with no route to click Walk on still needs both,
+       or open world's default-on boot leaves a first visit with nothing to press and nothing
+       to read. */
+    $("#pacerbar").hidden = false;
+    $("#patchbar").hidden = false;
+    worldMove(start);
+    /* One explicit paint so the zone/sector layers are on the map immediately, the same way
+       pacerStart's own tail does — pacerCheckZones/sectorUpdate (run once already, inside
+       worldMove above) only redraw on a change, which the very first fix may not produce. */
+    drawZones();
+    drawSectors();
+    drawProgSegments();
+    pacerReadout();
+  }
+
+  function worldStop() { pacerStop(); }
+
+  function worldMove(pos) {
+    if (!pacer || !pacer.world) { return; }
+    pacer.pos = pos;
+    if (pacer.marker) { pacer.marker.setLngLat(pos); }
+    var near = nearestRoute(worldRoutes, pos, pacer.routeId, sectorHold());
+    if (near) {
+      if (near.id !== pacer.routeId) { worldSwap(near); }
+      pacer.t = near.t;
+      pacer.m = near.m;
+      pacer.routeDist = near.dist;
+      /* While a swap is pending, pacer.routeId still names the route being left, not the one
+         near.id just picked — worldSwap owns the fade until its timer lands. Once routeId has
+         caught up, distance from the route is the synths' business, not the whole walk's. */
+      if (near.id === pacer.routeId) {
+        setSynthLevel(walkLevel(pacer.routeDist, GPS_FADE_FROM, GPS_LEASH));
+      }
+    } else {
+      pacer.routeDist = Infinity;
+      setSynthLevel(0);
+    }
+    /* zonesNear rebuilds the zone list fresh from position on every move, so a straight
+       reassignment would reset inside/firedAt on every fix and fire pacerCheckZones's enter
+       event on every single move you spend inside a zone's radius — exactly the A-14 retrigger
+       failure the route walk's own hysteresis exists to prevent. Carrying each zone's own state
+       across by id keeps the same enter-once/exit-once behaviour a route walk gets. */
+    var wasZone = {};
+    pacer.zones.forEach(function (z) { wasZone[z.id] = z; });
+    pacer.zones = zonesNear(visible(), pos);
+    pacer.zones.forEach(function (z) {
+      var prior = wasZone[z.id];
+      if (prior) { z.inside = prior.inside; z.firedAt = prior.firedAt; }
+    });
+    /* The park underfoot owns the sections. Recut only when it changes — the solve is up to
+       129 ms and a walker crosses a boundary rarely.
+
+       I4: worldMove runs at pointer-move rate (marker.on("drag") fires on every pointermove;
+       a GPS watch can fire under a second apart too), and placeAt ray-casts all 90 catalogue
+       multipolygons — there is no reason to pay that on every single tick when the walker has
+       barely moved. Gated on PLACE_CHECK_M: recompute only once the walker has covered a few
+       metres since the last check, per the spec ("recomputed only when the walker moves more
+       than a few metres"). pacer.placeCheckedAt is undefined on a fresh pacer, so the very
+       first move after a walk starts always checks. */
+    if (!pacer.placeCheckedAt || segment(pacer.placeCheckedAt, pos) >= PLACE_CHECK_M) {
+      pacer.placeCheckedAt = pos;
+      var here = placeAt(pos);
+      var hereId = here ? here.properties.id : null;
+      if (hereId !== pacer.placeId) {
+        pacer.placeId = hereId;
+        if (here) { setPlaceFrame(here); sectorGeometry(pacer.m || { coords: [pos] }, pacer.patch.sect.n); }
+        else { sect.seeds = null; sect.cells = null; sect.key = null; sect.idx = null; }
+        drawSectors();
+      }
+    }
+    pacerCheckZones();
+    sectorUpdate();
+    updateBed();
+    pacerReadout();
+  }
+
+  var WORLD_SWAP = 1.5;      /* seconds — a change of key is a transition, not a jump cut */
+  var worldSwapTimer = null;
+  /* The route a scheduled swap is headed toward. worldMove calls worldSwap on every tick where
+     near.id !== pacer.routeId — and pacer.routeId is only written inside take(), so that stays
+     true on EVERY tick for the whole 1.5s the swap is pending, not just the one that started it.
+     Without this, each re-entry would clearTimeout + setTimeout again, re-arming the full 1.5s
+     from now; under continuous motion (marker drag fires on pointermove, GPS fixes can arrive
+     under a second apart) ticks land faster than the timer can elapse, take() never runs, and
+     setSynthLevel(0) at the top of every re-entry is the only thing left touching the gain —
+     silent indefinitely. Tracking the target lets a repeat call for the same target be a no-op
+     that leaves the running timer alone, while a call for a DIFFERENT target (the walker changed
+     course again before the first swap landed) still cancels and re-arms, so a swap always
+     retargets to wherever the walker is actually headed rather than stubbornly completing to
+     wherever it first aimed. */
+  var pendingSwapId = null;
+
+  /* The synth stage's own level. Multiplied by the mixer, so muting the route on its card still
+     means muted while a swap or a fade is running. */
+  function setSynthLevel(level) {
+    if (!bed || !bed.synth) { return; }
+    bed.synthLevel = level;
+    bed.synth.gain.rampTo(level * mixLevel(mixer, MIX_ROUTE), BED.fade);
+  }
+
+  /* Crossfades the route's synth voices across a change of patch, instead of swapping the patch
+     out from under a voice that is still sounding: fade the synths to nothing, only then hand
+     the patch to the new route, and fade back in at whatever level the new route's own distance
+     earns. Scheduled on a timer, which leaves several ways for the swap to go stale before it
+     lands:
+     - the walk can stop or restart (pacerStop clears worldSwapTimer and pendingSwapId, and
+       `mine` below catches anything already in flight when it does — a stopped or a brand-new
+       pacer is never `pacer` any more);
+     - the walker can cross back toward the route this swap is leaving before the timer fires —
+       worldMove will not call worldSwap again for that, because pacer.routeId still names the
+       route being left until `take` runs, so nearestRoute's own hysteresis never sees a change.
+       `take` re-asks nearestRoute the same question at fire time, from where the walker actually
+       is by then; if that is no longer near.id, the swap is dropped rather than applied late to
+       a route the walker already left again;
+     - the walker can keep moving near the same still-pending target on every tick, which would
+       otherwise re-arm the timer from scratch forever (see pendingSwapId above) — handled by the
+       early return below rather than inside take().
+     wasRunning is gated on bed.synth existing, not just on pacer.routeId: worldStart's own
+     bootstrap call to worldMove runs before bed exists (Sound has not been pressed yet), and
+     that call still commits a real pacer.routeId/patch through the synchronous path below — so
+     by the time the user presses Sound, routeId is already non-null and names whichever route
+     was nearest the arbitrary bootstrap position. Without this gate, the first route change
+     after Sound would see wasRunning true and schedule a fade, even though nothing was ever
+     audible — the user's first sound of the session would be up to 1.5s of silence for no
+     reason. bed.synth existing is exactly "something has been audible before", so it is the
+     right thing to gate the fade on. */
+  function worldSwap(near) {
+    if (near.id === pendingSwapId) { return; }
+    var wasRunning = !!(bed && bed.synth) && pacer.routeId !== null;
+    setSynthLevel(0);
+    clearTimeout(worldSwapTimer);
+    pendingSwapId = near.id;
+    var mine = pacer;
+    var take = function () {
+      pendingSwapId = null;
+      if (pacer !== mine || !pacer.world) { return; }
+      var still = nearestRoute(worldRoutes, pacer.pos, pacer.routeId, sectorHold());
+      if (!still || still.id !== near.id) { return; }
+      pacer.routeId = near.id;
+      pacer.patch = patchOf(near.f);
+      BED.maxVoices = pacer.patch.bed.voices;
+      harmony.idx = null; harmony.chord = null; harmony.tones = null;
+      sect.idx = null;
+      setSynthLevel(walkLevel(still.dist, GPS_FADE_FROM, GPS_LEASH));
+    };
+    /* The first route of a session (or any change while nothing has ever been audible) needs
+       no fade out — there is nothing playing to fade. */
+    if (!wasRunning) { take(); return; }
+    worldSwapTimer = setTimeout(take, WORLD_SWAP * 1000);
   }
 
   /* ---------- The bed ----------
@@ -7099,6 +7572,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var synth = new Tone.Gain(1).connect(walk);
           bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: walk,
                   walk: walk, synth: synth, limiter: limiter, meter: meter, Tone: Tone };
+          /* synth was just built at Gain(1) — in open world that is wrong the instant the
+             route is further than GPS_FADE_FROM away. Give it the level the walker's distance
+             already earned instead of leaving it full until the next worldMove tick happens to
+             land (which, standing still, might be never). Place mode leaves this alone: the
+             whole-walk fade is bed.walk's job there, so bed.synthLevel stays undefined and
+             applyMixer's default of 1 is correct. */
+          if (pacer && pacer.world) {
+            setSynthLevel(walkLevel(pacer.routeDist, GPS_FADE_FROM, GPS_LEASH));
+          }
         }
         bed.on = true;
         window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
@@ -8377,7 +8859,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      the level its distance earned (base), and the mixer only scales it. */
   function applyMixer() {
     if (!bed) { return; }
-    if (bed.synth) { bed.synth.gain.rampTo(mixLevel(mixer, MIX_ROUTE), BED.fade); }
+    if (bed.synth) {
+      bed.synth.gain.rampTo((bed.synthLevel === undefined ? 1 : bed.synthLevel) * mixLevel(mixer, MIX_ROUTE), BED.fade);
+    }
     Object.keys(bed.voices || {}).forEach(function (id) {
       var v = bed.voices[id];
       if (v && v.gain && v.base !== undefined) {
@@ -11906,6 +12390,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderPhotos(f);
     renderAudioMode(f);
     $("#f-walk").setAttribute("aria-pressed", String(!!pacer && pacer.f === f));
+    /* Walk is a no-op in open world (I2) — the world walker already follows whichever route is
+       nearest, and clicking a route in the list centres and selects it without leaving the mode.
+       Disabled rather than merely inert, so a listener does not tap a button that does nothing. */
+    $("#f-walk").disabled = worldOn();
+    $("#f-walk").title = worldOn()
+      ? "Open world already follows the nearest route — turn it off to walk one route alone"
+      : "";
+    /* The title attribute above is the only place that explained the disabled state, and a
+       title never appears on a phone — a greyed button with no visible reason. Say the same
+       thing where it can actually be read: a line by the button, shown only for the case it
+       applies to (a route selected, Open world on). */
+    if ($("#f-walk-note")) {
+      $("#f-walk-note").hidden = !(worldOn() && f.properties.kind === "route");
+    }
+
+    /* A free point standing inside a park can join it — one tap, and then it behaves like any
+       other point of that park (its offline download, its place filter). */
+    var host = (f.properties.kind === "point" && f.properties.place == null && setterTools())
+      ? placeAt(f.geometry.coordinates) : null;
+    $("#f-attach").hidden = !host;
+    if (host) { $("#f-attach").textContent = "Attach to " + host.properties.name; }
 
     $("#f-kind").textContent = f.properties.kind === "route" ? "Route" : "Point";
     $("#g-type").hidden = f.properties.kind !== "point";
@@ -12064,7 +12569,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   });
 
+  /* I2: pacer.f is always null in a world walk, so `pacer && pacer.f === f` never matches one —
+     a first click fell through to pacerStart(f), which tears down the world walker and replaces
+     it with a place-mode route walk while the switch still read Open world, and a second click
+     then stopped THAT walk and left no walker running at all. Open world already follows
+     whichever route is nearest (and picking a route from the list centres and selects it without
+     leaving the mode — Task 12); Walk exists to choose place mode's one-route focus, which open
+     world has no room for. Made a no-op here instead, so the world walker it would otherwise
+     have to fight is not affected. */
   $("#f-walk").addEventListener("click", function () {
+    if (worldOn()) { return; }
     var f = feature(selected);
     if (!f || f.properties.kind !== "route") { return; }
     if (pacer && pacer.f === f) { pacerStop(); } else { pacerStart(f); }
@@ -12077,6 +12591,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!f || f.properties.kind !== "route") { return; }
     $("#patchpanel").hidden = false;
     renderPatchPanel();
+  });
+
+  $("#f-attach").addEventListener("click", function () {
+    var f = feature(selected);
+    if (!f || !setterTools() || f.properties.place != null) { return; }
+    var p = placeAt(f.geometry.coordinates);
+    if (!p) { return; }
+    claimEdit(f);
+    f.properties.place = p.properties.id;
+    commit();
+    renderDetail();
+    toast(label(f) + " joined " + p.properties.name);
   });
 
   $("#f-zoom").addEventListener("click", function () {
@@ -12228,7 +12754,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           f.properties = f.properties || {};
           if (!f.properties.id) { f.properties.id = uid(); }
           if (!f.properties.kind) { f.properties.kind = f.geometry.type === "Point" ? "point" : "route"; }
-          if (!f.properties.place) { f.properties.place = place ? place.properties.id : DEFAULT_PLACE; }
+          /* Same three-way rule as placeUnset() above (key absent or empty string both mean
+             "nobody has said" and get the fallback; an explicit `place: null` — a free point in
+             someone else's export — is respected as-is). */
+          if (placeUnset(f)) { f.properties.place = place ? place.properties.id : DEFAULT_PLACE; }
           fc.features.push(f);
         });
         report.push(feats.length + " feature(s)");
@@ -12262,9 +12791,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             (t.source === "bwf" ? " (BWF " + fmtWhen(new Date(when).toISOString()) + ")" : ""));
           return;
         }
+        /* I6: this is not marking — at.from names a trace this recording was already matched
+           to by time, and that trace's own park is known, not absent. worldOn() ? null : ...
+           is the free-point rule for a point someone places with no route in reach; applying it
+           here turned an entire imported session's worth of recordings unattached even when
+           every one of them matched a route that belongs to a real park. Fall back to the park
+           underfoot (pacer.placeId, open world) or the stale selected place (place mode) only
+           if the trace itself somehow carries no place — never to null. */
+        var trace = feature(at.from);
         var f = { type: "Feature", properties: {
           id: uid(), kind: "point", name: "", note: "",
-          place: place ? place.properties.id : DEFAULT_PLACE,
+          place: (trace && trace.properties.place) ||
+            (pacer && pacer.world && pacer.placeId) || (place ? place.properties.id : DEFAULT_PLACE),
           created_at: new Date(when).toISOString(),
           position_source: "interpolated",   /* matched to a trace, not a fix of its own */
           matched_to: at.from,
