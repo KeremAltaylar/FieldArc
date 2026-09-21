@@ -61,16 +61,18 @@ test("a point with no place publishes and comes back published", async () => {
   assert.equal(pub.data.place, null);
 });
 
-test("marking in open world makes a free point, and the card offers to attach it", () => {
+/* Kerem, 2026-09-21: "when I add some point in open world it will be added there. No need to
+   attach to a park. So don't complicate it." A point marked in open world belongs to open world,
+   full stop — and a park's own points already appear there, so there is nothing to move. */
+test("marking in open world makes a free point, and nothing offers to move it into a park", () => {
   const matches = html.match(/place: worldOn\(\) \? null : \(place \? place\.properties\.id : DEFAULT_PLACE\)/g);
   assert.ok(matches, "a point marked in open world belongs to no park");
   assert.equal(matches.length, 2,
     "exactly the two genuine marking sites (map click, GPS mark) get this treatment — a route " +
     "must keep its park, and an audio import matched to a known trace is not marking (I6)");
-  assert.match(html, /<button type="button" class="ghost" id="f-attach" hidden>/);
-  const click = html.slice(html.indexOf('$("#f-attach").addEventListener'));
-  assert.match(click.slice(0, 500), /f\.properties\.place = p\.properties\.id/);
-  assert.match(click.slice(0, 500), /claimEdit\(f\)/, "attaching is an edit like any other");
+  assert.ok(!html.includes("f-attach"),
+    "no attach control, no handler, no gating entry — the affordance is gone, not hidden");
+  assert.ok(!/joined " \+ p\.properties\.name/.test(html), "and no copy left over from it");
 });
 
 /* All three normalisation pieces below are extracted verbatim from index.html and executed for

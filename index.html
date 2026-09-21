@@ -52,6 +52,10 @@ if (location.search.indexOf("rafshim") !== -1) {
   --t-lg: clamp(1.5rem, 2.4vw, 1.9rem);
   --track-meta: 0.18em; --track-eyebrow: 0.28em;
 
+  /* The smallest a control may be where the pointer is a thumb. Not a spacing step: it is the
+     platform minimum (44 CSS px on iOS, 48dp on Android), so it lives beside the ladder rather
+     than on it. */
+  --tap: 2.75rem;
   --s-1: 0.25rem; --s-2: 0.5rem; --s-3: 0.75rem; --s-4: 1rem;
   --s-5: 1.5rem; --s-6: 2rem; --s-8: 3rem;
 
@@ -135,6 +139,14 @@ header {
   padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--bdr);
 }
 .worldrow .hint { margin: 0; }
+/* On a touch screen the picker is a list of thumb targets. Measured 2026-09-21 at 501 px: the
+   Open world switch and every route row were 31 px tall, well under the platform minimum, on the
+   surface this app is actually walked with. */
+@media (pointer: coarse) {
+  .worldrow button, #place-list .placerow, #route-list .placerow {
+    min-height: var(--tap);
+  }
+}
 #place-search { width: 100%; margin-bottom: var(--s-2); }
 #place-list { list-style: none; margin: 0; padding: 0; max-height: 21rem; overflow-y: auto; }
 
@@ -1780,7 +1792,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         <button type="button" class="ghost" id="f-walk" hidden>Walk</button>
         <button type="button" class="ghost" id="f-patch" hidden>Patch</button>
         <button type="button" class="ghost" id="f-rhythm" hidden>Rhythm</button>
-        <button type="button" class="ghost" id="f-attach" hidden>Attach to this park</button>
         <button type="button" class="ghost" id="f-zoom">Zoom to</button>
         <button type="button" class="danger" id="f-delete">Delete</button>
       </div>
@@ -2544,7 +2555,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var SETTER_ONLY = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
       "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit", "#photo-add",
-      ".rowdel", "#place-list", "#place-list-label", "#f-attach"];
+      ".rowdel", "#place-list", "#place-list-label"];
     var show = setter.signedIn;
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
@@ -3779,8 +3790,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          still says park A — and the NEXT route walk in park A cuts its sections out of park B's
          ring: wrong sector polygons, a wrong chord. setPlaceFrame(place) restores the selected
          park's own boundary and re-cuts sect.frame from it, the same as a fresh setPlace would. */
-      if (place) { setPlaceFrame(place); }
+      if (place) {
+        var b = setPlaceFrame(place);
+        /* And the camera comes back with it. Without this the viewport stays wherever the world
+           walk wandered to — often another park entirely — while the map now holds only this
+           park's features, so leaving open world looked like the archive had emptied itself
+           until you panned. The bounds are the ones setPlaceFrame just measured, fitted the same
+           way setPlace fits them. */
+        if (b && !b.isEmpty()) { map.fitBounds(b, { padding: 28, duration: 700 }); }
+      }
     }
+    /* refreshFeatures, not a bare setData: a feature selected in open world may belong to a park
+       that is no longer shown, and its card would otherwise stay open over a map that no longer
+       holds it. */
+    refreshFeatures();
     /* #f-walk's disabled/title state (and now #f-walk-note, below) is written only inside
        renderDetail() — this function never touches it directly. Toggling the switch with a
        route card open left both stale in either direction: switching Open world on left
@@ -12511,12 +12534,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       $("#f-walk-note").hidden = !(worldOn() && f.properties.kind === "route");
     }
 
-    /* A free point standing inside a park can join it — one tap, and then it behaves like any
-       other point of that park (its offline download, its place filter). */
-    var host = (f.properties.kind === "point" && f.properties.place == null && setterTools())
-      ? placeAt(f.geometry.coordinates) : null;
-    $("#f-attach").hidden = !host;
-    if (host) { $("#f-attach").textContent = "Attach to " + host.properties.name; }
+    /* A point marked in open world belongs to open world, and that is the whole of it (Kerem,
+       2026-09-21: "No need to attach to a park. So don't complicate it."). There is deliberately
+       no affordance for moving one into a park afterwards — a park's own points already show in
+       open world, so such a button could only add a second way to be wrong about where a point
+       is. */
 
     $("#f-kind").textContent = f.properties.kind === "route" ? "Route" : "Point";
     $("#g-type").hidden = f.properties.kind !== "point";
@@ -12697,18 +12719,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (!f || f.properties.kind !== "route") { return; }
     $("#patchpanel").hidden = false;
     renderPatchPanel();
-  });
-
-  $("#f-attach").addEventListener("click", function () {
-    var f = feature(selected);
-    if (!f || !setterTools() || f.properties.place != null) { return; }
-    var p = placeAt(f.geometry.coordinates);
-    if (!p) { return; }
-    claimEdit(f);
-    f.properties.place = p.properties.id;
-    commit();
-    renderDetail();
-    toast(label(f) + " joined " + p.properties.name);
   });
 
   $("#f-zoom").addEventListener("click", function () {
