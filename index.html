@@ -2072,9 +2072,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (raw) { fc = JSON.parse(raw); }
   } catch (e) { /* private mode or corrupt payload — start empty rather than break */ }
 
-  /* Features recorded before places existed belong to Belgrad. Assign once, never guess again. */
+  /* Features recorded before places existed belong to Belgrad. Assign once, never guess again.
+     Keyed on the ABSENCE of the property, not its falsiness: a legacy feature has no `place` key
+     at all, but a free point marked in open world carries `place: null` deliberately, and null
+     is falsy. A `!f.properties.place` check would silently adopt that free point into Belgrad on
+     every reload, which is exactly the bug this comment exists to prevent recurring — do not
+     "simplify" this back to a truthiness check. */
   fc.features.forEach(function (f) {
-    if (!f.properties.place) { f.properties.place = DEFAULT_PLACE; }
+    if (!("place" in f.properties)) { f.properties.place = DEFAULT_PLACE; }
   });
 
   /* The map and the archive list show one place at a time; `fc` keeps them all. */
@@ -12625,7 +12630,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           f.properties = f.properties || {};
           if (!f.properties.id) { f.properties.id = uid(); }
           if (!f.properties.kind) { f.properties.kind = f.geometry.type === "Point" ? "point" : "route"; }
-          if (!f.properties.place) { f.properties.place = place ? place.properties.id : DEFAULT_PLACE; }
+          /* Same rule as the load-time normalisation above: absence of the key gets the
+             fallback, an explicit `place: null` (a free point in someone else's export) is
+             respected as-is. */
+          if (!("place" in f.properties)) { f.properties.place = place ? place.properties.id : DEFAULT_PLACE; }
           fc.features.push(f);
         });
         report.push(feats.length + " feature(s)");
