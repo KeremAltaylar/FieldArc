@@ -2312,7 +2312,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   /* Open world needs every published feature, not one place's. One query: public_features is
-     already filtered to what is published, and the catalogue is small (measure before paging). */
+     already filtered to what is published, and the catalogue is small (measure before paging).
+
+     C1: applyWorld() calls worldStart() synchronously, right after firing this off — it cannot
+     wait on the network, because a world walk needs its marker and its transport on screen
+     immediately (see worldStart's own comment on that). At the moment worldStart() snapshots
+     worldRoutes, fc holds only whatever fetchPublished(place) merged for the one park setPlace
+     opened, plus this device's own drafts: every route belonging to any other park is missing,
+     and a listener who walks there gets a map showing the route but a walker that can never
+     pick it as nearest — the synth stage sits at 0 forever. So this .then rebuilds worldRoutes
+     itself, once every published feature is actually in, and re-asks nearestRoute for wherever
+     the walker already is — which also covers a route published or unpublished elsewhere since
+     the walk began: applyWorld() re-runs fetchWorld() every time the switch is turned back on,
+     and this refresh is what makes that re-fetch actually reach the walker instead of only the
+     map layer. */
   function fetchWorld() {
     if (!sb) { return Promise.resolve(); }
     return sb.from("public_features").select("*")
@@ -2321,6 +2334,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         mergeRemote(r.data);
         map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
         renderList();
+        worldRoutes = computeWorldRoutes();
+        if (pacer && pacer.world) { worldMove(pacer.pos); }
       })
       .catch(function () { /* offline is the normal case in a forest */ });
   }
@@ -7224,15 +7239,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      that route (Task 9) so standing beside a free point in the middle of nowhere still sounds. */
   var worldRoutes = [];
 
+  /* Every published route's line, measured. Shared by worldStart (the synchronous bootstrap,
+     which must not wait on the network) and fetchWorld's own .then (which is what actually
+     carries every park's routes in, once the request lands) — see the note on fetchWorld for
+     why the first call alone is not enough. */
+  function computeWorldRoutes() {
+    return visible().filter(function (f) { return f.properties.kind === "route"; })
+      .map(function (f) { return { id: f.properties.id, f: f, m: routeMetrics(f) }; })
+      .filter(function (r) { return r.m.total > 0; });
+  }
+
   /* The same hold the sections use, so two routes that run close together do not swap the key
      back and forth at every step. */
   function sectorHold() { return Math.max(8, Math.min(40, 0.06 * (sect.width || 200))); }
 
+  /* I4: how far the walker must move before worldMove re-asks placeAt which park it is standing
+     in. "A few metres", per the spec. */
+  var PLACE_CHECK_M = 5;
+
   function worldStart() {
     pacerStop();
-    worldRoutes = visible().filter(function (f) { return f.properties.kind === "route"; })
-      .map(function (f) { return { id: f.properties.id, f: f, m: routeMetrics(f) }; })
-      .filter(function (r) { return r.m.total > 0; });
+    worldRoutes = computeWorldRoutes();
 
     var el = document.createElement("div");
     el.className = "pacer";
