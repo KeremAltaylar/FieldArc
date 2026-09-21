@@ -28,7 +28,7 @@ test("with nothing playing yet, the nearer line wins", () => {
 });
 
 test("the far line does not steal the walk until it is clearly nearer", () => {
-  /* Standing 5 m nearer B than A, with a 20 m margin: A keeps it. */
+  /* Standing 8.9 m nearer B than A, with a 20 m margin: A keeps it. */
   const mid = [29.005, 41.00504];
   const got = nearestRoute.nearestRoute(listOf(A, B), mid, "r0", 20);
   assert.equal(got.id, "r0", "no flip inside the margin");
@@ -41,6 +41,15 @@ test("once it is clearly nearer, it takes over", () => {
 
 test("no routes at all is not an error", () => {
   assert.equal(nearestRoute.nearestRoute([], [29, 41], null, 20), null);
+});
+
+test("a currentId no longer in the list falls back to the global nearest", () => {
+  /* The case a live walk produces when a route is unpublished mid-session, or the walker
+     leaves the area: pacer.routeId still names a route, but it is no longer in worldRoutes.
+     currentId matching nothing means `current` stays null, so the margin check never fires
+     and the walker gets the honestly-nearest route rather than something stale. */
+  const got = nearestRoute.nearestRoute(listOf(A, B), [29.005, 41.009], "long-gone", 20);
+  assert.equal(got.id, "r1", "falls back to the nearest route, not a stale one");
 });
 
 /* zonesNear leans on segment and ZONE_MARGIN, so the harness hands it the real segment and the
@@ -76,4 +85,20 @@ test("a point past its own radius but still inside the margin is in reach", () =
   const got = zonesNear([edge], [29.000, 41.0000]);
   assert.deepEqual(got.map((z) => z.id), ["edge"],
     "140 m is past the 120 m radius but inside the 156 m margin");
+});
+
+test("the world walker takes its patch from the nearest route and its zones from the walker", () => {
+  const move = src("worldMove");
+  assert.match(move, /nearestRoute\(worldRoutes, pos, pacer\.routeId, sectorHold\(\)\)/);
+  assert.match(move, /pacer\.zones = zonesNear\(visible\(\), pos\)/);
+  assert.match(move, /updateBed\(\)/);
+  /* patchOf(near.f) is assigned inside worldSwap, not worldMove itself — worldMove only calls
+     worldSwap when the nearest route changes. worldSwap stays its own function because Task 9
+     replaces its body wholesale with a crossfade, so the patch assignment is checked there. */
+  assert.match(move, /worldSwap\(near\)/);
+  assert.match(src("worldSwap"), /pacer\.patch = patchOf\(near\.f\)/);
+  const start = src("worldStart");
+  assert.match(start, /pacer = \{ f: null, world: true/, "a world walk belongs to no single route");
+  assert.match(src("gpsFix"), /if \(pacer && pacer\.world\) \{ worldMove\(/,
+    "a GPS fix drives the world walker too");
 });

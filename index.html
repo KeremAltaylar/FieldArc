@@ -3666,6 +3666,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     document.body.classList.toggle("world", on);
     if (on) { fetchWorld(); }
     map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+    if (on) { worldStart(); } else if (pacer && pacer.world) { worldStop(); }
     renderPlaceList();
     renderList();
   }
@@ -3775,7 +3776,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        inspecting, not leaving — and since a point's rhythm is edited from its own card,
        stopping here meant you could never hear an edit you were making. Deselecting does
        not end it either: walking is a mode, and the Walk button is how you leave it. */
-    if (pacer && id && id !== pacer.f.properties.id) {
+    if (pacer && pacer.f && id && id !== pacer.f.properties.id) {
       var other = feature(id);
       if (other && other.properties.kind === "route") { pacerStop(); }
     }
@@ -6617,7 +6618,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function drawProgSegments() {
     if (!map.getSource("progseg")) { return; }
     var feats = [];
-    if (pacer && pacer.patch && pacer.patch.prog) {
+    /* pacer.m is null in open world until a route is in reach (Task 8) — nothing to draw a
+       route's chord segments onto until then. */
+    if (pacer && pacer.patch && pacer.patch.prog && pacer.m) {
       var n = pacer.patch.prog.length;
       for (var i = 0; i < n; i++) {
         feats.push({ type: "Feature",
@@ -6903,9 +6906,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var ch = harmony.chord != null && pacer.patch.prog[harmony.chord]
       ? " &nbsp; <b>chord</b> " + (harmony.chord + 1) + " " + chordLabel(pacer.patch, harmony.chord)
       : "";
+    /* Open world has no single route until one is in reach (Task 8): pacer.m is null until
+       nearestRoute finds one, or forever if the place has none at all. The along-route readout
+       only means anything once there is a route to be along. */
+    var along = pacer.m
+      ? "<b>along</b> " + fmtLen(pacer.t * pacer.m.total) + " / " + fmtLen(pacer.m.total) + ch +
+        " · " + Math.round(pacer.t * 100) + "%"
+      : "<b>world</b> no route in reach";
     $("#pacerbar").innerHTML =
-      "<b>along</b> " + fmtLen(pacer.t * pacer.m.total) + " / " + fmtLen(pacer.m.total) + ch +
-      " · " + Math.round(pacer.t * 100) + "%" +
+      along +
       (near ? " &nbsp; <b>nearest</b> " + near.z.name + " " + fmtLen(near.d) +
               (near.z.inside ? " · <em>inside</em>" : "") : "") +
       (sect.idx !== null ? " &nbsp; <b>sector</b> " + (sect.idx + 1) : "") +
@@ -6985,6 +6994,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* An imprecise fix says nothing about where you are, so it must not move the level either:
        the walk holds at whatever it was until a fix worth trusting arrives. */
     if (acc > GPS_ACC_MAX) { gps.held = "±" + Math.round(acc) + "m"; pacerReadout(); return; }
+    if (pacer && pacer.world) { worldMove([+pos.coords.longitude.toFixed(6),
+      +pos.coords.latitude.toFixed(6)]); return; }
     var pr = projectToRoute(pacer.m, [+pos.coords.longitude.toFixed(6),
                                       +pos.coords.latitude.toFixed(6)]);
     setWalkLevel(walkLevel(pr.dist, GPS_FADE_FROM, GPS_LEASH));
@@ -7115,6 +7126,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                         level: walkLevel, setLevel: setWalkLevel,
                         limits: { acc: GPS_ACC_MAX, leash: GPS_LEASH, fadeFrom: GPS_FADE_FROM,
                                   fade: WALK_FADE } };
+    /* Measurable: feed a position and read which route lent the patch, without walking one. */
+    window.__fa.world = { start: worldStart, move: worldMove,
+                          routes: function () { return worldRoutes; } };
 
     /* You walked out with it on; you should not have to switch it on again at the trailhead. */
     var wanted = null;
@@ -7127,6 +7141,66 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     drawProgSegments();
     drawSectors();
     pacerSet(0);
+  }
+
+  /* ---------- The world walker ----------
+     No single route: the walker is a position in the city. Whichever route is nearest lends its
+     patch, the points in reach are the zones, and the synth stage fades with the distance to
+     that route (Task 9) so standing beside a free point in the middle of nowhere still sounds. */
+  var worldRoutes = [];
+
+  /* The same hold the sections use, so two routes that run close together do not swap the key
+     back and forth at every step. */
+  function sectorHold() { return Math.max(8, Math.min(40, 0.06 * (sect.width || 200))); }
+
+  function worldStart() {
+    pacerStop();
+    worldRoutes = visible().filter(function (f) { return f.properties.kind === "route"; })
+      .map(function (f) { return { id: f.properties.id, f: f, m: routeMetrics(f) }; })
+      .filter(function (r) { return r.m.total > 0; });
+
+    var el = document.createElement("div");
+    el.className = "pacer";
+    el.title = "Drag to listen from here";
+    var start = worldRoutes.length ? worldRoutes[0].m.coords[0] : map.getCenter().toArray();
+    var marker = new maplibregl.Marker({ element: el, draggable: true })
+      .setLngLat(start).addTo(map);
+    marker.on("drag", function () { worldMove(marker.getLngLat().toArray()); });
+
+    pacer = { f: null, world: true, routeId: null, m: null, t: 0, pos: start, marker: marker,
+              zones: [], log: [], patch: defaultPatch() };
+    harmony.idx = null; harmony.chord = null; harmony.tones = null;
+    harmony.last = { bass: null, top: null };
+    worldMove(start);
+    pacerReadout();
+  }
+
+  function worldStop() { pacerStop(); }
+
+  function worldMove(pos) {
+    if (!pacer || !pacer.world) { return; }
+    pacer.pos = pos;
+    if (pacer.marker) { pacer.marker.setLngLat(pos); }
+    var near = nearestRoute(worldRoutes, pos, pacer.routeId, sectorHold());
+    if (near) {
+      if (near.id !== pacer.routeId) { worldSwap(near); }
+      pacer.t = near.t;
+      pacer.m = near.m;
+      pacer.routeDist = near.dist;
+    } else {
+      pacer.routeDist = Infinity;
+    }
+    pacer.zones = zonesNear(visible(), pos);
+    updateBed();
+    pacerReadout();
+  }
+
+  /* Placeholder: takes the new route outright. The next task replaces this body with a
+     crossfade between the old patch and the new one. */
+  function worldSwap(near) {
+    pacer.routeId = near.id;
+    pacer.patch = patchOf(near.f);
+    BED.maxVoices = pacer.patch.bed.voices;
   }
 
   /* ---------- The bed ----------
