@@ -12337,6 +12337,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     renderPhotos(f);
     renderAudioMode(f);
     $("#f-walk").setAttribute("aria-pressed", String(!!pacer && pacer.f === f));
+    /* Walk is a no-op in open world (I2) — the world walker already follows whichever route is
+       nearest, and clicking a route in the list centres and selects it without leaving the mode.
+       Disabled rather than merely inert, so a listener does not tap a button that does nothing. */
+    $("#f-walk").disabled = worldOn();
+    $("#f-walk").title = worldOn()
+      ? "Open world already follows the nearest route — turn it off to walk one route alone"
+      : "";
 
     /* A free point standing inside a park can join it — one tap, and then it behaves like any
        other point of that park (its offline download, its place filter). */
@@ -12502,7 +12509,16 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
   });
 
+  /* I2: pacer.f is always null in a world walk, so `pacer && pacer.f === f` never matches one —
+     a first click fell through to pacerStart(f), which tears down the world walker and replaces
+     it with a place-mode route walk while the switch still read Open world, and a second click
+     then stopped THAT walk and left no walker running at all. Open world already follows
+     whichever route is nearest (and picking a route from the list centres and selects it without
+     leaving the mode — Task 12); Walk exists to choose place mode's one-route focus, which open
+     world has no room for. Made a no-op here instead, so the world walker it would otherwise
+     have to fight is not affected. */
   $("#f-walk").addEventListener("click", function () {
+    if (worldOn()) { return; }
     var f = feature(selected);
     if (!f || f.properties.kind !== "route") { return; }
     if (pacer && pacer.f === f) { pacerStop(); } else { pacerStart(f); }
