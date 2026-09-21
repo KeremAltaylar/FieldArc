@@ -1,15 +1,47 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { createClient } from "@supabase/supabase-js";
 import { readFileSync } from "node:fs";
-import { service } from "./clients.mjs";
+import { anon, service } from "./clients.mjs";
 
 const html = readFileSync("index.html", "utf8").replace(/\r\n/g, "\n");
 const ID = "0f0e0d0c-0b0a-4009-8008-700600500400";
 const db = service();
-const asSetter = service;
+const EMAIL = "free-point-probe@fieldarc.test";
+const PASSWORD = "probe-" + "z".repeat(16);
+let userId = null;
 
-before(async () => { await db.from("features").delete().eq("id", ID); });
-after(async () => { await db.from("features").delete().eq("id", ID); });
+/* I7: the round-trip below used to run entirely through service(), which bypasses RLS — as
+   tests/clients.mjs's own comment says, that proves nothing about what a real setter or a real
+   listener can reach. The insert now goes through a signed-in setter (features_setter_all,
+   0005_rls.sql, checks is_setter() — membership in public.setters — not created_by, so any
+   registered setter may upsert any row), and the "visible to a listener" read goes through
+   anon(), which was exported and unused. service() is kept only for the table-level, RLS-blind
+   check (place holds NULL, not a sentinel string) and for setup/teardown, exactly as clients.mjs
+   says it should be. */
+before(async () => {
+  await db.from("features").delete().eq("id", ID);
+  const { data, error } = await db.auth.admin.createUser({
+    email: EMAIL, password: PASSWORD, email_confirm: true
+  });
+  assert.equal(error, null, error?.message);
+  userId = data.user.id;
+  await db.from("setters").insert({ id: userId, name: "free point probe" });
+});
+after(async () => {
+  await db.from("features").delete().eq("id", ID);
+  await db.from("audit").delete().eq("setter_id", userId);
+  await db.from("setters").delete().eq("id", userId);
+  if (userId) { await db.auth.admin.deleteUser(userId); }
+});
+
+async function asSetter() {
+  const c = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY,
+                         { auth: { persistSession: false } });
+  const { error } = await c.auth.signInWithPassword({ email: EMAIL, password: PASSWORD });
+  assert.equal(error, null, error?.message);
+  return c;
+}
 
 test("a point with no place publishes and comes back published", async () => {
   const c = await asSetter();
@@ -24,7 +56,7 @@ test("a point with no place publishes and comes back published", async () => {
   assert.equal(row.error, null, "select should succeed");
   assert.equal(row.data.place, null, "the column holds NULL, not a sentinel string");
 
-  const pub = await db.from("public_features").select("id,place").eq("id", ID).single();
+  const pub = await anon().from("public_features").select("id,place").eq("id", ID).single();
   assert.equal(pub.error, null, "a free point is visible to a listener");
   assert.equal(pub.data.place, null);
 });
