@@ -11,20 +11,25 @@ function src(name) {
   return html.slice(s, i + 1);
 }
 
-function load(stored) {
+/* The stored preference is a SETTER's, as of 2026-09-21: a listener is in open world always,
+   because a park view is the authoring surface (see tests/listener-open-world.test.mjs). These
+   three therefore load worldOn as a signed-in setter sees it; the listener side is that file's. */
+function load(stored, signedIn) {
   const store = { getItem: () => stored, setItem: () => {} };
-  return new Function("localStorage", 'var WORLD_KEY = "fieldarc.world";' + src("worldOn") + "; return worldOn;")(store);
+  return new Function("localStorage", "setterTools",
+    'var WORLD_KEY = "fieldarc.world";' + src("worldOn") + "; return worldOn;"
+  )(store, () => signedIn !== false);
 }
 
-test("open world is the default on a device that has never chosen", () => {
+test("open world is the default on a setter's device that has never chosen", () => {
   assert.equal(load(null)(), true);
 });
 
-test("a device that turned it off stays off", () => {
+test("a setter's device that turned it off stays off", () => {
   assert.equal(load("0")(), false);
 });
 
-test("a device that turned it on stays on", () => {
+test("a setter's device that turned it on stays on", () => {
   assert.equal(load("1")(), true);
 });
 
@@ -266,9 +271,15 @@ test("I4: the movement gate assigns placeCheckedAt only when the check actually 
     var drawSectors = function () {};
     var setPlaceFrame = function () {};
     var pacer = { placeId: undefined, patch: { sect: { n: 8 } } };
+    /* The block now also names the walker's park in the header for a listener (2026-09-21, when
+       a listener stopped having a park view at all). That is DOM work, and this test is about
+       how often placeAt runs — so the gate is fed a setter, for whom the label is left alone,
+       and $ is never reached. tests/listener-open-world.test.mjs owns the label itself. */
+    var setterTools = function () { return true; };
+    var $ = function () { throw new Error("a setter's picker label must not be rewritten"); };
     var fn = new Function(
       "pacer", "pos", "PLACE_CHECK_M", "segment", "placeAt", "sect",
-      "sectorGeometry", "drawSectors", "setPlaceFrame", gateSrc
+      "sectorGeometry", "drawSectors", "setPlaceFrame", "setterTools", "$", gateSrc
     );
     /* One degree of latitude is ~111.2 km near the equator; find the step size that the app's
        OWN segment() calls 1 metre, by bisection, rather than trusting an approximated constant
@@ -282,7 +293,8 @@ test("I4: the movement gate assigns placeCheckedAt only when the check actually 
     var fires = [];
     for (var step = 1; step <= 20; step++) {
       var pos = [0, stepDeg * step];
-      fn(pacer, pos, PLACE_CHECK_M, segment, placeAt, sect, sectorGeometry, drawSectors, setPlaceFrame);
+      fn(pacer, pos, PLACE_CHECK_M, segment, placeAt, sect, sectorGeometry, drawSectors,
+         setPlaceFrame, setterTools, $);
       fires.push(calls);
     }
     return fires;

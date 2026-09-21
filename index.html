@@ -2027,7 +2027,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      see STORE's note for why these never take the new name. */
   var WORLD_KEY = "fieldarc.world";
 
+  /* Open world is how you listen; a park is how you author. A listener is in open world
+     always, whatever this device once stored — they do not know where a park boundary is, and
+     place mode snaps them onto a route line they are not standing on. A setter still chooses,
+     because authoring needs the line, the sections cut from the park's own boundary, and the
+     scrub along t.
+
+     This reads the stored value and never writes it (setWorld is the only writer), so a setter
+     who signs out, walks as a listener and signs back in finds the switch where they left it
+     rather than reset by the listener session. */
   function worldOn() {
+    if (!setterTools()) { return true; }
     try { return localStorage.getItem(WORLD_KEY) !== "0"; } catch (e) { return true; }
   }
   function setWorld(on) {
@@ -2622,11 +2632,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var SETTER_ONLY = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
       "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit", "#photo-add",
-      ".rowdel", "#place-list", "#place-list-label"];
+      /* .worldrow: a listener is in open world always (see worldOn), so the switch has one
+         possible value — and a control with one possible value is not a control. It stays in
+         the markup so a setter signing in on the same device gets it back without a reload. */
+      ".rowdel", "#place-list", "#place-list-label", ".worldrow"];
     var show = setter.signedIn;
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
     });
+    /* Signing out of a park walk has to move that walk into open world, and signing back in has
+       to hand the setter whatever they had chosen. The comparison is against what the app is
+       actually showing (applyWorld owns body.world), not against a second worldOn() call —
+       setter.signedIn has already changed by the time gating runs, so worldOn() answers the new
+       question on both sides and would never disagree with itself.
+
+       worldApplied gates it because applyModeGating runs during startup, before the map's
+       sources or any place exist; the boot path calls applyWorld() itself once both do. */
+    if (worldApplied && worldOn() !== document.body.classList.contains("world")) { applyWorld(); }
     /* The mobile peek is sized from the Mode section's height, and that section has just changed
        height to zero (or back). Without this the heading's space stayed reserved over nothing,
        so "the whole mode bar buys back the peek" did not actually happen. */
@@ -3839,8 +3861,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   });
   /* Everything that differs between the modes, in one place: what the map holds, what the
      picker lists, and — once Task 8 lands — which walker is running. */
+  /* Whether applyWorld has ever run. applyModeGating reconciles a sign-in or sign-out against
+     the mode, and must not try to do that before the map's sources and the first place exist. */
+  var worldApplied = false;
+
   function applyWorld() {
     var on = worldOn();
+    worldApplied = true;
     $("#world-switch").setAttribute("aria-pressed", String(on));
     document.body.classList.toggle("world", on);
     if (on) { fetchWorld(); }
@@ -7529,6 +7556,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (here) { setPlaceFrame(here); sectorGeometry(pacer.m || { coords: [pos] }, pacer.patch.sect.n); }
         else { sect.seeds = null; sect.cells = null; sect.key = null; sect.idx = null; }
         drawSectors();
+        /* A listener's picker no longer selects a park — it lists routes — so its label was
+           naming whichever park a deep link happened to set while the map showed every park
+           there is. Say where the walker actually is instead, which is the one true thing that
+           header can say in open world. A setter's label is left alone: theirs still names the
+           park they picked, and having it change underneath them mid-walk would be worse than
+           stale. */
+        if (!setterTools()) {
+          $("#place-name").textContent = here ? here.properties.name : "Open world";
+        }
       }
     }
     pacerCheckZones();
@@ -12607,7 +12643,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#f-published").setAttribute("aria-pressed", String(!!f.properties.published));
     renderMix();
 
-    $("#f-walk").hidden = f.properties.kind !== "route";
+    /* Walking one route alone is authoring: it snaps the walker onto the line and scrubs t,
+       which is how a setter checks a route, not how anyone listens to one. A listener is in
+       open world always now, so this button could only ever be greyed out for them — so it
+       goes instead of greying. Picking a route in the list is their way in, and it focuses the
+       route without leaving the mode. */
+    $("#f-walk").hidden = f.properties.kind !== "route" || !setterTools();
     $("#f-patch").hidden = f.properties.kind !== "route";
     renderPhotos(f);
     renderAudioMode(f);
@@ -12624,7 +12665,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        thing where it can actually be read: a line by the button, shown only for the case it
        applies to (a route selected, Open world on). */
     if ($("#f-walk-note")) {
-      $("#f-walk-note").hidden = !(worldOn() && f.properties.kind === "route");
+      /* Only where there is a button to explain. A listener has no switch to turn off, so the
+         note would be telling them to do something they cannot do. */
+      $("#f-walk-note").hidden = !(worldOn() && f.properties.kind === "route" && setterTools());
     }
 
     /* A point marked in open world belongs to open world, and that is the whole of it (Kerem,
