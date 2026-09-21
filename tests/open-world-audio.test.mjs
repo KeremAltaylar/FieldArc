@@ -191,6 +191,10 @@ function buildSwapSandboxFactory() {
     src("segment") + src("projectToRoute") + src("routeMetrics") + src("nearestRoute") +
     src("walkLevel") + src("mixLevel") +
     "var GPS_FADE_FROM = 60, GPS_LEASH = 120, MIX_ROUTE = \"route\";" +
+    /* worldSwap's take() now sets the voice budget through voiceBudget(), which reads
+       navigator/screen — neither exists here. The sandbox supplies the identity, because what
+       this file tests is the swap timer, not the budget; tests/audio-memory.test.mjs owns that. */
+    "function voiceBudget(n) { return n; }" +
     src("sectorHold") + decls + src("setSynthLevel") + src("worldSwap") +
     "; return { worldSwap: worldSwap, setSynthLevel: setSynthLevel };"
   );

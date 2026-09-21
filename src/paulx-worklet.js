@@ -348,8 +348,16 @@ PxRng.prototype.unit = function () { return this.next() / 4294967296; };
 /* The input file, with the plugin's play range and loop crossfade. Over the last xf samples
    before the end, the tail fades out under the head [start, start + xf), and playback resumes at
    start + xf — a loop with no seam. */
+/* The source may arrive as Float32 or as Int16. Int16 halves what a voice holds — 146 MB to
+   73 MB for a 6m40s stereo recording — which is the difference between a phone playing two
+   points and a phone stalling its audio thread (measured 2026-09-21, Koşuyolu). The samples are
+   scaled back to ±1 on the way out, and everything downstream is float64 as before, so the only
+   cost is the source's own quantisation: a noise floor near -96 dBFS under material that peaks
+   at -0.8. `scale` is derived from the array type rather than passed, so a caller cannot get it
+   wrong. */
 function PxReader(data, sr) {
   this.data = data; this.sr = sr; this.pos = 0; this.s0 = 0; this.s1 = data.length; this.xf = 0;
+  this.scale = (typeof Int16Array !== "undefined" && data instanceof Int16Array) ? 1 / 32768 : 1;
 }
 PxReader.prototype.setRange = function (start, end, xfadeS) {
   var len = this.data.length, a = Math.max(0, Math.min(1, start)), b = Math.max(0, Math.min(1, end)), t;
@@ -361,8 +369,11 @@ PxReader.prototype.setRange = function (start, end, xfadeS) {
   if (this.pos < s0 || this.pos >= s1) { this.pos = s0; }
 };
 PxReader.prototype.next = function () {
-  var p = this.pos, d = this.data, v = d[p], z = this.s1 - this.xf;
-  if (this.xf > 0 && p >= z) { var t = (p - z) / this.xf; v = v * (1 - t) + d[this.s0 + (p - z)] * t; }
+  var p = this.pos, d = this.data, v = d[p] * this.scale, z = this.s1 - this.xf;
+  if (this.xf > 0 && p >= z) {
+    var t = (p - z) / this.xf;
+    v = v * (1 - t) + d[this.s0 + (p - z)] * this.scale * t;
+  }
   p++;
   if (p >= this.s1) { p = this.s0 + this.xf; }
   this.pos = p;

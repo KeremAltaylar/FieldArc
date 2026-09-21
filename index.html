@@ -2293,11 +2293,37 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       .catch(function () { return allRoutes || []; /* offline — show the last fetch, if any */ });
   }
 
+  /* Whether the last attempt to read the archive actually reached it. A listener holds nothing
+     of their own, so a failed fetch leaves an empty map — and the empty state used to say
+     "Nothing published here yet", which is a lie that reads as "your work is gone" (Kerem,
+     2026-09-21, on a phone: "routes and points were gone although I didn't publish anything").
+     Nothing had gone anywhere; the fetch had failed. */
+  var archiveReached = true;
+
+  /* The last set of published rows this device saw for a place, so a failed fetch can show
+     them instead of nothing. Kept in IndexedDB beside the audio: a place's rows are small, but
+     localStorage is shared with the archive itself and must not be crowded. */
+  function cachePublished(placeId, rows) {
+    return idb("readwrite", "places", function (st) {
+      return st.put({ at: Date.now(), rows: rows }, "pub:" + placeId);
+    }).catch(function () { /* a cache that cannot be written is not an error worth a toast */ });
+  }
+  function cachedPublished(placeId) {
+    return idb("readonly", "places", function (st) { return st.get("pub:" + placeId); })
+      .catch(function () { return null; });
+  }
+
   function fetchPublished(placeId) {
     if (!sb || !placeId) { return Promise.resolve(); }
     return sb.from("public_features").select("*").eq("place", placeId)
       .then(function (r) {
-        if (r.error || !r.data) { return; }
+        /* An unreachable server does NOT reject here: supabase-js catches the fetch failure and
+           resolves with { error }. Measured 2026-09-21 against an unroutable host — the catch
+           below never ran, the flag stayed true, and the empty state still claimed nothing was
+           published. Both shapes are the same event and take the same path. */
+        if (r.error || !r.data) { return archiveUnreachable(placeId); }
+        archiveReached = true;
+        cachePublished(placeId, r.data);
         mergeRemote(r.data);
         map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
         renderList();
@@ -2309,7 +2335,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          setter offline in the field — the normal case — would otherwise see a spurious
          "Error: rejection: ..." toast on every load or place switch. Best-effort background
          sync: fail silently and keep whatever is already local. */
-      .catch(function () { /* offline in a forest is the normal case */ });
+      /* Offline in a forest is the normal case, so this stays quiet — but it no longer pretends
+         the archive is empty. What this device last saw comes back, and the empty state says
+         which of the two it is looking at. */
+      .catch(function () { return archiveUnreachable(placeId); });
+  }
+
+  /* The archive could not be read — offline, no signal, or the server said no. Quiet, because
+     offline in a forest is the normal case, but never silent about WHICH empty this is. */
+  function archiveUnreachable(placeId) {
+    archiveReached = false;
+    return cachedPublished(placeId).then(function (hit) {
+      if (hit && hit.rows && hit.rows.length) {
+        mergeRemote(hit.rows);
+        map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
+      }
+      renderList();
+    });
   }
 
   /* Open world needs every published feature, not one place's. One query: public_features is
@@ -2525,7 +2567,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#empty").innerHTML = show
       ? "Nothing recorded yet. Choose <b>Point</b> or <b>Route</b> and click the map — " +
         "each feature is stored as GeoJSON, exactly as the archive will store it."
-      : "Nothing published here yet. Try another place from the picker.";
+      : emptyCopy();
     /* The blanket unhide above force-shows elements whose real visibility depends on the
        currently selected feature (#g-type/#card-icons/#f-patch on its kind, .recmode/#rec-add/
        #f-rhythm on its audio state) or on the drawing mode (#mode-icons) — none of which the
@@ -7249,7 +7291,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
               zones: buildZones(m), log: [], patch: patchOf(f) };
     sectorGeometry(m, patchOf(f).sect.n);
     sect.idx = null;
-    BED.maxVoices = pacer.patch.bed.voices;
+    BED.maxVoices = voiceBudget(pacer.patch.bed.voices);
     harmony.idx = null; harmony.chord = null; harmony.tones = null;
     harmony.last = { bass: null, top: null };
     cellsSet(!!(pacer.patch.morph && pacer.patch.morph.cells));
@@ -7321,7 +7363,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        sect.frame is missing. */
     if (sect.frame && sect.frame.length > 2) { sectorGeometry(null, pacer.patch.sect.n); }
     sect.idx = null;
-    BED.maxVoices = pacer.patch.bed.voices;
+    BED.maxVoices = voiceBudget(pacer.patch.bed.voices);
     harmony.idx = null; harmony.chord = null; harmony.tones = null;
     harmony.last = { bass: null, top: null };
     cellsSet(!!(pacer.patch.morph && pacer.patch.morph.cells));
@@ -7469,7 +7511,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (!still || still.id !== near.id) { return; }
       pacer.routeId = near.id;
       pacer.patch = patchOf(near.f);
-      BED.maxVoices = pacer.patch.bed.voices;
+      BED.maxVoices = voiceBudget(pacer.patch.bed.voices);
       harmony.idx = null; harmony.chord = null; harmony.tones = null;
       sect.idx = null;
       setSynthLevel(walkLevel(still.dist, GPS_FADE_FROM, GPS_LEASH));
@@ -7502,6 +7544,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   var BED = { radius: 140, maxVoices: 4, gain: 0.9, fade: 0.35 };
 
+  /* A soundscape voice holds its whole recording for as long as it plays — 73 MB for Kerem's
+     6m40s stereo one, after the Int16 change, and the engine cannot stream what PaulXStretch
+     reads out of order. Four at once is unremarkable on a desktop and is how a phone runs out
+     of memory: the tab is killed mid-walk, and on the reload the archive looks empty, which is
+     exactly what Kerem saw in Koşuyolu on 2026-09-21. The patch's own number stays the ceiling;
+     this only lowers it on a device that cannot pay. deviceMemory is absent on iOS, so a coarse
+     pointer on a small screen counts as a phone too. */
+  function voiceBudget(n) {
+    var mem = navigator.deviceMemory;
+    var small = (mem !== undefined && mem <= 4) ||
+      (window.matchMedia && window.matchMedia("(pointer: coarse)").matches &&
+       Math.min(screen.width, screen.height) <= 500);
+    return small ? Math.min(n, 2) : n;
+  }
+
   function bedStop() {
     wantSound = false;
     if (!bed) { return; }
@@ -7509,7 +7566,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var v = bed.voices[id];
       try { v.gain.gain.rampTo(0, 0.2); } catch (e) { /* ignore */ }
       setTimeout(function () {
-        try { v.player.stop(); v.player.dispose(); } catch (e) {}
+        /* A voice only has a player if its engine failed — see dryFallback in ensureVoice. */
+        try { if (v.player) { v.player.stop(); v.player.dispose(); } } catch (e) {}
         try {
           if (v.stretch && v.stretch.node) { v.stretch.node.disconnect(); }
           if (v.stretchBlend) { v.stretchBlend.dispose(); }
@@ -8913,26 +8971,45 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          x1, never a dry/wet amount (Kerem, 2026-09-18). The plain player survives only as the
          fallback for a device where the worklet fails to start; the blend is that switch. */
       v.stretchBlend = makeBlend(Tone, 1);
-      v.player = new Tone.Player({
-        url: v.url, loop: true, fadeIn: 0.05, fadeOut: 0.1,
-        onload: function () {
-          /* bed.on as well as the registry: a recording that finished decoding after the
-             Sound button was pressed would otherwise start into a stopped bed. */
-          if (!bed || !bed.on || !bed.voices[z.id]) {
-            try { v.player.dispose(); } catch (e) {}
-            return;
+      /* The dry player is NOT built here, and that is the whole point. It decodes the same
+         recording a second time, into a second full-length buffer — measured 2026-09-21 in
+         Koşuyolu: 146 MB for one 6m40s stereo recording, doubled to ~292 MB per point because
+         the worklet holds its own copy. Two points in range put the tab near 300 MB on a
+         desktop; a phone starts stalling the audio thread long before that, which is heard as
+         crackle and lag, and then the tab is killed. The player only ever sounds when the
+         worklet fails to start (Kerem, 2026-09-18: always wet), so it is built at that moment
+         and not before — see dryFallback below. */
+
+      /* What every ready path does: the level this point's distance has earned, the filter its
+         brightness allows, and the blend that decides engine or plain recording. */
+      var voiceReady = function () {
+        if (!bed || !bed.on || bed.voices[z.id] !== v) { return; }
+        v.ready = true;
+        var dd = segment(pacer ? pacer.pos : z.lonlat, z.lonlat);
+        var q2 = soundOfZone(z);
+        var pr = Math.max(0, 1 - dd / q2.radius);
+        v.base = Math.pow(pr, 1.5) * q2.gain;
+        v.gain.gain.rampTo(v.base * mixLevel(mixer, z.id), BED.fade);
+        v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * pr, BED.fade);
+        v.stretchBlend.fade.rampTo(v.stretch && v.stretch.failed ? 0 : 1, BED.fade);
+      };
+
+      /* The one case the plain recording is heard: the engine could not start. Built here, so a
+         device where the worklet works never pays for it. */
+      var dryFallback = function () {
+        if (!bed || !bed.on || bed.voices[z.id] !== v || v.player) { return; }
+        v.player = new Tone.Player({
+          url: v.url, loop: true, fadeIn: 0.05, fadeOut: 0.1,
+          onload: function () {
+            if (!bed || !bed.on || bed.voices[z.id] !== v) {
+              try { v.player.dispose(); } catch (e) {}
+              return;
+            }
+            v.player.start();
+            voiceReady();
           }
-          v.ready = true;
-          v.player.start();
-          var dd = segment(pacer ? pacer.pos : z.lonlat, z.lonlat);
-          var q2 = soundOfZone(z);
-          var pr = Math.max(0, 1 - dd / q2.radius);
-          v.base = Math.pow(pr, 1.5) * q2.gain;
-          v.gain.gain.rampTo(v.base * mixLevel(mixer, z.id), BED.fade);
-          v.filter.frequency.rampTo(v.cutoffLo + (v.cutoffHi - v.cutoffLo) * pr, BED.fade);
-          v.stretchBlend.fade.rampTo(v.stretch.failed ? 0 : 1, BED.fade);
-        }
-      }).connect(v.stretchBlend.a);
+        }).connect(v.stretchBlend.a);
+      };
       v.grit = buildGrit(Tone);
       v.grit.output.connect(v.stretchBlend.b);
       /* The worklet gets its own decoded copy of the same blob — properties.audio holds the
@@ -8954,11 +9031,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           if (!bed || !bed.on || bed.voices[z.id] !== v) { return; }
           /* Both channels of a stereo recording: PaulXStretch runs one stretcher per channel,
              and the independent random phase is what keeps the width. */
+          /* The decoded buffer's own arrays, not copies of them. A copy doubles the peak — two
+             full-length Float32Arrays alive at once, 146 MB each for a 6m40s stereo recording —
+             for the few milliseconds before the original is collected, which is exactly when a
+             phone is most likely to fall over. The AudioBuffer is discarded here anyway, so
+             handing its arrays to the worklet costs nothing. */
+          /* Handed over as Int16, which halves what the voice holds for as long as it plays —
+             146 MB to 73 MB for a 6m40s stereo recording. The engine scales back to ±1 on read
+             and works in float64 throughout, so what changes is the source's own quantisation
+             (a floor near -96 dBFS), not the processing. The decoded buffer's arrays are read
+             straight into it and then dropped, so no full-length float copy is ever alive
+             beside this one. */
           var channels = [];
           for (var ci = 0; ci < Math.min(2, audioBuffer.numberOfChannels); ci++) {
-            var copy = new Float32Array(audioBuffer.length);
-            copy.set(audioBuffer.getChannelData(ci));
-            channels.push(copy);
+            var f32 = audioBuffer.getChannelData(ci);
+            var i16 = new Int16Array(f32.length);
+            for (var si = 0; si < f32.length; si++) {
+              var sv = f32[si];
+              i16[si] = sv < -1 ? -32768 : (sv > 1 ? 32767 : Math.round(sv * 32767));
+            }
+            channels.push(i16);
           }
           /* Two output channels, both always written by the processor (a mono source is
              duplicated), so nothing depends on how the graph up-mixes. */
@@ -8981,19 +9073,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           Tone.connect(node, v.grit.input);
           v.stretch.node = node;
           v.stretch.ready = true;
+          /* The engine is what this voice is, so the engine starting is what makes it ready —
+             it used to be the dry player's onload, which is why the player had to exist. */
+          voiceReady();
         }).catch(function (err) {
-          /* The one case the plain recording is heard: the engine could not start. Loud on
-             purpose — the person turning the stretch knob should learn why it does nothing. */
+          /* Loud on purpose — the person turning the stretch knob should learn why it does
+             nothing — and only here is the plain recording decoded at all. */
           v.stretch.failed = true;
           v.stretchBlend.fade.rampTo(0, BED.fade);
           console.error("Paulstretch worklet failed to initialize for voice " + z.id + ":", err);
           toast("Extreme stretch unavailable for this recording — playing it as recorded.");
+          dryFallback();
         });
       } catch (err) {
         v.stretch.failed = true;
         v.stretchBlend.fade.rampTo(0, BED.fade);
         console.error("Paulstretch worklet failed to initialize for voice " + z.id + ":", err);
         toast("Extreme stretch unavailable for this recording — playing it as recorded.");
+        dryFallback();
       }
       applyGrit(v.grit, q.grit);
       v.stretchBlend.connect(v.filter);
@@ -11495,7 +11592,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     save();
     if (pacer && pacer.f === f) {
       pacer.patch = patch;
-      BED.maxVoices = patch.bed.voices;
+      BED.maxVoices = voiceBudget(patch.bed.voices);
       pacer.zones.forEach(function (z) { z.r = soundOfZone(z).zoneR; });
       if (!sect.seeds || sect.seeds.length !== patch.sect.n) {
         sectorGeometry(pacer.m, patch.sect.n);
@@ -12225,6 +12322,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     $("#tab-list").title = pts + " points · " + rts + " routes · " + fmtLen(dist) +
       " · " + rec + " with recordings";
     $("#empty").hidden = vis.length > 0;
+    if (!setterTools()) { $("#empty").innerHTML = emptyCopy(); }
+  }
+
+  /* An empty map has two very different causes and the reader deserves to know which. */
+  function emptyCopy() {
+    return archiveReached
+      ? "Nothing published here yet. Try another place from the picker."
+      : "Could not reach the archive — this is what this device last saw. " +
+        "Nothing has been lost; try again when you have signal.";
   }
 
   /* Unnamed features are numbered in creation order within their kind — Point 1, Point 2,

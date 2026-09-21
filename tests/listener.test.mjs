@@ -439,9 +439,16 @@ test("no copy names a control the reader does not have", () => {
                           html.indexOf("function applySession("));
   assert.match(gate, /\$\("#empty"\)\.innerHTML = show/,
     "the empty state must be written where the surface is decided");
-  assert.match(gate, /Nothing published here yet\./,
+  /* 2026-09-21: the listener's half moved into emptyCopy(), which now answers a second question —
+     whether the archive was reachable at all — but it is still the listener's copy and still must
+     not name an authoring control. */
+  const listenerCopy = html.slice(html.indexOf("function emptyCopy()"),
+                                  html.indexOf("\n  }", html.indexOf("function emptyCopy()")));
+  assert.match(gate, /: emptyCopy\(\)/, "the listener branch reads its copy from one place");
+  assert.match(listenerCopy, /Nothing published here yet\./,
     "a listener's empty state must not mention an authoring action");
-  const listenerCopy = gate.slice(gate.indexOf(": \"Nothing published here yet"));
+  assert.match(listenerCopy, /Could not reach the archive/,
+    "…and must distinguish an empty archive from an unreachable one");
   assert.doesNotMatch(listenerCopy, /<b>Point<\/b>|<b>Route<\/b>|click the map/,
     "…and must not name Point, Route, or clicking the map to create something");
 
