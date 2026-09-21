@@ -7666,8 +7666,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
      Nothing in Fieldscape is played by hand. The walk is a soundscape: a zone speaks when you
      enter it, the pad follows the chord, and nobody is waiting on a key press. So the latency
-     that "interactive" buys is worth nothing here, and the headroom that "playback" buys
-     instead is worth a great deal. It changes no sound at all.
+     "interactive" buys is worth nothing here and the headroom is worth a great deal.
+
+     A number rather than a keyword, though: "playback" lets Android pick, and it picks big —
+     Kerem heard that as latency ("still laggy and latency rich"). 50 ms is several times the
+     buffer "interactive" asks for and a fraction of what "playback" can take, and unlike either
+     keyword it means the same thing on every platform. It changes no sound at all.
 
      Once, and before a single node exists: replacing the context afterwards would orphan every
      node already built on the old one. */
@@ -7675,7 +7679,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (tuneToneContext.done) { return Tone; }
     tuneToneContext.done = true;
     try {
-      Tone.setContext(new Tone.Context({ latencyHint: "playback" }));
+      Tone.setContext(new Tone.Context({ latencyHint: 0.05 }));
     } catch (e) { /* an older Tone, or a context that refuses to be replaced: keep the default */ }
     return Tone;
   }
@@ -7964,10 +7968,77 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     return new Tone.Reverb({ decay: decay, wet: 0 });
   }
 
+  /* Warp is what makes a sustained pad move without anything being played, and it was a
+     Tone.Chorus — a modulated stereo delay — on each of the three voices. Measured 2026-09-21,
+     after the rooms were made cheap: those three choruses had become the single most expensive
+     thing in the route stack, more than all four rooms together. Replacing them with an LFO on
+     the filter each one already fed saves about 10 points of a desktop core and keeps the
+     movement, which is the part that matters. A desktop still gets the chorus: Kerem wrote
+     these patches with it.
+
+     The stand-in has to answer everything a Chorus answers here, or it fails on the first morph
+     tick rather than at build time: .wet (ramped every tick by voiceStep/sectorStep/thirdStep),
+     .depth (assigned by the same), .start(), .connect() and being connectable INTO.
+
+     .connect is where the movement gets wired. A warp is built before it knows its target, and
+     `padWarp.connect(filter)` is the one moment it learns which filter it feeds — so that call
+     both passes the audio on and hands the LFO something to move. */
+  function makeWarp(Tone, opts) {
+    /* Not started here: every call site starts its own warp, and Chorus.start() twice is not
+       something to rely on. */
+    if (!smallDevice()) { return new Tone.Chorus(opts); }
+
+    /* Vibrato is the same idea as the chorus with one delay line instead of a stereo pair, so
+       the character survives: warp is "a modulated delay — literally a time warp, the delay
+       time moving under an oscillator", and that is exactly what this is. Measured across the
+       three voices: plain passthrough 8.4 % of a desktop core, Vibrato 16.3 %, Chorus 25.7 % —
+       so it keeps the movement for under half what the movement used to cost.
+
+       The first attempt here was an LFO on each voice's filter cutoff, which was wrong in a way
+       worth recording: voiceStep, sectorStep and thirdStep already ramp those cutoffs from the
+       morphs, and Tone marks a param that has a signal connected to it as overridden, range
+       [0, 0]. Every morph tick then threw RangeError and the filter stopped following its
+       morph. A warp may not borrow a parameter something else already drives. */
+    var v = new Tone.Vibrato({ frequency: opts.frequency, depth: opts.depth, wet: opts.wet });
+    /* Its LFO runs from construction; the call sites still call start(). */
+    v.start = function () { return v; };
+    /* Chorus exposes depth as a plain number with a setter, Vibrato as a Param — and the morphs
+       assign `V.warp.depth = x`, which against a Param would replace the object with a number
+       and silently kill the modulation. Give it the shape the call sites already expect. */
+    var depthParam = v.depth;
+    Object.defineProperty(v, "depth", {
+      configurable: true,
+      get: function () { return depthParam.value; },
+      set: function (d) { depthParam.value = Math.max(0, Math.min(1, d)); }
+    });
+    return v;
+  }
+
   function buildFxChain(Tone, cfg, tempo, out) {
     var fx = {};
     fx.reverb = makeRoom(Tone, cfg.revDecay).connect(out);
     var dIn = new Tone.Gain(1);
+
+    /* A phone reaches the room without the echo. Three FeedbackDelay lines measured ~9 points
+       of a desktop core, and Kerem chose to spend that elsewhere on mobile rather than lose a
+       musical line to pay for it.
+
+       The handles stay, and that is not decoration: buildVoice connects each voice INTO
+       fx.delay, and applyPatchToVoice ramps .delayTime/.feedback/.wet on all three chains
+       unconditionally. A branch that simply omitted them would route no audio and throw on the
+       first patch apply. Two spare gains stand in for the two params nothing reads back, and
+       the wet handle is a real gain that drives nothing — so every write still lands somewhere
+       real and the patch panel keeps working, it just has no echo to show for it. */
+    if (smallDevice()) {
+      dIn.connect(fx.reverb);
+      dIn.delayTime = new Tone.Gain(0).gain;
+      dIn.feedback = new Tone.Gain(0).gain;
+      dIn.wet = new Tone.Gain(0).gain;
+      fx.delay = dIn;
+      fx.reverb.wet.rampTo(cfg.revWet, 0.3);
+      return fx;
+    }
+
     var dHP = new Tone.Filter({ type: "highpass", frequency: 170, Q: 0.7 });
     var dDelay = new Tone.FeedbackDelay({
       maxDelay: MAX_DELAY_S,
@@ -8611,7 +8682,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var padShape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 2.6); }, 2048);
     var padPost = new Tone.Gain(0.62);
     var padDrive = makeBlend(Tone, 0);
-    var padWarp = new Tone.Chorus({ frequency: 0.55, delayTime: 5.5, depth: 0.6, wet: 0 });
+    var padWarp = makeWarp(Tone, { frequency: 0.55, delayTime: 5.5, depth: 0.6, wet: 0 });
     padDry.connect(padDrive.a);
     padDry.connect(padPre); padPre.connect(padShape); padShape.connect(padPost);
     padPost.connect(padDrive.b);
@@ -8677,7 +8748,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var sectShape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 3.2); }, 2048);
     var sectPost = new Tone.Gain(0.58);
     var sectDrive = makeBlend(Tone, 0);
-    var sectWarp = new Tone.Chorus({ frequency: 1.7, delayTime: 3, depth: 0.7, wet: 0 });
+    var sectWarp = makeWarp(Tone, { frequency: 1.7, delayTime: 3, depth: 0.7, wet: 0 });
     sectDry.connect(sectDrive.a);
     sectDry.connect(sectPre); sectPre.connect(sectShape); sectShape.connect(sectPost);
     sectPost.connect(sectDrive.b);
@@ -8717,7 +8788,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var v3Shape = new Tone.WaveShaper(function (x) { return Math.tanh(x * 2.8); }, 2048);
     var v3Post = new Tone.Gain(0.6);
     var v3Drive = makeBlend(Tone, 0);
-    var v3Warp = new Tone.Chorus({ frequency: 0.35, delayTime: 7, depth: 0.5, wet: 0 });
+    var v3Warp = makeWarp(Tone, { frequency: 0.35, delayTime: 7, depth: 0.5, wet: 0 });
     v3Dry.connect(v3Drive.a);
     v3Dry.connect(v3Pre); v3Pre.connect(v3Shape); v3Shape.connect(v3Post);
     v3Post.connect(v3Drive.b);

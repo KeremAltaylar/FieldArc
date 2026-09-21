@@ -33,11 +33,14 @@ function src(name) {
 
 /* ---- The output buffer ---- */
 
-test("the context asks for playback latency, not interactive", () => {
+/* Began as latencyHint "playback"; became an explicit 50 ms once Kerem heard what Android picks
+   for "playback" as latency. tests/mobile-budget.test.mjs owns the number itself. */
+test("the context asks for more buffer than Tone's default", () => {
   const fn = src("tuneToneContext");
-  assert.match(fn, /latencyHint: "playback"/,
-    'Tone defaults to "interactive" — the smallest buffer Android will hand out. Nothing here ' +
+  assert.ok(!/latencyHint: "interactive"/.test(fn),
+    'Tone\'s default is "interactive" — the smallest buffer Android will hand out. Nothing here ' +
     "is played by hand, so that latency buys nothing and costs glitch headroom");
+  assert.match(fn, /latencyHint: 0\.05/);
   assert.match(fn, /Tone\.setContext/);
   assert.match(fn, /try \{/, "an older Tone, or a context that cannot be replaced, must not break sound");
   /* Both paths through loadTone: the cached window.Tone and the freshly injected script. */
