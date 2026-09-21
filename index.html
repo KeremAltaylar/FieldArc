@@ -3714,7 +3714,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     document.body.classList.toggle("world", on);
     if (on) { fetchWorld(); }
     map.getSource("features").setData({ type: "FeatureCollection", features: visible() });
-    if (on) { worldStart(); } else if (pacer && pacer.world) { worldStop(); }
+    if (on) {
+      worldStart();
+    } else {
+      if (pacer && pacer.world) { worldStop(); }
+      /* I3: a world walk hands the map's boundary (and sect.frame, the ring the sections are
+         cut from) to whichever park the walker is standing in — worldMove's own place-change
+         block, never touching the module-level `place` the picker still shows as selected. Leave
+         open world with the walker somewhere in park B, and without this the app is left showing
+         park B's boundary while everything else (the picker, the place name, an offline download)
+         still says park A — and the NEXT route walk in park A cuts its sections out of park B's
+         ring: wrong sector polygons, a wrong chord. setPlaceFrame(place) restores the selected
+         park's own boundary and re-cuts sect.frame from it, the same as a fresh setPlace would. */
+      if (place) { setPlaceFrame(place); }
+    }
     renderPlaceList();
     renderList();
   }
