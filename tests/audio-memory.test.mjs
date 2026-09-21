@@ -77,7 +77,10 @@ test("the engine scales an Int16 source back to ±1 and leaves a float source al
 
 /* A phone cannot hold four of these at once; the tab is killed and the archive looks emptied. */
 test("the voice budget lowers the patch's number on a small device, never raises it", () => {
-  const fn = src("voiceBudget");
+  /* The "can this device pay?" question moved into smallDevice() on 2026-09-21, so the rooms
+     could ask it too (tests/android-audio.test.mjs) rather than voiceBudget keeping a second
+     copy. Both are loaded here, so this still exercises the real derivation end to end. */
+  const fn = src("smallDevice") + src("voiceBudget");
   const budget = new Function("navigator", "window", "screen", fn + "; return voiceBudget;");
   const desktop = budget({ deviceMemory: 16 }, { matchMedia: () => ({ matches: false }) }, { width: 2560, height: 1440 });
   const phone = budget({ deviceMemory: 4 }, { matchMedia: () => ({ matches: true }) }, { width: 390, height: 844 });
@@ -89,8 +92,10 @@ test("the voice budget lowers the patch's number on a small device, never raises
   assert.equal(desktop(8), 8);
 });
 
+/* Disposal moved out of bedStop into bedTeardown on 2026-09-21, when Stop became a 1.5s fade
+   that has to keep sounding before anything is disposed. */
 test("disposal tolerates a voice that never needed a player", () => {
-  assert.match(src("bedStop"), /if \(v\.player\) \{ v\.player\.stop\(\); v\.player\.dispose\(\); \}/);
+  assert.match(src("bedTeardown"), /if \(v\.player\) \{ v\.player\.stop\(\); v\.player\.dispose\(\); \}/);
 });
 
 /* The subtle half, and the one my first attempt got wrong: supabase-js does not reject when the

@@ -48,8 +48,13 @@ test("no corner at either end of the band", () => {
 test("the level is applied as a ramp on the one gain the whole walk plays through", () => {
   assert.match(src("setWalkLevel"), /bed\.walk\.gain\.rampTo\(level, WALK_FADE\)/,
     "a step on a gain is a click");
-  assert.match(html, /var walk = new Tone\.Gain\(1\)\.connect\(limiter\);/);
-  assert.match(html, /master: walk,\s*\n?\s*walk: walk, synth: synth, limiter: limiter/,
+  /* The Sound toggle's fade was given its own node on 2026-09-21 and sits between walk and the
+     limiter, so the two fades multiply instead of overwriting one another — a listener walking
+     back onto the route mid-fade would otherwise cancel the bloom. walk is still the ONE gain
+     setWalkLevel ramps, which is what this test is really about. */
+  assert.match(html, /var walk = new Tone\.Gain\(1\)\.connect\(fade\);/);
+  assert.match(html, /var fade = new Tone\.Gain\(0\)\.connect\(limiter\);/);
+  assert.match(html, /master: walk,\s*\n?\s*walk: walk, synth: synth, fade: fade/,
     "everything that connects to the master now passes through it");
 });
 

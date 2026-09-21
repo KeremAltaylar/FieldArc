@@ -7659,13 +7659,34 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   var bed = null;
   var TONE_URL = "https://unpkg.com/tone@15/build/Tone.js";
 
+  /* Tone's default is latencyHint "interactive", which asks the platform for the smallest
+     output buffer it will give — 10 ms here, and on Android Chrome a buffer that a mid-range
+     core cannot fill in time once the route stack and two stretch worklets are running. Kerem,
+     2026-09-21: "Android Chrome is terrible, full of glitches."
+
+     Nothing in Fieldscape is played by hand. The walk is a soundscape: a zone speaks when you
+     enter it, the pad follows the chord, and nobody is waiting on a key press. So the latency
+     that "interactive" buys is worth nothing here, and the headroom that "playback" buys
+     instead is worth a great deal. It changes no sound at all.
+
+     Once, and before a single node exists: replacing the context afterwards would orphan every
+     node already built on the old one. */
+  function tuneToneContext(Tone) {
+    if (tuneToneContext.done) { return Tone; }
+    tuneToneContext.done = true;
+    try {
+      Tone.setContext(new Tone.Context({ latencyHint: "playback" }));
+    } catch (e) { /* an older Tone, or a context that refuses to be replaced: keep the default */ }
+    return Tone;
+  }
+
   function loadTone() {
-    if (window.Tone) { return Promise.resolve(window.Tone); }
+    if (window.Tone) { return Promise.resolve(tuneToneContext(window.Tone)); }
     if (loadTone.p) { return loadTone.p; }
     loadTone.p = new Promise(function (res, rej) {
       var s = document.createElement("script");
       s.src = TONE_URL;
-      s.onload = function () { res(window.Tone); };
+      s.onload = function () { res(tuneToneContext(window.Tone)); };
       s.onerror = function () { rej(new Error("Tone.js could not be loaded")); };
       document.head.appendChild(s);
     });
@@ -7674,6 +7695,43 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   var BED = { radius: 140, maxVoices: 4, gain: 0.9, fade: 0.35 };
 
+  /* The Sound toggle's own fade, Kerem's choice of length (2026-09-21): a slow bloom, so
+     switching sound on reads as the place arriving rather than as a switch being thrown.
+     Stop is quicker than start but still a fade, and the button admits the press immediately —
+     only the audio takes its time. */
+  var SOUND_FADE_IN = 2;
+  var SOUND_FADE_OUT = 1.5;
+
+  /* The Sound fade schedules its own automation rather than calling Param.rampTo, for two
+     reasons — neither of them "rampTo is broken". (It is not: for a gain param rampTo IS a
+     linear ramp that arrives on time. Only frequency, bpm and decibels params get the
+     exponential approach. An earlier version of this comment claimed otherwise, on the strength
+     of a measurement taken in an automated browser whose AudioContext clock runs at a fifth of
+     real time — the reading was an artifact of the harness, not of Tone.)
+
+     1. An interrupted fade has to restart from where it actually got to. Stop pressed halfway
+        through the bloom, or Sound pressed halfway through the fade out, is a real thing a
+        thumb does; cancelScheduledValues plus setValueAtTime pins the curve to the value now
+        instead of letting a pending ramp keep pulling toward its old target.
+     2. The fade out ends in true silence (A-3): exponential to a floor, then pinned to zero,
+        because exponentialRampToValueAtTime cannot reach zero on its own. A linear fade to
+        nothing is the one shape a release should not have.
+
+     In stays linear: a soundscape arriving over two seconds should arrive evenly, where an
+     exponential rise sits at nothing for most of the fade and then lunges. */
+  function fadeSound(param, to, seconds) {
+    var now = bed.Tone.getContext().currentTime;
+    var from = Math.max(0.0001, param.value);
+    param.cancelScheduledValues(now);
+    param.setValueAtTime(from, now);
+    if (to > 0) {
+      param.linearRampToValueAtTime(to, now + seconds);
+    } else {
+      param.exponentialRampToValueAtTime(0.0001, now + seconds);
+      param.setValueAtTime(0, now + seconds);
+    }
+  }
+
   /* A soundscape voice holds its whole recording for as long as it plays — 73 MB for Kerem's
      6m40s stereo one, after the Int16 change, and the engine cannot stream what PaulXStretch
      reads out of order. Four at once is unremarkable on a desktop and is how a phone runs out
@@ -7681,37 +7739,62 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      exactly what Kerem saw in Koşuyolu on 2026-09-21. The patch's own number stays the ceiling;
      this only lowers it on a device that cannot pay. deviceMemory is absent on iOS, so a coarse
      pointer on a small screen counts as a phone too. */
-  function voiceBudget(n) {
+  /* "Can this device pay for the heavy things?" — asked by the voice budget and by the rooms,
+     so it lives in one place rather than being re-derived at each. deviceMemory is absent on
+     iOS, so a coarse pointer on a small screen counts as a phone too. */
+  function smallDevice() {
     var mem = navigator.deviceMemory;
-    var small = (mem !== undefined && mem <= 4) ||
+    return (mem !== undefined && mem <= 4) ||
       (window.matchMedia && window.matchMedia("(pointer: coarse)").matches &&
        Math.min(screen.width, screen.height) <= 500);
-    return small ? Math.min(n, 2) : n;
   }
 
+  function voiceBudget(n) {
+    return smallDevice() ? Math.min(n, 2) : n;
+  }
+
+  /* Stopping is two moments, not one. First the whole walk fades — and it has to keep sounding
+     while it does, which is why nothing here is torn down yet; bed.on going false is enough to
+     stop anything NEW spinning up (updateBed returns on it). Then, once the fade has run,
+     bedTeardown disposes what was playing.
+
+     The old code ramped each voice to 0 over 0.2s and disposed at 300ms, which would cut the
+     tail 1.3s before the master fade finished — so the per-voice ramps are gone and the fade
+     carries the whole thing down. */
   function bedStop() {
     wantSound = false;
     if (!bed) { return; }
+    bed.on = false;
+    $("#patch-play").textContent = "Sound";
+    $("#patch-play").setAttribute("aria-pressed", "false");
+    clearTimeout(bed.fadeTimer);
+    try { fadeSound(bed.fade.gain, 0, SOUND_FADE_OUT); } catch (e) { /* no graph yet */ }
+    bed.fadeTimer = setTimeout(bedTeardown, SOUND_FADE_OUT * 1000 + 80);
+  }
+
+  function bedTeardown() {
+    /* Sound came back on inside the fade: this teardown belongs to a stop that was undone. */
+    if (!bed || bed.on) { return; }
+    /* Disposed outright, with no further wait: the fade has already run and everything here is
+       silent by now. The 300 ms this used to sit behind existed to let a 0.2 s per-voice ramp
+       finish, and that ramp is gone. */
     Object.keys(bed.voices).forEach(function (id) {
       var v = bed.voices[id];
-      try { v.gain.gain.rampTo(0, 0.2); } catch (e) { /* ignore */ }
-      setTimeout(function () {
-        /* A voice only has a player if its engine failed — see dryFallback in ensureVoice. */
-        try { if (v.player) { v.player.stop(); v.player.dispose(); } } catch (e) {}
-        try {
-          if (v.stretch && v.stretch.node) { v.stretch.node.disconnect(); }
-          if (v.stretchBlend) { v.stretchBlend.dispose(); }
-        } catch (e) {}
-        try {
-          if (v.grit) {
-            [v.grit.input, v.grit.crush, v.grit.shape, v.grit.blend].forEach(function (n) {
-              try { n.dispose(); } catch (e) {}
-            });
-          }
-        } catch (e) {}
-        try { v.filter.dispose(); v.gain.dispose(); } catch (e) {}
-        if (v.url) { URL.revokeObjectURL(v.url); }
-      }, 300);
+      /* A voice only has a player if its engine failed — see dryFallback in ensureVoice. */
+      try { if (v.player) { v.player.stop(); v.player.dispose(); } } catch (e) {}
+      try {
+        if (v.stretch && v.stretch.node) { v.stretch.node.disconnect(); }
+        if (v.stretchBlend) { v.stretchBlend.dispose(); }
+      } catch (e) {}
+      try {
+        if (v.grit) {
+          [v.grit.input, v.grit.crush, v.grit.shape, v.grit.blend].forEach(function (n) {
+            try { n.dispose(); } catch (e) {}
+          });
+        }
+      } catch (e) {}
+      try { v.filter.dispose(); v.gain.dispose(); } catch (e) {}
+      if (v.url) { URL.revokeObjectURL(v.url); }
     });
     bed.voices = {};
     Object.keys(bed.rhythms || {}).forEach(function (id) { disposeRhythm(id); });
@@ -7737,8 +7820,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     harmony.last = { bass: null, top: null };
     counter.last = null; counter.restRun = 0; counter.tick = 0;
     third.last = null; third.tick = 0;
-    $("#patch-play").textContent = "Sound";
-    $("#patch-play").setAttribute("aria-pressed", "false");
+    /* The button already said Sound the moment Stop was pressed — a control that waits 1.5s to
+       admit it was pressed is a broken control, whatever the audio is doing. bedStop owns it. */
   }
 
   function bedStart() {
@@ -7750,16 +7833,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var limiter = new Tone.Limiter(-1).toDestination();
           var meter = new Tone.Meter();
           limiter.connect(meter);
+          /* The Sound toggle's own fade, and nothing else's. It has to be its own node because
+             bed.walk already belongs to the GPS walk fade (setWalkLevel ramps it every time the
+             walker drifts off the route) — one node with two writers means the last ramp to
+             fire wins, and a listener walking back onto the route mid-fade would cancel it.
+             Two nodes in series multiply instead, which is what "both fades apply" means.
+             Starts at 0: pressing Sound blooms rather than switches. */
+          var fade = new Tone.Gain(0).connect(limiter);
           /* Everything the walk plays meets here before the limiter, so straying off the route
              fades the whole piece with one ramp rather than each voice arguing with its own
              proximity curve. At 1 it is not audible in the signal path at all. */
-          var walk = new Tone.Gain(1).connect(limiter);
+          var walk = new Tone.Gain(1).connect(fade);
           /* The route's own voices meet here, so the route card's mute and solo have one place
              to act — the points keep their own gains, which is what makes them separate
              sources in the mixer. */
           var synth = new Tone.Gain(1).connect(walk);
           bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: walk,
-                  walk: walk, synth: synth, limiter: limiter, meter: meter, Tone: Tone };
+                  walk: walk, synth: synth, fade: fade, fadeTimer: null,
+                  limiter: limiter, meter: meter, Tone: Tone };
           /* synth was just built at Gain(1) — in open world that is wrong the instant the
              route is further than GPS_FADE_FROM away. Give it the level the walker's distance
              already earned instead of leaving it full until the next worldMove tick happens to
@@ -7822,6 +7913,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           }, 5);
         }
         Tone.Transport.start();
+        /* A teardown may still be pending from a Stop less than SOUND_FADE_OUT ago — pressing
+           Sound again inside the fade must come back up on the graph that is still there,
+           not have it disposed out from under it a moment later. bedTeardown also stands down
+           on its own when it finds bed.on true, so this is belt and braces. */
+        clearTimeout(bed.fadeTimer);
+        bed.fadeTimer = null;
+        fadeSound(bed.fade.gain, 1, SOUND_FADE_IN);
         $("#patch-play").textContent = "Stop";
         $("#patch-play").setAttribute("aria-pressed", "true");
         updateBed();
@@ -7842,9 +7940,33 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      high-passed copy feeds the delay and returns through a send gain. Low frequencies never
      enter the repeats, which is what stops a sustained low root ringing up, and the dry
      signal keeps its bottom end. */
+  /* A room's size from a patch's decay, for the rooms that have no decay to set. Freeverb's
+     roomSize is a 0..1 feedback amount, not a time, and it runs away above ~0.95 — so the
+     patch's seconds are mapped onto the usable part of that range and clamped at both ends.
+     0.4s -> 0.47, 3.4s -> 0.66, 7.6s -> 0.92: the same ordering the decays had. */
+  function roomSize(decay) {
+    return Math.max(0, Math.min(0.95, 0.45 + (decay || 0) * 0.062));
+  }
+
+  /* Measured 2026-09-21, rendering each offline and timing it: three Tone.Reverb convolvers
+     cost 60.9 % of realtime on a desktop and 351 ms of impulse generation, against 9.0 % and
+     nothing for three Freeverbs — while the FM synths, waveshapers and choruses this whole
+     stack exists for come to 6.6 %. The convolvers were about 90 % of the route stack. Decay
+     length barely moved the number, so it is the count of convolvers that costs, not the tails.
+
+     A desktop keeps its convolution: Kerem wrote these patches in those rooms. A phone gets an
+     algorithmic room of the same size instead, which is the difference between a walk that
+     sounds slightly less like a real space and one that glitches the whole way. */
+  function makeRoom(Tone, decay) {
+    if (smallDevice()) {
+      return new Tone.Freeverb({ roomSize: roomSize(decay), dampening: 3000, wet: 0 });
+    }
+    return new Tone.Reverb({ decay: decay, wet: 0 });
+  }
+
   function buildFxChain(Tone, cfg, tempo, out) {
     var fx = {};
-    fx.reverb = new Tone.Reverb({ decay: cfg.revDecay, wet: 0 }).connect(out);
+    fx.reverb = makeRoom(Tone, cfg.revDecay).connect(out);
     var dIn = new Tone.Gain(1);
     var dHP = new Tone.Filter({ type: "highpass", frequency: 170, Q: 0.7 });
     var dDelay = new Tone.FeedbackDelay({
@@ -9546,7 +9668,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      Built once with the bed and kept — nothing here is torn down while it runs (A-16). */
   function buildRhythmFx(Tone, patch) {
     var out = new Tone.Gain(1).connect(bed.master);
-    var rv = new Tone.Reverb({ decay: patch.rfx.revDecay, wet: 0 }).connect(out);
+    /* The rhythm's own room is the fourth convolver on the walk, and counts exactly as much as
+       the other three — see makeRoom. */
+    var rv = makeRoom(Tone, patch.rfx.revDecay).connect(out);
     /* A send again, and a high-passed one, for the same reason the synth delay is: repeats
        of a kick accumulate into a rumble otherwise. */
     var din = new Tone.Gain(1);
@@ -11748,6 +11872,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function applyDecayTo(rv, want) {
+    /* An algorithmic room (a phone's — see makeRoom) has no impulse to render, so its size is
+       just a number to set: no fade out, no regenerate, no 120 ms stall in the middle of a
+       walk. Everything below this line exists only because a convolver cannot change its decay
+       without building a new impulse first. */
+    if (typeof rv.generate !== "function") {
+      try { rv.roomSize.value = roomSize(want); } catch (e) { /* not a room we know */ }
+      return;
+    }
     if (Math.abs(rv.decay - want) < 0.05) { return; }
     rv.__want = want;
     if (rv.__busy) { return; }

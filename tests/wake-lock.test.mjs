@@ -53,9 +53,13 @@ test("bedStart requests the wake lock once it actually starts building the graph
     "must request after the early-return, not before — a cancelled start must not hold the lock");
 });
 
-test("bedStop releases the wake lock through the shared shouldn't-outlive-other-reasons check", () => {
-  const src = slice("function bedStop()", "\n  }\n");
+/* The release moved into bedTeardown on 2026-09-21, and that is the right side of the split:
+   Stop now fades for 1.5s and the screen must stay awake until the walk is actually silent. */
+test("the teardown releases the wake lock through the shared shouldn't-outlive-other-reasons check", () => {
+  const src = slice("function bedTeardown()", "\n  }\n");
   assert.match(src, /bed\.on = false;\s*\n\s*releaseAwakeIfUnneeded\(\)/);
+  assert.doesNotMatch(slice("function bedStop()", "\n  }\n"), /releaseAwakeIfUnneeded\(\)/,
+    "releasing it the instant Stop is pressed could let the screen sleep mid-fade");
 });
 
 test("stopTrack and gpsSet(false) both route through releaseAwakeIfUnneeded rather than a bare keepAwake(false)", () => {

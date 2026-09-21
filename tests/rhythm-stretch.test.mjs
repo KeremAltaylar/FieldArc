@@ -359,8 +359,10 @@ test("bedStart schedules warpStep on the Transport, never a UI callback, only on
   assert.match(src, /bed\.warpLoop = Tone\.Transport\.scheduleRepeat\(warpStep,/);
 });
 
-test("bedStop disposes every grit-chain node, each in its own guarded segment", () => {
-  const src = slice("function bedStop()", "\n  }\n");
+/* Disposal moved into bedTeardown on 2026-09-21: Stop is a 1.5s fade now, and nothing may be
+   disposed until it has finished sounding. */
+test("bedTeardown disposes every grit-chain node, each in its own guarded segment", () => {
+  const src = slice("function bedTeardown()", "\n  }\n");
   assert.match(src, /v\.grit\.input,\s*v\.grit\.crush,\s*v\.grit\.shape,\s*v\.grit\.blend/);
 });
 
