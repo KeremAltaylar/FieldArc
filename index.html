@@ -2501,7 +2501,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var SETTER_ONLY = ["#mode-section", ".modes", "#mode-icons", "#f-name", "#f-note", "#g-type", "#f-tags",
       ".recmode", "#rec-add", "#rec-remove", ".chips", "#f-delete", "#f-patch", "#f-rhythm",
       "#hitgrid", "#storage > .actions", "#undo", "#publishbar", "#audit", "#photo-add",
-      ".rowdel", "#place-list", "#place-list-label"];
+      ".rowdel", "#place-list", "#place-list-label", "#f-attach"];
     var show = setter.signedIn;
     SETTER_ONLY.forEach(function (sel) {
       document.querySelectorAll(sel).forEach(function (el) { el.hidden = !show; });
@@ -7103,10 +7103,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var pr = projectToRoute(pacer.m, [+pos.coords.longitude.toFixed(6),
                                       +pos.coords.latitude.toFixed(6)]);
     /* In open world the fade belongs to the synths — a free point beside you must still sound
-       when no route is anywhere near. In place mode the whole walk fades, as shipped. */
-    if (!(pacer && pacer.world)) {
-      setWalkLevel(walkLevel(pr.dist, GPS_FADE_FROM, GPS_LEASH));
-    }
+       when no route is anywhere near. In place mode the whole walk fades, as shipped. No
+       `pacer.world` guard needed here: the world case already returned two lines up, so
+       reaching this point means place mode unconditionally. */
+    setWalkLevel(walkLevel(pr.dist, GPS_FADE_FROM, GPS_LEASH));
     /* Past the leash the walker still holds rather than jumping (A-15) — it is only the level
        that has reached zero, and walking back fades it in again through the same curve. */
     if (pr.dist > GPS_LEASH) { gps.held = fmtLen(pr.dist) + " off"; pacerReadout(); return; }
@@ -7303,10 +7303,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
               zones: [], log: [], patch: defaultPatch() };
     /* The place-wide sections are cut from the place's own boundary, not from any one route's
        box — unlike pacerStart, which always has a route's m to fall back to if the place frame
-       is not ready yet, a world walk only ever starts after setPlace has already run once (it
-       runs, then applyWorld runs, on both first load and every place switch), so sect.frame is
-       always set by the time this can be reached. Passing null for m is safe only because of
-       that ordering — sectorGeometry only touches m when sect.frame is missing. */
+       is not ready yet, a world walk only ever starts after setPlace has already run once: on
+       first load (loadPlaces calls setPlace(p, true), then applyWorld) and on the world switch
+       being turned on (its click handler calls applyWorld directly) — not on every place switch;
+       picking a different park from the picker calls setPlace() alone and never touches
+       applyWorld. Either way sect.frame is always set by the time this can be reached. Passing
+       null for m is safe only because of that ordering — sectorGeometry only touches m when
+       sect.frame is missing. */
     if (sect.frame && sect.frame.length > 2) { sectorGeometry(null, pacer.patch.sect.n); }
     sect.idx = null;
     BED.maxVoices = pacer.patch.bed.voices;

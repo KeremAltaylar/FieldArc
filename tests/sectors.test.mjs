@@ -74,9 +74,6 @@ test("the whole place is divided, not a box around the route, and a new place re
 test("the park under the walker is found from the catalogue, and nothing outside one", () => {
   const placeAt = new Function("places",
     src("pointInRing") + src("placeAt") + "; return placeAt;")(places.features);
-  const valide = places.features.find((p) => p.properties.id === "W153690111");
-  const inside = valide.geometry.type === "Polygon"
-    ? valide.geometry.coordinates[0][0] : valide.geometry.coordinates[0][0][0];
   /* A point far out in the Black Sea belongs to no park. [28.5, 40.5], the brief's own choice,
      turned out to lie inside R19349776 (Marmara Denizi ve Adalar Özel Çevre Koruma Bölgesi, a
      12,231 km² catalogue entry covering the whole Marmara Sea and its islands) — confirmed by
