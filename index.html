@@ -2072,14 +2072,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     if (raw) { fc = JSON.parse(raw); }
   } catch (e) { /* private mode or corrupt payload — start empty rather than break */ }
 
-  /* Features recorded before places existed belong to Belgrad. Assign once, never guess again.
-     Keyed on the ABSENCE of the property, not its falsiness: a legacy feature has no `place` key
-     at all, but a free point marked in open world carries `place: null` deliberately, and null
-     is falsy. A `!f.properties.place` check would silently adopt that free point into Belgrad on
-     every reload, which is exactly the bug this comment exists to prevent recurring — do not
-     "simplify" this back to a truthiness check. */
+  /* A feature's place can be unset three different ways, and only two of them mean "nobody has
+     said" — the one this fallback exists to fix. Key absent: a feature recorded before places
+     existed, or written by code that never set the field. Empty string: some external tool
+     (a foreign .geojson export, hand-edited data) wrote nothing rather than omitting the key —
+     the same "nobody has said" as a missing key, just spelled differently. Explicit null: a free
+     point, marked deliberately in open world to belong to no park — this one must survive every
+     reload untouched, or the whole free-point feature silently undoes itself. Do not "simplify"
+     this back to a bare `!f.properties.place` truthiness check — that coerces null the same as
+     the other two and re-annexes every free point into Belgrad on its next load. */
+  function placeUnset(f) {
+    return !("place" in f.properties) || f.properties.place === "";
+  }
+
+  /* Features recorded before places existed belong to Belgrad. Assign once, never guess again. */
   fc.features.forEach(function (f) {
-    if (!("place" in f.properties)) { f.properties.place = DEFAULT_PLACE; }
+    if (placeUnset(f)) { f.properties.place = DEFAULT_PLACE; }
   });
 
   /* The map and the archive list show one place at a time; `fc` keeps them all. */
@@ -12630,10 +12638,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           f.properties = f.properties || {};
           if (!f.properties.id) { f.properties.id = uid(); }
           if (!f.properties.kind) { f.properties.kind = f.geometry.type === "Point" ? "point" : "route"; }
-          /* Same rule as the load-time normalisation above: absence of the key gets the
-             fallback, an explicit `place: null` (a free point in someone else's export) is
-             respected as-is. */
-          if (!("place" in f.properties)) { f.properties.place = place ? place.properties.id : DEFAULT_PLACE; }
+          /* Same three-way rule as placeUnset() above (key absent or empty string both mean
+             "nobody has said" and get the fallback; an explicit `place: null` — a free point in
+             someone else's export — is respected as-is). */
+          if (placeUnset(f)) { f.properties.place = place ? place.properties.id : DEFAULT_PLACE; }
           fc.features.push(f);
         });
         report.push(feats.length + " feature(s)");
