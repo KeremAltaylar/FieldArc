@@ -7064,8 +7064,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     gpsSet(false);             /* while the marker still exists to hand dragging back to */
     pacer.marker.remove();
     /* A route handover in flight belongs to the walk that scheduled it — not to whatever
-       starts next, whether that is silence or a fresh walk with its own routeId. */
+       starts next, whether that is silence or a fresh walk with its own routeId. Clearing
+       pendingSwapId too: without it, a stale id could make a legitimate swap on the next walk
+       look like a repeat of one that never actually landed, and get silently skipped. */
     clearTimeout(worldSwapTimer);
+    pendingSwapId = null;
     pacer = null;
     window.__fa.pacer = null;
     drawProgSegments();
@@ -7255,6 +7258,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   var WORLD_SWAP = 1.5;      /* seconds — a change of key is a transition, not a jump cut */
   var worldSwapTimer = null;
+  /* The route a scheduled swap is headed toward. worldMove calls worldSwap on every tick where
+     near.id !== pacer.routeId — and pacer.routeId is only written inside take(), so that stays
+     true on EVERY tick for the whole 1.5s the swap is pending, not just the one that started it.
+     Without this, each re-entry would clearTimeout + setTimeout again, re-arming the full 1.5s
+     from now; under continuous motion (marker drag fires on pointermove, GPS fixes can arrive
+     under a second apart) ticks land faster than the timer can elapse, take() never runs, and
+     setSynthLevel(0) at the top of every re-entry is the only thing left touching the gain —
+     silent indefinitely. Tracking the target lets a repeat call for the same target be a no-op
+     that leaves the running timer alone, while a call for a DIFFERENT target (the walker changed
+     course again before the first swap landed) still cancels and re-arms, so a swap always
+     retargets to wherever the walker is actually headed rather than stubbornly completing to
+     wherever it first aimed. */
+  var pendingSwapId = null;
 
   /* The synth stage's own level. Multiplied by the mixer, so muting the route on its card still
      means muted while a swap or a fade is running. */
@@ -7267,21 +7283,38 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* Crossfades the route's synth voices across a change of patch, instead of swapping the patch
      out from under a voice that is still sounding: fade the synths to nothing, only then hand
      the patch to the new route, and fade back in at whatever level the new route's own distance
-     earns. Scheduled on a timer, which leaves two ways for the swap to go stale before it lands:
-     the walk can stop or restart (pacerStop clears worldSwapTimer, and `mine` below catches
-     anything already in flight when it does — a stopped or a brand-new pacer is never `pacer`
-     any more), or the walker can cross back toward the route this swap is leaving before the
-     timer fires — worldMove will not call worldSwap again for that, because pacer.routeId still
-     names the route being left until `take` runs, so nearestRoute's own hysteresis never sees a
-     change. `take` re-asks nearestRoute the same question at fire time, from where the walker
-     actually is by then; if that is no longer near.id, the swap is dropped rather than applied
-     late to a route the walker already left again. */
+     earns. Scheduled on a timer, which leaves several ways for the swap to go stale before it
+     lands:
+     - the walk can stop or restart (pacerStop clears worldSwapTimer and pendingSwapId, and
+       `mine` below catches anything already in flight when it does — a stopped or a brand-new
+       pacer is never `pacer` any more);
+     - the walker can cross back toward the route this swap is leaving before the timer fires —
+       worldMove will not call worldSwap again for that, because pacer.routeId still names the
+       route being left until `take` runs, so nearestRoute's own hysteresis never sees a change.
+       `take` re-asks nearestRoute the same question at fire time, from where the walker actually
+       is by then; if that is no longer near.id, the swap is dropped rather than applied late to
+       a route the walker already left again;
+     - the walker can keep moving near the same still-pending target on every tick, which would
+       otherwise re-arm the timer from scratch forever (see pendingSwapId above) — handled by the
+       early return below rather than inside take().
+     wasRunning is gated on bed.synth existing, not just on pacer.routeId: worldStart's own
+     bootstrap call to worldMove runs before bed exists (Sound has not been pressed yet), and
+     that call still commits a real pacer.routeId/patch through the synchronous path below — so
+     by the time the user presses Sound, routeId is already non-null and names whichever route
+     was nearest the arbitrary bootstrap position. Without this gate, the first route change
+     after Sound would see wasRunning true and schedule a fade, even though nothing was ever
+     audible — the user's first sound of the session would be up to 1.5s of silence for no
+     reason. bed.synth existing is exactly "something has been audible before", so it is the
+     right thing to gate the fade on. */
   function worldSwap(near) {
-    var wasRunning = pacer.routeId !== null;
+    if (near.id === pendingSwapId) { return; }
+    var wasRunning = !!(bed && bed.synth) && pacer.routeId !== null;
     setSynthLevel(0);
     clearTimeout(worldSwapTimer);
+    pendingSwapId = near.id;
     var mine = pacer;
     var take = function () {
+      pendingSwapId = null;
       if (pacer !== mine || !pacer.world) { return; }
       var still = nearestRoute(worldRoutes, pacer.pos, pacer.routeId, sectorHold());
       if (!still || still.id !== near.id) { return; }
@@ -7292,7 +7325,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       sect.idx = null;
       setSynthLevel(walkLevel(still.dist, GPS_FADE_FROM, GPS_LEASH));
     };
-    /* The first route of a session needs no fade out — there is nothing playing to fade. */
+    /* The first route of a session (or any change while nothing has ever been audible) needs
+       no fade out — there is nothing playing to fade. */
     if (!wasRunning) { take(); return; }
     worldSwapTimer = setTimeout(take, WORLD_SWAP * 1000);
   }
@@ -7389,6 +7423,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           var synth = new Tone.Gain(1).connect(walk);
           bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: walk,
                   walk: walk, synth: synth, limiter: limiter, meter: meter, Tone: Tone };
+          /* synth was just built at Gain(1) — in open world that is wrong the instant the
+             route is further than GPS_FADE_FROM away. Give it the level the walker's distance
+             already earned instead of leaving it full until the next worldMove tick happens to
+             land (which, standing still, might be never). Place mode leaves this alone: the
+             whole-walk fade is bed.walk's job there, so bed.synthLevel stays undefined and
+             applyMixer's default of 1 is correct. */
+          if (pacer && pacer.world) {
+            setSynthLevel(walkLevel(pacer.routeDist, GPS_FADE_FROM, GPS_LEASH));
+          }
         }
         bed.on = true;
         window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */

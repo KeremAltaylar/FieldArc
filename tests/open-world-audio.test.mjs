@@ -167,3 +167,124 @@ test("applyMixer scales the synth stage by its own level, not just the mixer, so
   assert.match(apply,
     /bed\.synth\.gain\.rampTo\(\(bed\.synthLevel === undefined \? 1 : bed\.synthLevel\) \* mixLevel\(mixer, MIX_ROUTE\), BED\.fade\)/);
 });
+
+test("bedStart gives the synth stage the level the walker's distance already earned, instead of leaving it at Gain(1) until the next tick", () => {
+  const start = src("bedStart");
+  assert.match(start, /if \(pacer && pacer\.world\) \{\s*\n\s*setSynthLevel\(walkLevel\(pacer\.routeDist, GPS_FADE_FROM, GPS_LEASH\)\);/);
+});
+
+/* ---------------------------------------------------------------------------------------------
+   Review fixups on worldSwap. Both the Critical (the timer can re-arm forever under continuous
+   motion, deadlocking the crossfade silent) and the Important (the first audible route change
+   could see a stale wasRunning and open with a 1.5s gap instead of the no-fade path) are ordinary
+   JavaScript once setSynthLevel/worldSwap are pulled out of index.html — so these drive the real
+   functions against a fake bed/pacer/mixer and node's mock timers, rather than only checking
+   source text for the shape of the fix. */
+function buildSwapSandboxFactory() {
+  var declsStart = html.indexOf("var WORLD_SWAP = 1.5;");
+  var declsEnd = html.indexOf("function setSynthLevel(");
+  assert.ok(declsStart !== -1 && declsEnd !== -1 && declsEnd > declsStart,
+    "the WORLD_SWAP/worldSwapTimer/pendingSwapId declarations moved or were renamed");
+  var decls = html.slice(declsStart, declsEnd);
+  return new Function(
+    "pacer", "bed", "mixer", "BED", "harmony", "sect", "worldRoutes", "patchOf",
+    src("segment") + src("projectToRoute") + src("routeMetrics") + src("nearestRoute") +
+    src("walkLevel") + src("mixLevel") +
+    "var GPS_FADE_FROM = 60, GPS_LEASH = 120, MIX_ROUTE = \"route\";" +
+    src("sectorHold") + decls + src("setSynthLevel") + src("worldSwap") +
+    "; return { worldSwap: worldSwap, setSynthLevel: setSynthLevel };"
+  );
+}
+const swapFactory = buildSwapSandboxFactory();
+
+const swapLine = (coords) => ({ type: "Feature", properties: { kind: "route" },
+  geometry: { type: "LineString", coordinates: coords } });
+const rA = swapLine([[29.000, 41.000], [29.010, 41.000]]);
+const rB = swapLine([[29.000, 41.010], [29.010, 41.010]]);
+const rC = swapLine([[29.000, 41.020], [29.010, 41.020]]);
+const swapRoutes = [
+  { id: "rA", f: rA, m: nearestRoute.routeMetrics(rA) },
+  { id: "rB", f: rB, m: nearestRoute.routeMetrics(rB) },
+  { id: "rC", f: rC, m: nearestRoute.routeMetrics(rC) },
+];
+const SWAP_MARGIN = 12;   // sectorHold()'s own value with sect.width unset
+const posNear = { rA: [29.005, 41.0002], rB: [29.005, 41.0098], rC: [29.005, 41.0198] };
+const near = (id, pos, currentId) => nearestRoute.nearestRoute(swapRoutes, pos, currentId, SWAP_MARGIN);
+function fakeSynth() { const calls = []; return { gain: { calls, rampTo(v, t) { calls.push([v, t]); } } }; }
+function stubPatchOf(f) { return { bed: { voices: 4 } }; }
+
+test("Critical: continuous ticks toward the same pending target do not re-arm the swap timer", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pacer = { routeId: "rA", world: true, pos: posNear.rB };
+  const bed = { synth: fakeSynth() };
+  const sandbox = swapFactory(pacer, bed, { mute: {}, solo: {} }, { fade: 0.35, maxVoices: 4 },
+    {}, {}, swapRoutes, stubPatchOf);
+
+  const first = near("rB", posNear.rB, pacer.routeId);
+  assert.equal(first.id, "rB", "fixture sanity: rB really is nearest from posNear.rB");
+  sandbox.worldSwap(first);
+  assert.equal(bed.synth.gain.calls.length, 1, "one fade-out on the first tick");
+
+  t.mock.timers.tick(500);
+  sandbox.worldSwap(near("rB", posNear.rB, pacer.routeId));   // same target, same routeId (still rA)
+  t.mock.timers.tick(500);
+  sandbox.worldSwap(near("rB", posNear.rB, pacer.routeId));   // 1000ms elapsed since the first call
+
+  assert.equal(bed.synth.gain.calls.length, 1,
+    "repeat ticks toward the still-pending target must not call setSynthLevel(0) again");
+  assert.equal(pacer.routeId, "rA",
+    "not yet — only 1000ms of the original 1500ms window has elapsed");
+
+  t.mock.timers.tick(500);   // 1500ms total since the FIRST call
+  assert.equal(pacer.routeId, "rB",
+    "the swap landed on its original deadline — a naive re-arm on every tick would have pushed " +
+    "this past 1500ms and it would still read rA (silent the whole time)");
+});
+
+test("Critical: a target change while a swap is pending cancels it and retargets, rather than stubbornly completing to the abandoned route", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pacer = { routeId: "rA", world: true, pos: posNear.rB };
+  const bed = { synth: fakeSynth() };
+  const sandbox = swapFactory(pacer, bed, { mute: {}, solo: {} }, { fade: 0.35, maxVoices: 4 },
+    {}, {}, swapRoutes, stubPatchOf);
+
+  sandbox.worldSwap(near("rB", posNear.rB, pacer.routeId));   // -> rB pending, lands at t=1500
+  t.mock.timers.tick(700);
+
+  pacer.pos = posNear.rC;
+  const towardC = near("rC", posNear.rC, pacer.routeId);
+  assert.equal(towardC.id, "rC", "fixture sanity: rC really is nearest from posNear.rC");
+  sandbox.worldSwap(towardC);   // should cancel rB's pending swap and pend rC instead, from t=700
+
+  t.mock.timers.tick(800);   // t=1500 — rB's original, now-abandoned deadline
+  assert.equal(pacer.routeId, "rA", "rB's swap must have been cancelled, not merely delayed");
+
+  t.mock.timers.tick(700);   // t=2200 — 1500ms after the retarget to rC
+  assert.equal(pacer.routeId, "rC", "the retargeted swap to rC landed on its own deadline");
+});
+
+test("Important: a route change before bed.synth exists takes the no-fade path synchronously, and normal fades resume once it does", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pacer = { routeId: null, world: true, pos: posNear.rA };
+  /* {} rather than null: bed.synth is what wasRunning actually gates on (worldStart's own
+     bootstrap call to worldMove runs before bedStart ever constructs bed.synth). */
+  const bed = {};
+  const sandbox = swapFactory(pacer, bed, { mute: {}, solo: {} }, { fade: 0.35, maxVoices: 4 },
+    {}, {}, swapRoutes, stubPatchOf);
+
+  sandbox.worldSwap(near("rA", posNear.rA, pacer.routeId));   // the worldStart bootstrap call
+  assert.equal(pacer.routeId, "rA", "committed synchronously even though nothing is audible yet");
+
+  pacer.pos = posNear.rB;
+  sandbox.worldSwap(near("rB", posNear.rB, pacer.routeId));
+  assert.equal(pacer.routeId, "rB",
+    "still pre-Sound: still synchronous — the first real route must not open with 1.5s of silence");
+
+  bed.synth = fakeSynth();   // Sound pressed
+  pacer.pos = posNear.rC;
+  sandbox.worldSwap(near("rC", posNear.rC, pacer.routeId));
+  assert.equal(pacer.routeId, "rB", "now that bed.synth exists, the swap is deferred, not synchronous");
+
+  t.mock.timers.tick(1500);
+  assert.equal(pacer.routeId, "rC", "and lands after the full crossfade window once it does");
+});
