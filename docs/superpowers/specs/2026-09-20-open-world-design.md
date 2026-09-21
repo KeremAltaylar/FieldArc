@@ -135,3 +135,21 @@ Per `verify.md`, measured and recorded, not reasoned:
 | Points with no route near | browser: park the walker by a free point, read voice gains | the point sounds, the synth stage is silent |
 | Fit and frame | `scrollHeight - innerHeight` plus a screenshot at desktop and phone sizes | 0, and four borders |
 | Nothing regressed in Place mode | the existing suite | all green |
+
+## Measured (2026-09-21, branch `open-world` @ 06f2881)
+
+Taken in desktop Chrome against a harness carrying two synthetic routes 1.5 km apart and a free
+point 1.8 km from either, because the live archive has no free point yet. 386 unit tests pass.
+
+| Claim | Measured |
+| --- | --- |
+| Opens in Open world when the key was never set | switch `aria-pressed=true`, `body.world`, walker running with `world: true`, both routes loaded |
+| The transport is reachable in a world walk | `#pacerbar` and `#patchbar` both visible; Sound started audio (meter −28 dB) |
+| Fit | `scrollHeight − innerHeight` = 0 at 1428×729, 501×729 and 832×390 |
+| Map frame | desktop border right/bottom present (0.8 px at this DPR); 0 px on the phone layout, as intended |
+| Handover crossfade | on A: 1.000 → 0.390 → 0.000, held ≈1.5 s, patch swaps to B, 0.069 → 0.724 → 1.000 |
+| Continuous motion does not starve the swap | moved every 250 ms for 2.5 s: route became B, synth returned to 1.000 |
+| A free point with no route near | 1835 m from either route: synth 0.000, free point voice 0.900, meter −11 dB, walk gain 1.000 |
+
+Not measured: a real GPS walk (Kerem's phone), and the free-point path against the live server —
+the harness proves the client, the migration test proves the server, nothing yet proves them together.
