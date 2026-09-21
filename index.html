@@ -1566,12 +1566,39 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 }
 #loading[hidden] { display: none; }
 
+/* MapLibre's own controls arrive in white, which on a dark map reads as two bright rectangles
+   dropped in the corners — the zoom pair top right and the attribution "i" bottom right, the
+   latter sitting under the Locate button (Kerem, 2026-09-21: "there is white something in the
+   right bottom corner behind locate and right top corner in mobile"). They are dressed in the
+   app's own ground here rather than removed: the attribution is a condition of using the OSM and
+   Esri tiles, so it stays legible — it just stops shouting. */
 .maplibregl-ctrl-attrib {
   font-family: var(--font-mono);
   font-size: 10px;
   background: color-mix(in oklch, var(--sunk) 80%, transparent) !important;
 }
 .maplibregl-ctrl-attrib a { color: var(--faint); }
+.maplibregl-ctrl-attrib-button {
+  background-color: color-mix(in oklch, var(--sunk) 80%, transparent) !important;
+  /* the packaged icon is a dark glyph meant for a white chip; on our ground it needs inverting */
+  filter: invert(1) opacity(0.55);
+}
+.maplibregl-ctrl-group {
+  background: color-mix(in oklch, var(--sunk) 84%, transparent) !important;
+  border: 1px solid var(--bdr);
+  box-shadow: none !important;
+}
+.maplibregl-ctrl-group button + button { border-top: 1px solid var(--bdr); }
+.maplibregl-ctrl-group button span { filter: invert(1) opacity(0.7); }
+/* The scale bar ships at 75% white — this was the pale rectangle sitting under the Locate
+   button, and the one Kerem actually meant by "white something in the right bottom corner". */
+.maplibregl-ctrl-scale {
+  background: color-mix(in oklch, var(--sunk) 80%, transparent) !important;
+  border-color: var(--bdr) !important;
+  color: var(--faint) !important;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
 
 @media (prefers-reduced-motion: reduce) {
   * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
@@ -1660,6 +1687,22 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   .modes button { padding: var(--s-3) var(--s-2); }          /* M-4: thumb-sized */
 
   #markbar { bottom: calc(var(--peek, 8rem) + var(--s-3)); right: var(--s-3); }
+
+  /* The walker's readout and the sound toggles sit in the middle of the screen's width, with the
+     same air on both sides, instead of hugging the left edge as they do beside a desktop panel
+     (Kerem, 2026-09-21: "the bar starts with along ... can be centered to the sides"). */
+  #pacerbar, #patchbar {
+    left: var(--s-3); right: var(--s-3);
+  }
+  #pacerbar { text-align: center; }
+  #patchbar { justify-content: center; flex-wrap: wrap; row-gap: var(--s-1); }
+
+  /* Pinch is the zoom on a phone, and these two buttons were the bright rectangle in the top
+     right. The attribution stays — it is a condition of the tiles — now in the app's own ground. */
+  .maplibregl-ctrl-top-right .maplibregl-ctrl-group { display: none; }
+  /* And the scale bar goes: on a phone it lands directly under the Locate button, where it can
+     only read as a smudge behind it. The readout above already says where you are. */
+  .maplibregl-ctrl-scale { display: none; }
 }
 </style>
 </head>

@@ -68,3 +68,43 @@ test("the map is framed on all four sides on a desktop, and on none on a phone",
   assert.ok(phone.startsWith("#app { padding: 0; }"), "the phone layout drops the bands");
   assert.match(phone.slice(0, 200), /#map \{ grid-row: 2; grid-column: 1; border-right: 0; border-bottom: 0; \}/);
 });
+
+/* Kerem, 2026-09-21: "there is white something in the right bottom corner behind locate and right
+   top corner in mobile". MapLibre's own controls ship white: the zoom pair, the attribution "i",
+   and — the one actually behind Locate — the scale bar at 75 % white. */
+test("no MapLibre control is left in its packaged white", () => {
+  for (const sel of [".maplibregl-ctrl-attrib", ".maplibregl-ctrl-attrib-button",
+                     ".maplibregl-ctrl-group", ".maplibregl-ctrl-scale"]) {
+    const at = html.indexOf(sel + " {");
+    assert.ok(at !== -1, "no rule dressing " + sel);
+    const body = html.slice(at, html.indexOf("}", at));
+    assert.match(body, /var\(--sunk\)|var\(--bdr\)|invert\(1\)/,
+      sel + " must be drawn in the app's own ground");
+  }
+  /* The attribution itself stays: it is a condition of the OSM and Esri tiles. */
+  assert.ok(!/\.maplibregl-ctrl-attrib \{[^}]*display: none/.test(html),
+    "the attribution is never hidden, only dressed");
+});
+
+test("a phone drops the zoom buttons and the scale bar, and centres the two map bars", () => {
+  /* Several blocks share that media condition, so each rule is found on its own and checked
+     against the @media that actually governs it — the nearest one above it. */
+  const governedByMobile = (needle, why) => {
+    const at = html.indexOf(needle);
+    assert.ok(at !== -1, "missing rule: " + needle);
+    const openedBy = html.lastIndexOf("@media", at);
+    const condition = html.slice(openedBy, html.indexOf("{", openedBy));
+    assert.match(condition, /max-width: 900px|max-height: 620px/, why);
+  };
+  governedByMobile(".maplibregl-ctrl-top-right .maplibregl-ctrl-group { display: none; }",
+    "pinch is the zoom on a phone");
+  governedByMobile(".maplibregl-ctrl-scale { display: none; }",
+    "it lands under the Locate button, where it can only read as a smudge");
+  governedByMobile("#pacerbar, #patchbar {",
+    "the same air on both sides, instead of hugging the left edge");
+  governedByMobile("#pacerbar { text-align: center; }", "the readout is centred on a phone");
+  governedByMobile("#patchbar { justify-content: center;", "and so are the sound toggles");
+  const bars = html.slice(html.indexOf("#pacerbar, #patchbar {"));
+  assert.match(bars.slice(0, 120), /left: var\(--s-3\); right: var\(--s-3\);/,
+    "equal margins, which is what centring them means here");
+});
