@@ -7070,6 +7070,41 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     drawZones();
   }
 
+  /* Exposed on the debug hook so the geometry and the hysteresis can be measured directly
+     rather than inferred from screenshots, and the GPS-resume that lets a returning listener
+     pick up where they left off. Shared by pacerStart and worldStart — opening straight into
+     Open World with a route walk never having run once still needs these. */
+  function pacerBoot() {
+    window.__fa.pacer = pacer;
+    window.__fa.harmony = harmony;   /* chord index, tones and last voiced pitches */
+    window.__fa.sect = sect;
+    window.__fa.counter = counter;
+    window.__fa.pacerSet = pacerSet;
+    /* Measurable: a morph is a pure function of time, so a test can ask for its value at
+       any instant instead of waiting out an eleven-minute period in real time. */
+    window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
+                          clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
+    window.__fa.rhythm = { euclid: euclid, rotated: rotated, of: rhythmOf, slots: HIT_SLOTS,
+                            metricWeight: metricWeight };
+    window.__fa.zoneFire = zoneFire;   /* which zones speak, testable without walking one */
+    window.__fa.grains = { fire: fireGrains, def: defaultGrains };   /* testable without an upload */
+    window.__fa.morph.trace = traceDraw;   /* measurable without waiting on a frame */
+    window.__fa.projectToRoute = projectToRoute;
+    /* Measurable without walking: feed a fix and read where the walker went. */
+    window.__fa.gps = { set: gpsSet, fix: gpsFix, state: function () { return gps; },
+                        level: walkLevel, setLevel: setWalkLevel,
+                        limits: { acc: GPS_ACC_MAX, leash: GPS_LEASH, fadeFrom: GPS_FADE_FROM,
+                                  fade: WALK_FADE } };
+    /* Measurable: feed a position and read which route lent the patch, without walking one. */
+    window.__fa.world = { start: worldStart, move: worldMove,
+                          routes: function () { return worldRoutes; } };
+
+    /* You walked out with it on; you should not have to switch it on again at the trailhead. */
+    var wanted = null;
+    try { wanted = localStorage.getItem(GPS_KEY); } catch (e) { /* private mode */ }
+    if (wanted === "1") { gpsSet(true); }
+  }
+
   function pacerStart(f) {
     pacerStop();
     var m = routeMetrics(f);
@@ -7104,36 +7139,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       pacerSet(pr.t);
     });
 
-    /* Exposed on the debug hook so the geometry and the hysteresis can be measured
-       directly rather than inferred from screenshots. */
-    window.__fa.pacer = pacer;
-    window.__fa.harmony = harmony;   /* chord index, tones and last voiced pitches */
-    window.__fa.sect = sect;
-    window.__fa.counter = counter;
-    window.__fa.pacerSet = pacerSet;
-    /* Measurable: a morph is a pure function of time, so a test can ask for its value at
-       any instant instead of waiting out an eleven-minute period in real time. */
-    window.__fa.morph = { value: morphValue, shape: morphShape, list: morphList,
-                          clock: morphClock, at: morphFor, draw: cellsDraw, cells: cells };
-    window.__fa.rhythm = { euclid: euclid, rotated: rotated, of: rhythmOf, slots: HIT_SLOTS,
-                            metricWeight: metricWeight };
-    window.__fa.zoneFire = zoneFire;   /* which zones speak, testable without walking one */
-    window.__fa.grains = { fire: fireGrains, def: defaultGrains };   /* testable without an upload */
-    window.__fa.morph.trace = traceDraw;   /* measurable without waiting on a frame */
-    window.__fa.projectToRoute = projectToRoute;
-    /* Measurable without walking: feed a fix and read where the walker went. */
-    window.__fa.gps = { set: gpsSet, fix: gpsFix, state: function () { return gps; },
-                        level: walkLevel, setLevel: setWalkLevel,
-                        limits: { acc: GPS_ACC_MAX, leash: GPS_LEASH, fadeFrom: GPS_FADE_FROM,
-                                  fade: WALK_FADE } };
-    /* Measurable: feed a position and read which route lent the patch, without walking one. */
-    window.__fa.world = { start: worldStart, move: worldMove,
-                          routes: function () { return worldRoutes; } };
-
-    /* You walked out with it on; you should not have to switch it on again at the trailhead. */
-    var wanted = null;
-    try { wanted = localStorage.getItem(GPS_KEY); } catch (e) { /* private mode */ }
-    if (wanted === "1") { gpsSet(true); }
+    pacerBoot();
 
     $("#pacerbar").hidden = false;
     $("#patchbar").hidden = false;
@@ -7169,9 +7175,34 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
     pacer = { f: null, world: true, routeId: null, m: null, t: 0, pos: start, marker: marker,
               zones: [], log: [], patch: defaultPatch() };
+    /* The place-wide sections are cut from the place's own boundary, not from any one route's
+       box — unlike pacerStart, which always has a route's m to fall back to if the place frame
+       is not ready yet, a world walk only ever starts after setPlace has already run once (it
+       runs, then applyWorld runs, on both first load and every place switch), so sect.frame is
+       always set by the time this can be reached. Passing null for m is safe only because of
+       that ordering — sectorGeometry only touches m when sect.frame is missing. */
+    if (sect.frame && sect.frame.length > 2) { sectorGeometry(null, pacer.patch.sect.n); }
+    sect.idx = null;
+    BED.maxVoices = pacer.patch.bed.voices;
     harmony.idx = null; harmony.chord = null; harmony.tones = null;
     harmony.last = { bass: null, top: null };
+    cellsSet(!!(pacer.patch.morph && pacer.patch.morph.cells));
+    pacerBoot();
+
+    /* Silent and invisible is worse than either alone: the transport bar carries Sound (the
+       only Tone.start()/bedStart() gesture), GPS and the readout, and the patch bar carries
+       the morph/cells toggle — a world walk with no route to click Walk on still needs both,
+       or open world's default-on boot leaves a first visit with nothing to press and nothing
+       to read. */
+    $("#pacerbar").hidden = false;
+    $("#patchbar").hidden = false;
     worldMove(start);
+    /* One explicit paint so the zone/sector layers are on the map immediately, the same way
+       pacerStart's own tail does — pacerCheckZones/sectorUpdate (run once already, inside
+       worldMove above) only redraw on a change, which the very first fix may not produce. */
+    drawZones();
+    drawSectors();
+    drawProgSegments();
     pacerReadout();
   }
 
@@ -7190,7 +7221,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     } else {
       pacer.routeDist = Infinity;
     }
+    /* zonesNear rebuilds the zone list fresh from position on every move, so a straight
+       reassignment would reset inside/firedAt on every fix and fire pacerCheckZones's enter
+       event on every single move you spend inside a zone's radius — exactly the A-14 retrigger
+       failure the route walk's own hysteresis exists to prevent. Carrying each zone's own state
+       across by id keeps the same enter-once/exit-once behaviour a route walk gets. */
+    var wasZone = {};
+    pacer.zones.forEach(function (z) { wasZone[z.id] = z; });
     pacer.zones = zonesNear(visible(), pos);
+    pacer.zones.forEach(function (z) {
+      var prior = wasZone[z.id];
+      if (prior) { z.inside = prior.inside; z.firedAt = prior.firedAt; }
+    });
+    pacerCheckZones();
+    sectorUpdate();
     updateBed();
     pacerReadout();
   }

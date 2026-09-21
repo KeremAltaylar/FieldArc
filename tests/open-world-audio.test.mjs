@@ -102,3 +102,48 @@ test("the world walker takes its patch from the nearest route and its zones from
   assert.match(src("gpsFix"), /if \(pacer && pacer\.world\) \{ worldMove\(/,
     "a GPS fix drives the world walker too");
 });
+
+/* The rest of this file checks pure functions by running them; the wiring below — whether a
+   bar gets unhidden, whether one function calls another — has no meaningful return value to
+   assert on, so these are source-level checks of the actual call sites instead. That is a
+   weaker guarantee than running the code, but it is what a test running under node, with no
+   DOM and no MapLibre, can reach; it still catches the literal regressions task-8 review found
+   (a walk starting with the transport permanently hidden, or a move that never reaches the
+   zone/sector engines). */
+
+test("worldStart reveals the transport and patch bars — otherwise a world walk has no way to start audio and no visible feedback", () => {
+  const start = src("worldStart");
+  assert.match(start, /\$\("#pacerbar"\)\.hidden = false/,
+    "#pacerbar carries GPS, the readout, and the only Sound/Tone.start() gesture");
+  assert.match(start, /\$\("#patchbar"\)\.hidden = false/,
+    "#patchbar carries the morph/cells toggle");
+});
+
+test("worldMove drives the zone and sector engines, not just the bed", () => {
+  const move = src("worldMove");
+  assert.match(move, /pacerCheckZones\(\)/,
+    "so zoneFire and the enter/exit toast fire for a world walk the same as a route walk");
+  assert.match(move, /sectorUpdate\(\)/,
+    "so the place-wide sector voice moves as the walker crosses a boundary, instead of freezing");
+});
+
+test("worldMove preserves each zone's inside/firedAt state across the fresh zonesNear() list it rebuilds every move", () => {
+  /* Without this, pacerCheckZones would see every zone as freshly not-inside on every single
+     fix — retriggering its enter event (and zoneFire) on every move spent within a zone's
+     radius, which is exactly what A-14's cooldown/margin hysteresis exists to prevent. */
+  const move = src("worldMove");
+  assert.match(move, /prior\.inside/);
+  assert.match(move, /prior\.firedAt/);
+});
+
+test("pacerStart and worldStart share one setup function rather than duplicating the window.__fa hooks and the GPS auto-restore", () => {
+  const boot = src("pacerBoot");
+  assert.match(boot, /window\.__fa\.world = \{ start: worldStart, move: worldMove/);
+  assert.match(boot, /localStorage\.getItem\(GPS_KEY\)/);
+  assert.match(src("pacerStart"), /pacerBoot\(\)/);
+  assert.match(src("worldStart"), /pacerBoot\(\)/);
+  /* The hooks must live in pacerBoot only — if pacerStart still built its own window.__fa.gps
+     (or any of the others), a world-only session (no route walk ever started) would still be
+     missing them, which was exactly review item 4. */
+  assert.doesNotMatch(src("pacerStart"), /window\.__fa\.gps = /);
+});
