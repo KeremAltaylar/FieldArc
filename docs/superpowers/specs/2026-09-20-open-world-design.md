@@ -128,7 +128,15 @@ map meets the sheet, stays as it is.
   | --- | --- | --- | --- |
   | `placeAt()`, 90 polygons | 0.026 ms | paid every tick | gated to one call per `PLACE_CHECK_M` (5 m) — 0.0026 ms amortised at a 0.5 m/tick drag |
   | `loadManifest()`, 500-entry parse | 0.127 ms | paid every tick | cached after the first call — ~0 ms thereafter |
-  | **Total** | | **0.153 ms/move** | **0.0026 ms/move — a 59× reduction, 98.3% less work** |
+  | **Sum of these two costs** | | **0.153 ms/move** | **0.0026 ms/move — a 59× reduction** |
+
+  That sum is only the two costs this fix touches, not a per-move total for `worldMove` as a
+  whole — it says nothing about "work per move" in general. `worldMove` runs three other things
+  on every tick that were never part of this measurement: `visible()`'s filter over all of
+  `fc.features`, `nearestRoute`'s projection over every route (see the next paragraph), and
+  `zonesNear`'s own scan. None of those were run in this harness, so the end-to-end per-move cost
+  of `worldMove` remains unmeasured; this table supports only the claim that these two specific
+  costs dropped 59×, not a claim about `worldMove`'s total cost or "less work" in general.
 
   Route projection itself (measure-and-project onto each route's own line) was already O(vertices)
   and stays ungated — with the live catalogue's route count (2, see the C1 note below) it is not
