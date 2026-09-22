@@ -24,10 +24,27 @@ export function session(target) {
   let nextId = 1;
   const pending = new Map();
   const listeners = [];
+  /* Events that arrive before anyone has called on() yet. A caller is not required to register
+     before the socket starts delivering — send() doesn't wait on it, and Page.navigate or a
+     device that's mid-load can emit before a watcher's on() call lands — so without this an
+     early event is just gone, with nothing to say it happened. Drained into the first listener
+     the moment one registers. */
+  const early = [];
+
+  /* A send() in flight when the socket goes away — unplugged, Chrome killed, or a plain close()
+     — must not hang forever: settle every pending request instead of leaving its promise to rot
+     with no resolve and no reject. Runs on both "close" and "error" since a mid-session drop can
+     surface as either, and close() calls it directly so an explicit close settles the same way. */
+  function settlePending(reason) {
+    for (const { reject } of pending.values()) { reject(reason); }
+    pending.clear();
+  }
   const ready = new Promise((res, rej) => {
     ws.addEventListener("open", () => res());
     ws.addEventListener("error", () => rej(new Error("could not open the DevTools socket")));
   });
+  ws.addEventListener("close", () => settlePending(new Error("DevTools socket closed")));
+  ws.addEventListener("error", () => settlePending(new Error("DevTools socket error")));
   ws.addEventListener("message", (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.id && pending.has(msg.id)) {
@@ -36,11 +53,14 @@ export function session(target) {
       if (msg.error) { reject(new Error(msg.error.message)); } else { resolve(msg.result); }
       return;
     }
-    listeners.forEach((fn) => fn(msg));
+    if (listeners.length) { listeners.forEach((fn) => fn(msg)); } else { early.push(msg); }
   });
   return {
     ready,
-    on: (fn) => listeners.push(fn),
+    on(fn) {
+      listeners.push(fn);
+      if (early.length) { early.splice(0).forEach((msg) => fn(msg)); }
+    },
     send(method, params = {}) {
       const id = nextId++;
       return new Promise((resolve, reject) => {
@@ -48,6 +68,9 @@ export function session(target) {
         ws.send(JSON.stringify({ id, method, params }));
       });
     },
-    close: () => ws.close()
+    close() {
+      settlePending(new Error("session closed"));
+      ws.close();
+    }
   };
 }
