@@ -21,3 +21,32 @@ test("it measures overflow in both directions, not just vertical", () => {
   assert.match(src, /scrollHeight/, "V-2: vertical overflow is the documented check");
   assert.match(src, /scrollWidth/, "a sideways scroll on a phone is the worse failure");
 });
+
+/* Fix round 1 (2026-09-22): setDeviceMetricsOverride alone does not flip (pointer: coarse) on
+   real Chrome — verified on hardware, not inferred. Without setTouchEmulationEnabled the tool
+   silently measures the desktop-pointer layout at a phone width, which is a different and
+   easier claim than the one it exists to check. Pinning both the call and the assertion so a
+   future edit can't drop either without a test failing here. */
+test("enables touch emulation and refuses to trust a viewport that didn't actually get it", () => {
+  assert.match(src, /setTouchEmulationEnabled/, "the call that actually flips the pointer type");
+  assert.match(src, /maxTouchPoints/, "a coarse pointer with zero touch points isn't a phone");
+  assert.match(src, /pointer:\s*coarse/, "the exact media feature index.html's CSS gates on");
+  assert.match(src, /pointerCoarse/, "the result must be checked, not just requested");
+});
+
+test("does not stand a fixed sleep in for the real load condition", () => {
+  assert.ok(!/setTimeout\([^)]*6000\)/.test(src), "a blind 6s wait can report a half-built page as clean");
+  assert.match(src, /readyState/, "document.readyState is part of what 'loaded' means here");
+  assert.match(src, /maplibregl-canvas/, "the map has to actually be in the DOM, not just requested");
+});
+
+test("owns its Chrome process end to end and never cleans up by image name", () => {
+  assert.match(src, /spawn\(/, "the tool launches its own Chrome rather than expecting one already running");
+  assert.match(src, /function killTree/, "cleanup is in the tool, not left to a human");
+  // Only the killTree function's own code needs checking — a comment elsewhere is allowed to
+  // name the bad `/IM` command it exists to avoid repeating.
+  const body = src.slice(src.indexOf("function killTree"), src.indexOf("\n}", src.indexOf("function killTree")));
+  assert.match(body, /taskkill/);
+  assert.match(body, /\/PID/, "cleanup targets the pid this tool launched, not an image name");
+  assert.ok(!/\/IM\b/i.test(body), "killing by image name takes down every Chrome on the machine, not just this one");
+});
