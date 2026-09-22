@@ -2103,6 +2103,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      recording stretched round and round) — and no amount of listening from outside separates
      them. diag.html section 6 answers the first for a synthetic source; this answers both for
      the real recordings on the real walk. */
+  /* ?cheap and ?rich force the audio path that richAudio() would otherwise measure its way to.
+     They exist because the measurement answers the wrong question on iOS: it asks "can this
+     device render the stack in less than real time", and Kerem's iPhone can — comfortably, at
+     9.7% of a core. But Safari gives every device a 128-sample callback whatever it asks for
+     (measured on his phone, 2026-09-22: interactive, balanced, playback, 0.05 and 0.2 all return
+     2.7 ms), and a stack whose average is cheap can still overrun 2.7 ms on the callback where
+     four convolvers happen to land. Average headroom does not buy peak headroom.
+
+     So this is the experiment that measurement cannot run for us: the same walk, the same
+     points, one flag apart. Captured at load like the others — the address bar loses its query
+     string on the first route selection. */
+  var AUDIOFORCE = location.search.indexOf("cheap") !== -1 ? "cheap"
+                 : location.search.indexOf("rich") !== -1 ? "rich" : null;
+  try {
+    if (AUDIOFORCE) { sessionStorage.setItem("fieldarc.audioforce", AUDIOFORCE); }
+    else { AUDIOFORCE = sessionStorage.getItem("fieldarc.audioforce"); }
+  } catch (e) { /* private mode: the URL alone still works for this page load */ }
+
   var PXDEBUG = location.search.indexOf("pxdebug") !== -1;
   try {
     if (PXDEBUG) { sessionStorage.setItem("fieldarc.pxdebug", "1"); }
@@ -7881,6 +7899,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      left alone here (audioCapPct stays undefined) rather than adopted; primeAudioCapability is
      what actually owns recovery, by re-probing and overwriting the bad entry. */
   function richAudio() {
+    /* The forced answer wins over everything, including the floor: it is a debugging switch, and
+       a switch that some other rule can overrule answers a different question than the one asked
+       of it. */
+    if (AUDIOFORCE) { return AUDIOFORCE === "rich"; }
     /* The floor (IMPORTANT 3b/6) has to sit ahead of the fine-pointer bypass, not just inside
        richAudioVerdict — richAudio() always calls that with isFinePointer hardcoded to false
        (below) and answers the fine-pointer case itself, right here, which is exactly the branch
@@ -9934,6 +9956,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        handover is still pending rather than landed. */
     if (pacer) {
       var pend = pendingSwapId ? " swap->" + String(pendingSwapId).slice(0, 8) : "";
+      lines.push("audio " + (richAudio() ? "rich (convolution, chorus, delays)" : "cheap") +
+                 (AUDIOFORCE ? " [forced " + AUDIOFORCE + "]" : " [measured]") +
+                 "  err " + ((window.__fa && __fa.errors && __fa.errors.length) || 0));
       lines.push("walk " + (pacer.world ? "world" : "park") +
                  "  route " + (pacer.routeId ? String(pacer.routeId).slice(0, 8) : "none") +
                  "  " + (isFinite(pacer.routeDist) ? Math.round(pacer.routeDist) + "m" : "far") +

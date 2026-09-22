@@ -132,6 +132,9 @@ test("the cache key matches the existing lowercase fieldarc.* family and stores 
 
 function primeModule() {
   const fn = [
+    /* AUDIOFORCE is the ?cheap/?rich debugging switch, null on every normal load — declared here
+       so richAudio() can read it, and left null so these tests exercise the measured path. */
+    "var AUDIOFORCE = null;",
     src("smallDevice"), src("tinyMemory"), varDecl("AUDIOCAP_KEY"), varDecl("AUDIOCAP_THRESHOLD"),
     varDecl("finePointerCached"), src("finePointer"), src("saneCapabilityPct"),
     src("richAudioVerdict"), varDecl("audioCapPct"), src("richAudio"),
@@ -237,6 +240,7 @@ test("an insane cached string is never adopted, and always triggers a fresh, ove
 test("richAudio() itself never adopts a corrupt cached value either — same fallback, no throw", () => {
   function richAudioModule() {
     const fn = [
+      "var AUDIOFORCE = null;",
       src("smallDevice"), src("tinyMemory"), varDecl("AUDIOCAP_KEY"), varDecl("AUDIOCAP_THRESHOLD"),
       varDecl("finePointerCached"), src("finePointer"), src("saneCapabilityPct"),
       varDecl("audioCapPct"), src("richAudioVerdict"), src("richAudio")
@@ -511,4 +515,39 @@ test("diag.html surfaces the measured number and which path it produced", () => 
   assert.match(diagHtml, /audLine\("audio path index\.html actually runs, right now"/);
   /* The render test's own live measurement is logged too, not just the cached reading. */
   assert.match(diagHtml, /audLog\("richAudio\(\)      " \+ \(rich \? "TRUE" : "FALSE"\)/);
+});
+
+/* ---- ?cheap / ?rich, 2026-09-22 ----
+   The probe answers "can this device render the stack in less than real time", and Kerem's
+   iPhone can: 9.7% of a core. It still ticks on a walk. Safari hands every device a 128-sample
+   callback whatever latencyHint it is given (measured on his phone: interactive, balanced,
+   playback, 0.05 and 0.2 all return 2.7 ms), so a stack that is cheap on average can still
+   overrun the callback where four convolvers land. Average headroom is not peak headroom, and
+   no offline render measures the difference — only the same walk, one flag apart, does. */
+
+test("a forced path wins over the measurement, the floor and the pointer alike", () => {
+  const mod = new Function("navigator", "window", "screen", "localStorage", "AUDIOFORCE",
+    [varDecl("AUDIOCAP_KEY"), varDecl("AUDIOCAP_THRESHOLD"), varDecl("finePointerCached"),
+     src("finePointer"), src("smallDevice"), src("tinyMemory"), src("saneCapabilityPct"),
+     varDecl("audioCapPct"), src("richAudioVerdict"), src("richAudio")].join("\n") +
+    "; return richAudio;");
+  const store = { getItem: () => null };
+  /* A desktop forced cheap, and a 4 GB machine — which tinyMemory() floors to cheap — forced
+     rich. If either rule could still overrule the switch, the switch would be answering a
+     different question than the one asked of it. */
+  assert.equal(mod({ deviceMemory: 16 }, { matchMedia: mm("fine") }, { width: 2560, height: 1440 },
+    store, "cheap")(), false);
+  assert.equal(mod({ deviceMemory: 4 }, { matchMedia: mm("coarse") }, { width: 390, height: 844 },
+    store, "rich")(), true);
+  /* And with no switch, nothing changes: the measured path answers as before. */
+  assert.equal(mod({ deviceMemory: 16 }, { matchMedia: mm("fine") }, { width: 2560, height: 1440 },
+    store, null)(), true);
+});
+
+test("the switch is captured at load and kept for the tab", () => {
+  assert.match(html, /location\.search\.indexOf\("cheap"\) !== -1 \? "cheap"/);
+  assert.match(html, /sessionStorage\.setItem\("fieldarc\.audioforce", AUDIOFORCE\)/);
+  const at = html.indexOf("var AUDIOFORCE");
+  assert.ok(at !== -1 && at < html.indexOf("history.pushState(null"),
+    "before the first route selection rewrites the address bar");
 });
