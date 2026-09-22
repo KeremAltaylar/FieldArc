@@ -9,7 +9,9 @@
     "migrate:archive": "node --env-file=.env.local tools/migrate-archive.mjs",
     "db:apply": "node --env-file=.env.local tools/sql.mjs",
     "db:query": "node --env-file=.env.local tools/sql.mjs --query",
-    "usage": "node --env-file=.env.local tools/usage.mjs"
+    "usage": "node --env-file=.env.local tools/usage.mjs",
+    "phone": "node tools/phone.mjs",
+    "emulator": "node tools/emulator.mjs"
   },
   "devDependencies": {
     "@supabase/supabase-js": "^2.45.0",

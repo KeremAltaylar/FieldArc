@@ -27,6 +27,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { targets as cdpTargets, session } from "./cdp.mjs";
 
 const PORT = 9222;
 
@@ -57,11 +58,11 @@ function forward() {
   adb("forward", "tcp:" + PORT, "localabstract:chrome_devtools_remote");
 }
 
+/* adb is Android-specific (the forward), so it stays here; the HTTP list + WebSocket session
+   underneath it is generic CDP and lives in cdp.mjs, shared with Task 2's desktop driver. */
 async function targets() {
   forward();
-  const r = await fetch(`http://127.0.0.1:${PORT}/json/list`);
-  if (!r.ok) { throw new Error("DevTools endpoint said " + r.status + " — is Chrome open on the device?"); }
-  return (await r.json()).filter((t) => t.type === "page");
+  return cdpTargets(PORT);
 }
 
 async function firstPage() {
@@ -70,41 +71,6 @@ async function firstPage() {
     throw new Error("Chrome is running but has no page open. Open any tab on the device first.");
   }
   return list[0];
-}
-
-/* One request/response over the target's WebSocket, plus any events that arrive while it is
-   open — which is how `console` below listens without a second connection. */
-function session(target) {
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  let nextId = 1;
-  const pending = new Map();
-  const listeners = [];
-  const ready = new Promise((res, rej) => {
-    ws.addEventListener("open", () => res());
-    ws.addEventListener("error", () => rej(new Error("could not open the DevTools socket")));
-  });
-  ws.addEventListener("message", (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.id && pending.has(msg.id)) {
-      const { resolve, reject } = pending.get(msg.id);
-      pending.delete(msg.id);
-      if (msg.error) { reject(new Error(msg.error.message)); } else { resolve(msg.result); }
-      return;
-    }
-    listeners.forEach((fn) => fn(msg));
-  });
-  return {
-    ready,
-    on: (fn) => listeners.push(fn),
-    send(method, params = {}) {
-      const id = nextId++;
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        ws.send(JSON.stringify({ id, method, params }));
-      });
-    },
-    close: () => ws.close()
-  };
 }
 
 async function evaluate(expression) {
