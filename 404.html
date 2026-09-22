@@ -12,9 +12,12 @@
   var l = window.location;
   /* One pass only. Off GitHub Pages — a local server at the repo root, say — pathSegmentsToKeep
      is wrong, the rewritten URL 404s again, and every pass appends another p=. Measured on
-     2026-09-21: 150 copies of p=%2F in one address bar. A first pass always has no p=, so this
-     costs a real deep link nothing and costs a loop everything. */
-  if (l.search.indexOf("p=") === -1) {
+     2026-09-21: 150 copies of p=%2F in one address bar. A first pass always has no p= key, so
+     this costs a real deep link nothing and costs a loop everything. Checked by key, not by
+     substring — a plausible first-party query param like ?map= or ?zoom= also contains the
+     text "p=" and must not be mistaken for an already-rewritten URL. index.html's other half
+     of this redirect already uses URLSearchParams, so this stays consistent with it. */
+  if (!new URLSearchParams(l.search).has("p")) {
     var base = l.pathname.split("/").slice(0, 1 + pathSegmentsToKeep).join("/");
     var rest = l.pathname.slice(base.length);
     window.location.replace(l.protocol + "//" + l.hostname + (l.port ? ":" + l.port : "") +
