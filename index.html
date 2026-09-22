@@ -7840,13 +7840,27 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      media, and the graph it also runs is allowed to keep going.
 
      Both halves are fully guarded. Safari implements some of mediaSession and none of the
-     background behaviour, so on iPhone this does nothing and must break nothing. */
+     background behaviour, so on iPhone this does nothing and must break nothing.
+
+     Gated to smallDevice() — the same check makeWarp/buildFxChain/voiceBudget already use — for
+     the opposite reason those gate their own cost: desktop has no backgrounding problem this
+     solves (no screen to lock, no phone in a pocket), and arming it there is a regression, not a
+     bonus: a "Fieldscape" Now Playing entry, and desktop media keys silently retargeting to the
+     walk whenever Sound is on, for an owner who runs DAWs and media players for a living. */
   function mediaSessionStart() {
+    if (!smallDevice()) { return; }
     var el = $("#keepalive");
     if (el) {
-      /* Started from inside the Sound click: play() outside a user gesture is refused. */
-      var p = el.play();
-      if (p && p.catch) { p.catch(function () { /* declined — the walk still sounds */ }); }
+      /* Started from inside the Sound click: play() outside a user gesture is refused. Wrapped
+         all the way round, not just the promise: a rejection is normal (declined) and handled
+         below, but a SYNCHRONOUS throw from play() itself would otherwise escape this function
+         and, since it runs inside bedStart's .then() chain after bed.on is already true, skip
+         every step after it — buildRhythmFx, buildVoice, the loop scheduling, Transport.start(),
+         the fade-in. The button would say Stop over a graph that was never built. */
+      try {
+        var p = el.play();
+        if (p && p.catch) { p.catch(function () { /* declined — the walk still sounds */ }); }
+      } catch (e) { /* synchronous throw — the walk still sounds */ }
     }
     if (!("mediaSession" in navigator)) { return; }
     try {
@@ -7866,6 +7880,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function mediaSessionStop() {
+    /* Nothing was armed on desktop (mediaSessionStart returned before touching either half), so
+       there is nothing here to undo — same gate, kept cheap. */
+    if (!smallDevice()) { return; }
     var el = $("#keepalive");
     if (el) { try { el.pause(); } catch (e) { /* never played */ } }
     if (!("mediaSession" in navigator)) { return; }
@@ -13603,8 +13620,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 </script>
 <!-- Machinery, not a control. Android Chrome keeps a backgrounded page's audio alive only while
      the page owns an active media session, and a WebAudio graph alone never creates one — which
-     is why a walk used to need the screen held on for its whole length. This element is one
-     second of silence on a loop; playing it from the Sound gesture is what makes the session
+     is why a walk used to need the screen held on for its whole length. This element is 0.25s
+     of silence on a loop; playing it from the Sound gesture is what makes the session
      real. It is inline because there is no build step and a walk starts where there is no
      signal. -->
 <audio id="keepalive" loop preload="auto" aria-hidden="true"
