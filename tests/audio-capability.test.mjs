@@ -167,8 +167,8 @@ test("a coarse pointer with nothing cached probes once, then caches in memory an
     getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
     setItem: function (k, v) { store[k] = v; }
   };
-  const mod = primeModule()({}, { matchMedia: mm("coarse") }, { width: 390, height: 844 }, localStorage,
-    function () { probeCalls++; return Promise.resolve(9.7); });
+  const mod = primeModule()({ deviceMemory: 16 }, { matchMedia: mm("coarse") }, { width: 1200, height: 900 },
+    localStorage, function () { probeCalls++; return Promise.resolve(9.7); });
   return mod.prime({}).then(() => {
     assert.equal(probeCalls, 1);
     assert.equal(store["fieldarc.audiocap"], "9.7", "the measured number is what gets stored");
@@ -186,8 +186,8 @@ test("a value already cached from a previous session is used without ever probin
     getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
     setItem: function () { throw new Error("must not re-write an existing cache"); }
   };
-  const mod = primeModule()({}, { matchMedia: mm("coarse") }, { width: 390, height: 844 }, localStorage,
-    function () { probeCalls++; return Promise.resolve(9.7); });
+  const mod = primeModule()({ deviceMemory: 16 }, { matchMedia: mm("coarse") }, { width: 1200, height: 900 },
+    localStorage, function () { probeCalls++; return Promise.resolve(9.7); });
   return mod.prime({}).then(() => {
     assert.equal(probeCalls, 0, "a cached reading must never be re-measured");
     assert.equal(mod.rich(), true, "42% is under threshold");
@@ -227,7 +227,9 @@ test("an insane cached string is never adopted, and always triggers a fresh, ove
     };
     /* iPhone-shaped: no deviceMemory at all, so tinyMemory()'s floor stays out of it and the
        cache-recovery path is what decides. */
-    const mod = primeModule()({}, { matchMedia: mm("coarse") }, { width: 390, height: 844 },
+    /* A big-screened coarse-pointer device: not a phone by smallDevice()'s guess, so it is
+       still decided by measurement — the only shape that reaches the probe now. */
+    const mod = primeModule()({ deviceMemory: 16 }, { matchMedia: mm("coarse") }, { width: 1200, height: 900 },
       localStorage, function () { probeCalls++; return Promise.resolve(9.7); });
     return mod.prime({}).then(() => {
       assert.equal(probeCalls, 1, JSON.stringify(bad) + " must not short-circuit the probe");
@@ -273,7 +275,8 @@ test("BED.maxVoices is recomputed once the probe settles, against whatever patch
   const mod = primeModule()({}, { matchMedia: mm("coarse") }, { width: 390, height: 844 }, localStorage,
     function () { return Promise.resolve(9.7); }, pacer, BED);
   return mod.prime({}).then(() => {
-    assert.equal(mod.rich(), true, "9.7% keeps full-quality rooms, warp and delays");
+    assert.equal(mod.rich(), false,
+      "a phone takes the light stack whatever it measures — v3.0's rule, restored 2026-09-22");
     assert.equal(BED.maxVoices, 2,
       "but the recording cap is a MEMORY ceiling (review CRITICAL 2): a phone-shaped device keeps " +
       "two resident recordings however fast it renders — the Koşuyolu tab-kill");
@@ -550,4 +553,28 @@ test("the switch is captured at load and kept for the tab", () => {
   const at = html.indexOf("var AUDIOFORCE");
   assert.ok(at !== -1 && at < html.indexOf("history.pushState(null"),
     "before the first route selection rewrites the address bar");
+});
+
+test("a phone takes the light stack whatever it measures — v3.0's rule, restored", () => {
+  /* Kerem's decision, 2026-09-22, after a day in which every measurement came back clean and his
+     iPhone kept ticking: engine correct, 0% late hops, 0 dropped buffers, recordings decoding
+     whole, parameters identical to desktop, whole stack at 6% of one core. The probe answers
+     "can this device render the stack in less than real time" — his phone can, four times over —
+     but Safari gives every device a 128-sample callback whatever it asks for (measured on that
+     phone: interactive, balanced, playback, 0.05, 0.2 all return 2.7 ms), so what matters is
+     whether the WORST callback fits, and no offline average measures that. */
+  const mod = new Function("navigator", "window", "screen", "localStorage", "AUDIOFORCE",
+    [varDecl("AUDIOCAP_KEY"), varDecl("AUDIOCAP_THRESHOLD"), varDecl("finePointerCached"),
+     src("finePointer"), src("smallDevice"), src("tinyMemory"), src("saneCapabilityPct"),
+     varDecl("audioCapPct"), src("richAudioVerdict"), src("richAudio")].join("\n") +
+    "; return richAudio;");
+  const phone = { getItem: () => "9.7" };      /* measured fast, and cached */
+  assert.equal(mod({}, { matchMedia: mm("coarse") }, { width: 390, height: 844 }, phone, null)(),
+    false, "a fast phone still takes the light stack");
+  /* Desktop is untouched: Kerem authors patches there and they must sound as written. */
+  assert.equal(mod({ deviceMemory: 16 }, { matchMedia: mm("fine") }, { width: 2560, height: 1440 },
+    { getItem: () => null }, null)(), true);
+  /* And ?rich still overrides, or the A/B that would prove this wrong becomes impossible. */
+  assert.equal(mod({}, { matchMedia: mm("coarse") }, { width: 390, height: 844 }, phone, "rich")(),
+    true);
 });
