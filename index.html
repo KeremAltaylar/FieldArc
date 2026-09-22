@@ -10076,9 +10076,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var secs = st.sourceLength / st.sr;
       var at = st.readPos / st.sr;
       var latePct = st.hops ? Math.round(100 * st.late / st.hops) : 0;
+      /* The parameters this device is actually playing, which are not necessarily the ones the
+         setter hears: a listener plays the PUBLISHED row, a setter their own local draft. A
+         point re-tuned after it was published sounds different on a phone for that reason
+         alone, with every engine number healthy — which is why x and fft are printed here
+         beside the engine's own report, and why the row's origin is named. */
+      var q = soundOfZone({ id: id });
+      var xs = Math.pow(1024, Math.max(0, Math.min(1, q.stretch || 0)));
+      var f0 = feature(id);
       lines.push(id.slice(0, 8) + "  src " + secs.toFixed(1) + "s  at " + at.toFixed(1) + "s  " +
-                 "hops " + st.hops + " (" + latePct + "% late)  q" + st.quantum + " @" +
-                 Math.round(st.sr / 1000) + "k");
+                 "x" + (xs < 10 ? xs.toFixed(1) : Math.round(xs)) +
+                 " fft" + pxBufsize(q.px && q.px.fft) +
+                 "  hops " + st.hops + " (" + latePct + "% late)  q" + st.quantum + " @" +
+                 Math.round(st.sr / 1000) + "k  " +
+                 (f0 && f0.properties._remote ? "published" : "local draft"));
     });
     if (!lines.length) { lines.push("no stretch voice playing yet — walk into a point's radius"); }
     box.textContent = lines.join("\n");

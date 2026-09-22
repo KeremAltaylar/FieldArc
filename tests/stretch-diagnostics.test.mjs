@@ -101,3 +101,16 @@ test("the ?pxdebug overlay also reports the walk, and keeps reporting it with no
   assert.match(html, /if \(PXDEBUG\) \{\n\s+setInterval\(function \(\) \{ try \{ pxDebugPaint\(\); \}/,
     "repainted on a timer, not only from a stretch voice's position message");
 });
+
+test("the overlay names the parameters and where the row came from", () => {
+  /* The engine can be perfectly healthy and still play something other than what the setter
+     hears: a listener plays the PUBLISHED row, a setter their own local draft, so a point
+     re-tuned after publishing sounds different on a phone with every engine number green.
+     Kerem's 2026-09-22 screenshot had exactly that shape — src whole, 0% late, read head
+     advancing — so the next thing to print is what it is being asked to do. */
+  const paint = fn(html, "pxDebugPaint");
+  assert.match(paint, /Math\.pow\(1024, Math\.max\(0, Math\.min\(1, q\.stretch \|\| 0\)\)\)/,
+    "the same mapping pxParams uses, so the printed x is the engine's real stretch");
+  assert.match(paint, /pxBufsize\(q\.px && q\.px\.fft\)/);
+  assert.match(paint, /_remote \? "published" : "local draft"/);
+});
