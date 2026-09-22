@@ -8018,6 +8018,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function bedTeardown() {
     /* Sound came back on inside the fade: this teardown belongs to a stop that was undone. */
     if (!bed || bed.on) { return; }
+    /* The master chain — limiter, fade, walk, synth, and on iOS the MediaStream feeding
+       #keepalive — is deliberately NOT disposed here, same as it always wasn't for limiter/fade/
+       walk/synth: bedStart only builds it once, guarded by `!bed.master`, so tearing any of it
+       down would leave the next Sound press with nothing to reconnect to — a real "stale stream
+       on the second walk" bug, just arrived at by deleting the wrong thing. The per-walk release
+       already happened: mediaSessionStop()'s el.pause(), called from bedStop before the fade even
+       starts, stops the walk reaching the speaker without touching wiring a second Sound press
+       needs — true on iOS exactly as it already was on Android. */
     /* Disposed outright, with no further wait: the fade has already run and everything here is
        silent by now. The 300 ms this used to sit behind existed to let a 0.2 s per-voice ramp
        finish, and that ramp is gone. */
@@ -8130,6 +8138,38 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     try { navigator.mediaSession.playbackState = "paused"; } catch (e) { /* ignore */ }
   }
 
+  /* ---- iOS: the only web-side idea left ----
+     The recipe above (silent looping element + MediaSession) is Chrome's documented Android
+     trick, and it does not survive an iOS lock screen — confirmed by ear, on Kerem's own iPhone,
+     with that recipe already deployed: sound stopped the instant the screen locked. iOS treats a
+     pure WebAudio graph as inaudible the moment the screen locks, whatever MediaSession claims;
+     the one thing iOS is documented to keep alive in the background is a media element that is
+     genuinely playing. So on iOS the walk's real output is rerouted to flow through #keepalive
+     itself — the element becomes the walk, not a decoy beside it (see bedStart's master chain).
+
+     This is UNPROVEN, not a known fix: the technique is well established on Android and reported
+     inconsistent on iOS across versions. If Kerem's own lock test still comes back silent with
+     this shipped, that is a real, complete answer — it closes the web-side options for iOS
+     background audio, not a bug in this function.
+
+     iosSafari() answers a PLATFORM question ("is this engine Safari on iOS"), not a capability
+     question. smallDevice()'s screen-size guess and richAudio()'s render-cost probe both answer
+     "how much can this device render" — a question with nothing to do with which background-audio
+     trick applies. A capable iPhone and a struggling one need exactly the same reroute; an
+     Android phone, however weak, needs none of it. So this stays its own function: it must never
+     fold into smallDevice() or richAudio(), and it must never widen past iOS Safari itself — an
+     Android phone routed through a MediaStream would gain nothing and only add buffering latency. */
+  function iosSafari() {
+    /* iPhone and iPod identify themselves outright; so does an older iPad. */
+    var ua = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    /* iPadOS 13+ ships a Mac-shaped user agent by default, so the check above misses every
+       modern iPad. The one thing that still tells an iPad wearing that UA apart from an actual
+       Mac is touch: no Mac has ever reported more than one simultaneous touch point (most report
+       zero), while the iPad underneath still reports its real hardware here. */
+    var ipadAsMac = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+    return ua || ipadAsMac;
+  }
+
   function bedStart() {
     return loadTone().then(function (Tone) {
       return Tone.start().then(function () {
@@ -8137,9 +8177,30 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
           if (!bed || !bed.master) {
             /* A-6: a limiter on the master, and a meter that reads the signal rather than
                inferring level from fader positions. */
-            var limiter = new Tone.Limiter(-1).toDestination();
+            var limiter = new Tone.Limiter(-1);
             var meter = new Tone.Meter();
             limiter.connect(meter);
+            /* Exactly one output path, chosen once — see iosSafari() above for why iOS needs a
+               different one at all. Reaching BOTH ctx.destination and a MediaStream here would
+               play the walk twice, once direct and once through #keepalive, which sounds like
+               phasing or doubled loudness rather than an obvious routing bug — so this is an
+               if/else, never two unconditional connects. */
+            var iosStream = null;
+            var keepaliveEl = $("#keepalive");
+            if (iosSafari() && keepaliveEl) {
+              /* #keepalive stops being a silent decoy on iOS: its srcObject becomes this stream,
+                 so it carries the walk's real mix from here on rather than the 0.25s of silence
+                 in its src attribute (srcObject takes priority over src by spec, so the silent
+                 WAV is simply never reached on this branch). mediaSessionStart still plays the
+                 element from the same Sound gesture as always, further down this chain — only
+                 what it is playing has changed. */
+              iosStream = Tone.context.createMediaStreamDestination();
+              limiter.connect(iosStream);
+              keepaliveEl.srcObject = iosStream.stream;
+            } else {
+              /* Every other platform: unchanged from before this task. */
+              limiter.toDestination();
+            }
             /* The Sound toggle's own fade, and nothing else's. It has to be its own node because
                bed.walk already belongs to the GPS walk fade (setWalkLevel ramps it every time the
                walker drifts off the route) — one node with two writers means the last ramp to
@@ -8157,7 +8218,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             var synth = new Tone.Gain(1).connect(walk);
             bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: walk,
                     walk: walk, synth: synth, fade: fade, fadeTimer: null,
-                    limiter: limiter, meter: meter, Tone: Tone };
+                    limiter: limiter, meter: meter, Tone: Tone, iosStream: iosStream };
             /* synth was just built at Gain(1) — in open world that is wrong the instant the
                route is further than GPS_FADE_FROM away. Give it the level the walker's distance
                already earned instead of leaving it full until the next worldMove tick happens to
@@ -13876,7 +13937,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      is why a walk used to need the screen held on for its whole length. This element is 0.25s
      of silence on a loop; playing it from the Sound gesture is what makes the session
      real. It is inline because there is no build step and a walk starts where there is no
-     signal. -->
+     signal.
+
+     The src below (the silent WAV) is what plays on Android and desktop. On iOS, bedStart's
+     master chain instead sets this element's srcObject to a MediaStream carrying the walk's
+     real mix — srcObject overrides src by spec, so the silent WAV is never reached there. See
+     iosSafari() and the master-chain build in bedStart. -->
 <audio id="keepalive" loop preload="auto" aria-hidden="true"
        src="data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YdAHAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA=="></audio>
 </body>

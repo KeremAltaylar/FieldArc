@@ -95,3 +95,116 @@ test("the context watchdog stays — this reduces suspensions, it does not aboli
   assert.match(src("bedStart"), /bed\.resumeLoop/,
     "a phone call, a Bluetooth switch or an audio-focus change can still take the context out");
 });
+
+/* ---- iOS: routing the walk itself through #keepalive ----
+   The recipe above is Chrome's documented Android trick and it does not survive an iOS lock
+   screen — confirmed by ear, on Kerem's own iPhone, with that recipe deployed. iOS keeps a media
+   element alive in the background only while it is genuinely playing, so the remaining idea is
+   to make #keepalive BE the walk on iOS rather than a silent decoy next to it. Untested on a
+   real iPhone by this suite — these tests pin the two ways that would fail silently or badly
+   (doubled output, no output) rather than the one thing only a locked phone in a pocket can
+   answer (does iOS actually keep it playing). */
+
+function iosSafariFor(nav) {
+  /* iosSafari() takes no argument in the real code — it reads the ambient `navigator` — so the
+     mock is closed over as the generated function's own `navigator` parameter, and iosSafari()
+     is invoked (not just returned) inside that same scope. */
+  return new Function("navigator", src("iosSafari") + "; return iosSafari();")(nav);
+}
+
+test("iosSafari() catches an iPhone, an old iPad, and an iPad wearing a Mac's user agent", () => {
+  const iphone = { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) " +
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1",
+    platform: "iPhone", maxTouchPoints: 5 };
+  assert.equal(iosSafariFor(iphone), true, "a plain iPhone UA");
+  const oldIpad = { userAgent: "Mozilla/5.0 (iPad; CPU OS 12_0 like Mac OS X) " +
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.0 Mobile/16A366 Safari/604.1",
+    platform: "iPad", maxTouchPoints: 5 };
+  assert.equal(iosSafariFor(oldIpad), true, "an iPad that still identifies itself as an iPad");
+  const modernIpad = { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_6) " +
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15",
+    platform: "MacIntel", maxTouchPoints: 5 };
+  assert.equal(iosSafariFor(modernIpad), true,
+    "iPadOS 13+ ships a Mac-shaped UA by default — touch is the only thing left that tells it " +
+    "apart from a real Mac");
+});
+
+test("iosSafari() clears a real Mac, Android, and desktop Windows/Chrome", () => {
+  const realMac = { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+    platform: "MacIntel", maxTouchPoints: 0 };
+  assert.equal(iosSafariFor(realMac), false,
+    "no Mac has ever reported more than one simultaneous touch point");
+  const android = { userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
+    platform: "Linux armv8l", maxTouchPoints: 5 };
+  assert.equal(iosSafariFor(android), false, "iosSafari() must not widen into \"all phones\"");
+  const windows = { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36", platform: "Win32", maxTouchPoints: 0 };
+  assert.equal(iosSafariFor(windows), false);
+});
+
+test("iosSafari() is a platform gate, not a capability guess — it stays out of smallDevice/richAudio", () => {
+  /* smallDevice() answers "does this look like a phone" and richAudio() answers "can this
+     device render the full stack" — a capable and a weak iPhone need the exact same MediaStream
+     reroute, and an Android phone, however weak, needs none of it. Folding this into either
+     capability gate would make the reroute track the wrong axis. */
+  assert.ok(!/iosSafari/.test(src("smallDevice")), "smallDevice() answers a different question");
+  assert.ok(!/iosSafari/.test(src("richAudio")), "richAudio() answers a different question");
+});
+
+test("exactly one output path — the limiter never reaches both the context and the iOS stream", () => {
+  /* The trap: if the limiter reaches ctx.destination AND a MediaStream, the walk plays twice —
+     once direct, once through #keepalive — which sounds like phasing or doubled loudness, not
+     an obvious routing bug. */
+  const start = src("bedStart");
+  const toDestCount = (start.match(/\.toDestination\(\)/g) || []).length;
+  assert.equal(toDestCount, 1,
+    "toDestination() must appear exactly once — one platform's branch, not a leftover from both");
+  const streamCount = (start.match(/createMediaStreamDestination\(\)/g) || []).length;
+  assert.equal(streamCount, 1, "createMediaStreamDestination() must appear exactly once");
+  const gateAt = start.indexOf("if (iosSafari()");
+  assert.ok(gateAt !== -1, "bedStart must branch on `if (iosSafari() ...)` to choose the route");
+  const streamAt = start.indexOf("createMediaStreamDestination()");
+  const elseAt = start.indexOf("} else {", gateAt);
+  const destAt = start.indexOf(".toDestination()");
+  assert.ok(elseAt !== -1 && gateAt < streamAt && streamAt < elseAt && elseAt < destAt,
+    "the stream route and toDestination() must sit in the two arms of one if/iosSafari()/else — " +
+    "never both reachable from the same build");
+});
+
+test("on iOS the stream exists before srcObject is assigned to it, and the limiter is what feeds it", () => {
+  /* Assigning srcObject before the stream is created, or feeding it from anything other than the
+     limiter, plays nothing at all — the brief's silence risk. */
+  const start = src("bedStart");
+  const streamAt = start.indexOf("createMediaStreamDestination()");
+  const srcObjAt = start.indexOf(".srcObject =");
+  assert.ok(streamAt !== -1 && srcObjAt !== -1 && streamAt < srcObjAt,
+    "the stream must exist before something is assigned to play it");
+  assert.match(start, /limiter\.connect\([a-zA-Z]*[Ss]tream/,
+    "the limiter — the master's own output — must be what reaches the stream, not a bypass");
+});
+
+test("MediaSession metadata and action handlers stay on both paths — only the audio route changes", () => {
+  const fn = src("mediaSessionStart");
+  assert.ok(!/iosSafari/.test(fn),
+    "mediaSessionStart must not gate on the platform check — smallDevice() already covers iOS " +
+    "and Android alike, and the lock-screen card/headphone buttons matter on both");
+  assert.match(fn, /if \(!smallDevice\(\)\) \{ return; \}/);
+});
+
+test("the master chain, including the iOS stream, is a page-lifetime singleton — teardown leaves it alone", () => {
+  /* bed.master/limiter/walk/fade/synth are only ever built once, inside bedStart's `!bed.master`
+     guard — bedTeardown never rebuilds them. Disposing the iOS stream or its wiring here would
+     leave the next Sound press with nothing to reconnect to: the exact "stale stream on a second
+     walk" failure the brief warns about, just arrived at by deleting the wrong thing. The actual
+     per-walk release is mediaSessionStop()'s el.pause(), called from bedStop before the fade even
+     starts — it stops the walk reaching the speaker without touching wiring a second Sound press
+     needs, on iOS exactly as it already does on Android. */
+  const teardown = src("bedTeardown");
+  assert.ok(!/[Ii]osStream/.test(teardown), "the iOS stream is master-chain, not per-walk");
+  assert.ok(!/bed\.limiter/.test(teardown), "the limiter itself is never disposed per-walk");
+  const stop = src("bedStop");
+  assert.match(stop, /mediaSessionStop\(\)/,
+    "el.pause() — the real per-walk release, on every platform — runs from bedStop");
+});
