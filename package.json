@@ -11,6 +11,7 @@
     "db:query": "node --env-file=.env.local tools/sql.mjs --query",
     "usage": "node --env-file=.env.local tools/usage.mjs",
     "phone": "node tools/phone.mjs",
+    "viewports": "node tools/viewports.mjs",
     "emulator": "node tools/emulator.mjs"
   },
   "devDependencies": {
