@@ -98,11 +98,14 @@ test("desktop is left alone — no element, no Now Playing card, no media keys",
   assert.deepEqual(r.stopped, []);
 });
 
-test("an iPad plays the element — it is the only output path — but gets no lock-screen card", () => {
+test("an iPad arms nothing, and that is now harmless", () => {
+  /* While the walk was routed through #keepalive this was a silent-walk bug: an iPad passes
+     iosSafari() but fails smallDevice(), so it returned before el.play() and the only output
+     path never started. The walk goes straight to the speaker now, so an iPad that arms no
+     backgrounding trick simply stops when its screen locks, like every other tablet. */
   const r = runSession(false, true);
-  assert.deepEqual(r.started, ["play"],
-    "iosSafari() alone must reach el.play(), or the rerouted walk is silent");
-  assert.deepEqual(r.stopped, ["pause"], "and pause it again on Stop");
+  assert.deepEqual(r.started, []);
+  assert.deepEqual(r.stopped, []);
 });
 
 test("phones get the element and the lock-screen card, on iOS and Android alike", () => {
@@ -120,222 +123,48 @@ test("the context watchdog stays — this reduces suspensions, it does not aboli
     "a phone call, a Bluetooth switch or an audio-focus change can still take the context out");
 });
 
-/* ---- iOS: routing the walk itself through #keepalive ----
-   The recipe above is Chrome's documented Android trick and it does not survive an iOS lock
-   screen — confirmed by ear, on Kerem's own iPhone, with that recipe deployed. iOS keeps a media
-   element alive in the background only while it is genuinely playing, so the remaining idea is
-   to make #keepalive BE the walk on iOS rather than a silent decoy next to it. Untested on a
-   real iPhone by this suite — these tests pin the two ways that would fail silently or badly
-   (doubled output, no output) rather than the one thing only a locked phone in a pocket can
-   answer (does iOS actually keep it playing). */
+/* ---- iOS: the walk is NOT routed through #keepalive, and must not be ----
+   For one day (2026-09-21 to 2026-09-22) it was: iOS keeps a backgrounded page alive only while
+   a media element is genuinely playing, and Kerem's own lock test had confirmed that a pure
+   WebAudio walk stops dead when the screen locks, so bedStart routed the limiter into this
+   element's srcObject through a MediaStreamDestination. It reached the speaker and it wrecked
+   the sound: the stretch points came out as "repeating a 2 note pattern" on iOS Safari AND iOS
+   Chrome, in two parks, while desktop was right.
 
-function iosSafariFor(nav) {
-  /* iosSafari() takes no argument in the real code — it reads the ambient `navigator` — so the
-     mock is closed over as the generated function's own `navigator` parameter, and iosSafari()
-     is invoked (not just returned) inside that same scope. */
-  return new Function("navigator", src("iosSafari") + "; return iosSafari();")(nav);
-}
+   Isolated by elimination: diag.html's stretch probe plays the same engine straight to the
+   speaker and sounded correct on that phone; ?nostream (the app's direct path) sounded correct
+   too; engine, recordings and parameters all measured identical across the two devices. What
+   was left was WebKit's own MediaStream playback path. Kerem chose the sound over the lock
+   screen, 2026-09-22 — a walk keeps the screen on, which is what the wake lock is for. */
 
-test("iosSafari() catches an iPhone, an old iPad, and an iPad wearing a Mac's user agent", () => {
-  const iphone = { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) " +
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1",
-    platform: "iPhone", maxTouchPoints: 5 };
-  assert.equal(iosSafariFor(iphone), true, "a plain iPhone UA");
-  const oldIpad = { userAgent: "Mozilla/5.0 (iPad; CPU OS 12_0 like Mac OS X) " +
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.0 Mobile/16A366 Safari/604.1",
-    platform: "iPad", maxTouchPoints: 5 };
-  assert.equal(iosSafariFor(oldIpad), true, "an iPad that still identifies itself as an iPad");
-  const modernIpad = { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_6) " +
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15",
-    platform: "MacIntel", maxTouchPoints: 5 };
-  assert.equal(iosSafariFor(modernIpad), true,
-    "iPadOS 13+ ships a Mac-shaped UA by default — touch is the only thing left that tells it " +
-    "apart from a real Mac");
-});
-
-test("iosSafari() clears a real Mac, Android, and desktop Windows/Chrome", () => {
-  const realMac = { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
-    platform: "MacIntel", maxTouchPoints: 0 };
-  assert.equal(iosSafariFor(realMac), false,
-    "no Mac has ever reported more than one simultaneous touch point");
-  const android = { userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 " +
-    "(KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
-    platform: "Linux armv8l", maxTouchPoints: 5 };
-  assert.equal(iosSafariFor(android), false, "iosSafari() must not widen into \"all phones\"");
-  const windows = { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36", platform: "Win32", maxTouchPoints: 0 };
-  assert.equal(iosSafariFor(windows), false);
-});
-
-test("iosSafari() is a platform gate, not a capability guess — it stays out of smallDevice/richAudio", () => {
-  /* smallDevice() answers "does this look like a phone" and richAudio() answers "can this
-     device render the full stack" — a capable and a weak iPhone need the exact same MediaStream
-     reroute, and an Android phone, however weak, needs none of it. Folding this into either
-     capability gate would make the reroute track the wrong axis. */
-  assert.ok(!/iosSafari/.test(src("smallDevice")), "smallDevice() answers a different question");
-  assert.ok(!/iosSafari/.test(src("richAudio")), "richAudio() answers a different question");
-});
-
-test("exactly one output path — the limiter never reaches both the context and the iOS stream", () => {
-  /* The trap: if the limiter reaches ctx.destination AND a MediaStream, the walk plays twice —
-     once direct, once through #keepalive — which sounds like phasing or doubled loudness, not
-     an obvious routing bug. */
-  const start = src("bedStart");
-  const toDestCount = (start.match(/\.toDestination\(\)/g) || []).length;
-  assert.equal(toDestCount, 1,
-    "toDestination() must appear exactly once — one platform's branch, not a leftover from both");
-  const streamCount = (start.match(/createMediaStreamDestination\(\)/g) || []).length;
-  assert.equal(streamCount, 1, "createMediaStreamDestination() must appear exactly once");
-  const gateAt = start.indexOf("if (iosSafari()");
-  assert.ok(gateAt !== -1, "bedStart must branch on `if (iosSafari() ...)` to choose the route");
-  const streamAt = start.indexOf("createMediaStreamDestination()");
-  const elseAt = start.indexOf("} else {", gateAt);
-  const destAt = start.indexOf(".toDestination()");
-  assert.ok(elseAt !== -1 && gateAt < streamAt && streamAt < elseAt && elseAt < destAt,
-    "the stream route and toDestination() must sit in the two arms of one if/iosSafari()/else — " +
-    "never both reachable from the same build");
-});
-
-test("on iOS the stream exists before srcObject is assigned to it, and the limiter is what feeds it", () => {
-  /* Assigning srcObject before the stream is created, or feeding it from anything other than the
-     limiter, plays nothing at all — the brief's silence risk. */
-  const start = src("bedStart");
-  const streamAt = start.indexOf("createMediaStreamDestination()");
-  const srcObjAt = start.indexOf(".srcObject =");
-  assert.ok(streamAt !== -1 && srcObjAt !== -1 && streamAt < srcObjAt,
-    "the stream must exist before something is assigned to play it");
-  assert.match(start, /limiter\.connect\([a-zA-Z]*[Ss]tream/,
-    "the limiter — the master's own output — must be what reaches the stream, not a bypass");
-});
-
-test("the master chain, including the iOS stream, is a page-lifetime singleton — teardown leaves it alone", () => {
-  /* bed.master/limiter/walk/fade/synth are only ever built once, inside bedStart's `!bed.master`
-     guard — bedTeardown never rebuilds them. Disposing the iOS stream or its wiring here would
-     leave the next Sound press with nothing to reconnect to: the exact "stale stream on a second
-     walk" failure the brief warns about, just arrived at by deleting the wrong thing. The actual
-     per-walk release is mediaSessionStop()'s el.pause(), called from bedStop before the fade even
-     starts — it stops the walk reaching the speaker without touching wiring a second Sound press
-     needs, on iOS exactly as it already does on Android. */
-  const teardown = src("bedTeardown");
-  assert.ok(!/[Ii]osStream/.test(teardown), "the iOS stream is master-chain, not per-walk");
-  assert.ok(!/bed\.limiter/.test(teardown), "the limiter itself is never disposed per-walk");
-  const stop = src("bedStop");
-  assert.match(stop, /mediaSessionStop\(\)/,
-    "el.pause() — the real per-walk release, on every platform — runs from bedStop");
-});
-
-/* ---- When the iOS reroute itself fails ----
-   On Android/desktop, #keepalive failing to play was always harmless — the real signal reached
-   ctx.destination regardless. After the iOS reroute, #keepalive is the ONLY path there, so a
-   decline or a throw means total silence unless something falls the graph back to the
-   destination everyone else uses. Silence with no explanation, on the first audible test this
-   build has ever had, is indistinguishable from "the change broke it" — so this must fall back
-   audibly and say so, not fail quietly. */
-
-function fallbackFn() {
-  /* keepaliveFallback() closes over `bed` and `toast` as free variables in the real code — both
-     become this generated function's own parameters here, the same pattern
-     tests/audio-capability.test.mjs uses for richAudioVerdict's navigator/window/screen. */
-  return new Function("bed", "toast", src("keepaliveFallback") + "; return keepaliveFallback;");
-}
-
-test("a failed play() on iOS falls back to the context destination — disconnect before connect, never both", () => {
-  const calls = [];
-  const mockStream = { tag: "the-ios-stream" };
-  const limiter = {
-    disconnect: function (n) { calls.push(["disconnect", n]); },
-    toDestination: function () { calls.push(["toDestination"]); }
-  };
-  const bed = { iosStream: mockStream, limiter: limiter };
-  const toastCalls = [];
-  const fallback = fallbackFn()(bed, function (msg) { toastCalls.push(msg); });
-  fallback();
-  assert.deepEqual(calls, [["disconnect", mockStream], ["toDestination"]],
-    "must disconnect from the stream before connecting to the destination, in that order — " +
-    "the both-paths trap must not reopen in the one place it was never tested before");
-  assert.equal(bed.iosStream, null,
-    "cleared so a later, stale rejection (or a second decline) is a no-op, not a second fallback");
-  assert.equal(toastCalls.length, 1, "the owner must be told — silence with no explanation is " +
-    "indistinguishable from the change having broken the sound");
-  assert.match(toastCalls[0], /background/i);
-});
-
-test("the fallback is a no-op off the iOS branch, and idempotent once it has already run", () => {
-  const calls = [];
-  const limiter = { disconnect: function () { calls.push("disconnect"); },
-                     toDestination: function () { calls.push("toDestination"); } };
-  const toastCalls = [];
-  const toastFn = function (m) { toastCalls.push(m); };
-  /* Android/desktop: bed.iosStream was never built — a decline there was always harmless, and
-     must stay that way; no reconnect, no toast. */
-  fallbackFn()({ iosStream: null, limiter: limiter }, toastFn)();
-  assert.equal(calls.length, 0, "nothing built the stream, so there is nothing to fall back from");
-  assert.equal(toastCalls.length, 0);
-  /* A second call after the first already ran (bed.iosStream now null) — e.g. a stale rejection
-     arriving late, or mediaSessionStart trying again on the next Sound press — must not touch
-     the limiter or the owner a second time. */
-  const bed2 = { iosStream: null, limiter: limiter };
-  fallbackFn()(bed2, toastFn)();
-  assert.equal(calls.length, 0);
-  assert.equal(toastCalls.length, 0);
-});
-
-test("both play() failure paths reach the fallback, not just a comment saying it's harmless", () => {
-  const fn = src("mediaSessionStart");
-  const playAt = fn.indexOf("el.play()");
-  assert.ok(playAt !== -1);
-  assert.match(fn, /p\.catch\(keepaliveFallback\)/,
-    "a declined play() must reach the fallback — the old bare comment is no longer true on iOS");
-  const catchAt = fn.indexOf("catch (e)", playAt);
-  assert.ok(catchAt !== -1);
-  assert.match(fn.slice(catchAt, catchAt + 60), /keepaliveFallback\(\)/,
-    "a synchronous throw must reach the fallback too, not just be swallowed");
-});
-
-/* ---- Two defects found in a fake-iPhone browser on 2026-09-22, after the branch merged ----
-   Kerem pressed Sound on his own iPhone and it would not switch on. Reproduced by shimming
-   desktop Chrome into iOS Safari's shape (UA, maxTouchPoints, coarse pointer, no deviceMemory)
-   against a local copy: "Sound unavailable: Failed to execute 'connect' on 'AudioNode': cannot
-   connect to an AudioNode belonging to a different audio context." */
-
-test("the iOS stream is built on the LIVE Tone context, not the stale Tone.context getter", () => {
-  /* tuneToneContext() calls Tone.setContext(new Tone.Context({ latencyHint: 0.05 })) at load, so
-     every node the app builds belongs to that replacement. `Tone.context` is a getter fixed to
-     the context Tone made for itself when the bundle evaluated — measured in the page:
-     Tone.context === Tone.getContext() is FALSE, and their rawContexts differ. Building the
-     MediaStreamDestination on Tone.context therefore produced a node from a foreign context, and
-     limiter.connect(it) threw — taking the whole of bedStart down with it, which is exactly
-     "Sound does not toggle on". Desktop never reaches this branch, so nothing caught it. */
+test("the master chain has exactly one output: straight to the destination", () => {
   const fn = src("bedStart");
-  assert.match(fn, /Tone\.getContext\(\)\.createMediaStreamDestination\(\)/,
-    "the stream must come from the same context the limiter belongs to");
-  assert.ok(!/Tone\.context\.createMediaStreamDestination/.test(fn),
-    "Tone.context is the pre-tuneToneContext context and its nodes cannot connect to ours");
+  assert.match(fn, /limiter\.toDestination\(\);/);
+  assert.ok(!/createMediaStreamDestination/.test(fn),
+    "no MediaStream on any platform — this is what mangled the stretch on iOS");
+  /* The assignment, not the word: the comments still explain what was here and why it went. */
+  assert.ok(!/\.srcObject\s*=/.test(html),
+    "#keepalive plays its silent WAV and nothing else, everywhere");
 });
 
-test("the context watchdogs ask the live context whether it is running", () => {
-  /* Same root cause, quieter symptom: both watchdogs read bed.Tone.context.state — the stale
-     context, which is never the one the walk plays through, so they were reporting on something
-     the app does not use. */
-  const html2 = html;
-  assert.ok(!/bed\.Tone\.context\.state/.test(html2),
-    "a watchdog that watches the wrong context cannot see the right one suspend");
-  assert.match(html2, /bed\.Tone\.getContext\(\)\.state !== "running"/);
+test("nothing is left of the reroute: no platform check, no fallback, no escape hatch", () => {
+  /* Each of these existed only to serve the reroute — a fallback for when its play() was
+     declined, an escape hatch to rule it out by URL, and the iOS check that armed it. Dead code
+     around an audio graph is how the last stale-context bug survived two reviews. */
+  ["function iosSafari(", "function keepaliveFallback(", "function nostream(", "var NOSTREAM"]
+    .forEach((gone) => assert.ok(html.indexOf(gone) === -1, gone + " should be gone"));
 });
 
-test("?nostream survives the first route selection, which rewrites the address bar", () => {
-  /* Selecting a route pushes urlForSelection() — a bare path, no query string — so reading
-     location.search at Sound-press time found nothing and the escape hatch silently did nothing.
-     Captured at load instead, and kept in sessionStorage for the tab. */
-  assert.match(html, /var NOSTREAM = location\.search\.indexOf\("nostream"\) !== -1;/);
-  assert.match(src("nostream"), /return NOSTREAM;/,
-    "read once at load — location.search is gone by the time Sound is pressed");
-  assert.ok(!/return location\.search\.indexOf\("nostream"\)/.test(html));
-  const at = html.indexOf("var NOSTREAM");
-  const pushAt = html.indexOf("history.pushState(null");
-  assert.ok(at !== -1 && pushAt !== -1 && at < pushAt,
-    "and captured before anything can rewrite the URL");
-  assert.match(html, /sessionStorage\.setItem\("fieldarc\.nostream", "1"\)/,
-    "a reload or a deep-link redirect keeps the switch for this tab");
+test("#keepalive is a silent decoy again, and only a phone arms it", () => {
+  const start = src("mediaSessionStart"), stop = src("mediaSessionStop");
+  [start, stop].forEach((fn) => {
+    const guard = fn.indexOf("if (!smallDevice()) { return; }");
+    assert.ok(guard !== -1, "one gate, at the top");
+    ["el.play()", "el.pause()", "navigator.mediaSession"].forEach((needle) => {
+      const at = fn.indexOf(needle);
+      if (at !== -1) { assert.ok(guard < at, needle + " must sit behind the gate"); }
+    });
+  });
+  /* And a declined play() is harmless again: the walk reaches the speaker regardless. */
+  assert.ok(!/keepaliveFallback/.test(start));
 });

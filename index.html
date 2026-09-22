@@ -2091,25 +2091,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       (rest ? "?" + rest : "") + location.hash);
   })();
 
-  /* ?nostream is read HERE, at load, and never again — see the nostream() escape hatch far
-     below for what it does. It cannot be read at Sound-press time: selecting a route pushes
-     urlForSelection() into the address bar, which is a path with no query string at all, so by
-     the time anyone presses Sound the flag is gone from location.search. Measured in a
-     fake-iPhone browser on 2026-09-22: ?nostream survived load, the first route selection
-     replaced the URL with /R8845862, and bedStart still took the stream path — the escape hatch
-     silently did nothing. Kept in sessionStorage as well, so a reload, a deep link or the
-     service worker's own redirect keeps it for as long as that tab lives; it is a debugging
-     switch for one session, never something that should outlive the tab. */
-  var NOSTREAM = location.search.indexOf("nostream") !== -1;
-  try {
-    if (NOSTREAM) { sessionStorage.setItem("fieldarc.nostream", "1"); }
-    else if (sessionStorage.getItem("fieldarc.nostream") === "1") { NOSTREAM = true; }
-  } catch (e) { /* private mode: the URL alone still works for this page load */ }
-
   /* ?pxdebug: an on-screen readout of what each stretch voice's engine is actually doing —
      how much recording it received, whether its hops are on time, what render quantum the
-     platform gives it. Captured at load like NOSTREAM above, and for the same reason: the
-     first route selection rewrites the address bar and the query string is gone.
+     platform gives it. Captured at load, because the first route selection rewrites the address
+     bar and the query string is gone by the time anyone presses Sound.
 
      It exists because the stretch engine can only be watched from inside. Kerem, 2026-09-22,
      on iOS: the stretch points "are not stretched as on the browser... like repeating a 2 note
@@ -8158,35 +8143,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      Both halves are fully guarded. Safari implements some of mediaSession and none of the
      background behaviour, so on iPhone this does nothing and must break nothing.
 
-     TWO different questions live in this function, and CRITICAL 1 of the 2026-09-22 review is
-     what happens when they are answered by the same gate:
-       - must #keepalive be PLAYING at all? On iOS it is the ONLY path to the speaker once
-         bedStart's master chain reroutes the limiter into it (see iosSafari() below) — so this
-         must run whenever iosSafari() is true, full stop, regardless of what smallDevice() says.
-         Everywhere else it is the Android backgrounding trick, which stays a smallDevice()
-         question exactly as before.
-       - should this device get a lock-screen card and answer headphone/media-key buttons? That
-         is the desktop-annoyance question alone — a "Fieldscape" Now Playing entry, and desktop
-         media keys silently retargeting to the walk, for an owner who runs DAWs and media
-         players for a living — and it stays smallDevice()-only, on purpose: an iPad is not a
-         desktop, but it is not the machine this gate protects either, and richAudio()/
-         smallDevice() are both render/memory questions with nothing to say about the lock
-         screen either way.
-     Before this fix both lived behind one `if (!smallDevice()) return;` at the top, and an iPad
-     — iosSafari() true, smallDevice() false (no deviceMemory on Safari, and its screen sits
-     744-834px, over the 500px cutoff the guess uses) — returned before el.play() was ever
-     reached. bedStart had already routed the walk's only output into that element's srcObject;
-     nothing ever played it. Total silence: the meter still read signal (it taps the limiter,
-     upstream of the reroute), the button still said Stop, and keepaliveFallback() was
-     unreachable — it only fires from play()'s catch, which this already-returned function never
-     got to. */
+     One gate again, as it was before the iOS reroute existed. While the walk was routed through
+     this element (2026-09-21 to 2026-09-22) it mattered enormously whether the element played —
+     it was the only path to the speaker — and an iPad, which iosSafari() catches but
+     smallDevice() does not, fell silent for exactly that reason. The walk goes straight to the
+     speaker on every platform now (see bedStart's master chain), so #keepalive is a silent decoy
+     again: it costs the Android backgrounding trick if it fails to play, and nothing else.
+
+     Desktop stays out. Arming it there is a regression, not a bonus: a "Fieldscape" Now Playing
+     entry, and desktop media keys silently retargeting to the walk whenever Sound is on, for an
+     owner who runs DAWs and media players for a living. */
   function mediaSessionStart() {
+    if (!smallDevice()) { return; }
     var el = $("#keepalive");
-    /* The element must play whenever it is the sole output path (iosSafari()) as well as
-       whenever smallDevice() wants the Android backgrounding trick — two independent reasons,
-       checked independently, not folded into one guess the way an iPad's failing smallDevice()
-       would wrongly answer for it. */
-    if (el && (smallDevice() || iosSafari())) {
+    if (el) {
       /* Started from inside the Sound click: play() outside a user gesture is refused. Wrapped
          all the way round, not just the promise: a rejection is normal (declined) and handled
          below, but a SYNCHRONOUS throw from play() itself would otherwise escape this function
@@ -8194,22 +8164,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          every step after it — buildRhythmFx, buildVoice, the loop scheduling, Transport.start(),
          the fade-in. The button would say Stop over a graph that was never built.
 
-         What a decline or a throw MEANS is platform-dependent, and that is new as of the iOS
-         reroute: on Android/desktop-shaped phones #keepalive is still a decoy, the real signal
-         already reaches ctx.destination regardless of whether this element plays, so failing
-         here only costs the backgrounding trick. On iOS it is the ONLY output path (see
-         bedStart's master chain) — failing here means total silence unless something falls the
-         graph back to ctx.destination, which is exactly what keepaliveFallback does; it is a
-         no-op on every other platform (bed.iosStream is null there, see keepaliveFallback). */
+         A decline is normal and costs only the backgrounding trick: the walk reaches the
+         speaker whether or not this element plays. */
       try {
         var p = el.play();
-        if (p && p.catch) { p.catch(keepaliveFallback); }
-      } catch (e) { keepaliveFallback(); }
+        if (p && p.catch) { p.catch(function () { /* declined: the walk still sounds */ }); }
+      } catch (e) { /* declined: the walk still sounds */ }
     }
-    /* Metadata and action handlers stay smallDevice()-only, unconditionally — see the comment
-       above this function for why an iPad, which just earned an audible element above, does not
-       also earn a lock-screen card here. */
-    if (!smallDevice()) { return; }
     if (!("mediaSession" in navigator)) { return; }
     try {
       var where = (place && place.properties && place.properties.name) || "Open world";
@@ -8228,94 +8189,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function mediaSessionStop() {
-    /* Mirrors mediaSessionStart's gate exactly: the element must be paused on every platform it
-       might have been started on — smallDevice() alone no longer covers that, an iPad pauses it
-       through iosSafari() alone — while the mediaSession half stays smallDevice()-only, matching
-       what mediaSessionStart actually armed. */
-    var el = $("#keepalive");
-    if (el && (smallDevice() || iosSafari())) {
-      try { el.pause(); } catch (e) { /* never played */ }
-    }
+    /* Mirrors mediaSessionStart's gate: nothing was armed on desktop, so there is nothing to
+       undo there. */
     if (!smallDevice()) { return; }
+    var el = $("#keepalive");
+    if (el) { try { el.pause(); } catch (e) { /* never played */ } }
     if (!("mediaSession" in navigator)) { return; }
     try { navigator.mediaSession.playbackState = "paused"; } catch (e) { /* ignore */ }
   }
 
-  /* ---- iOS: the only web-side idea left ----
-     The recipe above (silent looping element + MediaSession) is Chrome's documented Android
-     trick, and it does not survive an iOS lock screen — confirmed by ear, on Kerem's own iPhone,
-     with that recipe already deployed: sound stopped the instant the screen locked. iOS treats a
-     pure WebAudio graph as inaudible the moment the screen locks, whatever MediaSession claims;
-     the one thing iOS is documented to keep alive in the background is a media element that is
-     genuinely playing. So on iOS the walk's real output is rerouted to flow through #keepalive
-     itself — the element becomes the walk, not a decoy beside it (see bedStart's master chain).
-
-     This is UNPROVEN, not a known fix: the technique is well established on Android and reported
-     inconsistent on iOS across versions. If Kerem's own lock test still comes back silent with
-     this shipped, that is a real, complete answer — it closes the web-side options for iOS
-     background audio, not a bug in this function.
-
-     iosSafari() answers a PLATFORM question ("is this engine Safari on iOS"), not a capability
-     question. smallDevice()'s screen-size guess and richAudio()'s render-cost probe both answer
-     "how much can this device render" — a question with nothing to do with which background-audio
-     trick applies. A capable iPhone and a struggling one need exactly the same reroute; an
-     Android phone, however weak, needs none of it. So this stays its own function: it must never
-     fold into smallDevice() or richAudio(), and it must never widen past iOS Safari itself — an
-     Android phone routed through a MediaStream would gain nothing and only add buffering latency. */
-  function iosSafari() {
-    /* iPhone and iPod identify themselves outright; so does an older iPad. */
-    var ua = /iPad|iPhone|iPod/.test(navigator.userAgent);
-    /* iPadOS 13+ ships a Mac-shaped user agent by default, so the check above misses every
-       modern iPad. The one thing that still tells an iPad wearing that UA apart from an actual
-       Mac is touch: no Mac has ever reported more than one simultaneous touch point (most report
-       zero), while the iPad underneath still reports its real hardware here. */
-    var ipadAsMac = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
-    return ua || ipadAsMac;
-  }
-
-  /* ---- Escape hatch: ?nostream ----
-     IMPORTANT 4 of the 2026-09-22 review: the MediaStream reroute above is UNPROVEN on iOS, and
-     its likeliest failure is worse than keepaliveFallback()'s case (a rejected or thrown
-     play()) — WebKit resolving play() while the stream itself carries no audio. Nothing rejects,
-     nothing throws, the meter still reads signal (it taps the limiter, upstream of the reroute),
-     the button still says Stop, and there is no way for a listener, or Kerem testing this by
-     ear, to tell a real success from that failure. `?nostream` in the URL forces the ordinary
-     `limiter.toDestination()` route used everywhere else, regardless of iosSafari() — a bad
-     outcome on the owner's own iPhone is then one URL away from being ruled out rather than
-     needing a redeploy. See docs/mobile-testing.md. The flag itself is captured at load (search
-     for `var NOSTREAM`) because the address bar loses its query string on the first route
-     selection. */
-  function nostream() {
-    return NOSTREAM;
-  }
-
-  /* ---- When the iOS reroute itself fails ----
-     On iOS #keepalive is the ONLY path to the speaker (bedStart's master chain never connects
-     the limiter to ctx.destination there) — so a decline or a throw from el.play() is not a
-     harmless miss the way it always was on Android, it is total, unexplained silence, on the
-     very build Kerem is about to test by ear for the first time. Falling back to the destination
-     everyone else already uses is the correct trade: background survival is lost, but a walk
-     that only sounds while the screen is on is still a walk, and silence with no explanation is
-     the one outcome indistinguishable from "the change broke it."
-
-     bed.iosStream doubles as its own guard: null on every platform that never built it (this
-     returns immediately, matching the old "still sounds" comment exactly where it is still
-     true), and set back to null the first time this runs so a second failure — including a
-     rejection that was already in flight and arrives after bed.iosStream was cleared, or after
-     a Stop — is a safe no-op rather than a second disconnect or a second toast. Nothing here can
-     "resurrect" the walk: bed.fade's gain, not this wiring, is what makes the graph audible, and
-     Stop already rides that down to 0 on its own timeline regardless of when this fires. */
-  function keepaliveFallback() {
-    if (!bed || !bed.iosStream) { return; }
-    /* Disconnect before connect, explicit: the both-paths trap this task exists to close — the
-       limiter reaching ctx.destination AND the stream at once — must not reopen here, in the
-       one place it was never exercised before this fix. */
-    try { bed.limiter.disconnect(bed.iosStream); } catch (e) { /* already gone */ }
-    bed.iosStream = null;
-    bed.limiter.toDestination();
-    toast("Background audio isn't available on this iPhone — the walk is playing normally, " +
-          "but it will stop if you lock the screen.");
-  }
 
   function bedStart() {
     return loadTone().then(function (Tone) {
@@ -8327,27 +8209,26 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             var limiter = new Tone.Limiter(-1);
             var meter = new Tone.Meter();
             limiter.connect(meter);
-            /* Exactly one output path, chosen once — see iosSafari() above for why iOS needs a
-               different one at all. Reaching BOTH ctx.destination and a MediaStream here would
-               play the walk twice, once direct and once through #keepalive, which sounds like
-               phasing or doubled loudness rather than an obvious routing bug — so this is an
-               if/else, never two unconditional connects. */
-            var iosStream = null;
-            var keepaliveEl = $("#keepalive");
-            if (iosSafari() && !nostream() && keepaliveEl) {
-              /* #keepalive stops being a silent decoy on iOS: its srcObject becomes this stream,
-                 so it carries the walk's real mix from here on rather than the 0.25s of silence
-                 in its src attribute (srcObject takes priority over src by spec, so the silent
-                 WAV is simply never reached on this branch). mediaSessionStart still plays the
-                 element from the same Sound gesture as always, further down this chain — only
-                 what it is playing has changed. */
-              iosStream = Tone.getContext().createMediaStreamDestination();
-              limiter.connect(iosStream);
-              keepaliveEl.srcObject = iosStream.stream;
-            } else {
-              /* Every other platform: unchanged from before this task. */
-              limiter.toDestination();
-            }
+            /* One output path, on every platform: straight to the speaker.
+
+               For one day (2026-09-21 to 2026-09-22) iOS was different — the walk was routed
+               through #keepalive's srcObject via a MediaStreamDestination, because iOS keeps a
+               backgrounded page alive only while a media element is genuinely playing, and
+               Kerem's own lock test had confirmed that a pure WebAudio walk stops dead when the
+               screen locks. It worked, in the sense that the walk reached the speaker. It also
+               wrecked the sound: he heard the stretch points as "repeating a 2 note pattern" on
+               both iOS Safari and iOS Chrome, in two different parks, while desktop was right.
+
+               Isolated by elimination, not by argument. diag.html's stretch probe plays the same
+               engine straight to the speaker and sounded correct on the same phone; ?nostream in
+               the app, which is this same direct path, sounded correct too; everything else —
+               engine, recordings, parameters — was measured identical (recordings whole at
+               152.6s/399.8s, 0% late hops, q128 @48k, x1 fft16384 on both devices). What was
+               left was WebKit's own MediaStream playback path.
+
+               Kerem's choice, 2026-09-22, asked plainly: the sound wins. A walk needs the screen
+               on, which is what keepAwake() is for and how this behaved before the reroute. */
+            limiter.toDestination();
             /* The Sound toggle's own fade, and nothing else's. It has to be its own node because
                bed.walk already belongs to the GPS walk fade (setWalkLevel ramps it every time the
                walker drifts off the route) — one node with two writers means the last ramp to
@@ -8365,7 +8246,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             var synth = new Tone.Gain(1).connect(walk);
             bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: walk,
                     walk: walk, synth: synth, fade: fade, fadeTimer: null,
-                    limiter: limiter, meter: meter, Tone: Tone, iosStream: iosStream };
+                    limiter: limiter, meter: meter, Tone: Tone };
             /* synth was just built at Gain(1) — in open world that is wrong the instant the
                route is further than GPS_FADE_FROM away. Give it the level the walker's distance
                already earned instead of leaving it full until the next worldMove tick happens to
@@ -14219,10 +14100,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      real. It is inline because there is no build step and a walk starts where there is no
      signal.
 
-     The src below (the silent WAV) is what plays on Android and desktop. On iOS, bedStart's
-     master chain instead sets this element's srcObject to a MediaStream carrying the walk's
-     real mix — srcObject overrides src by spec, so the silent WAV is never reached there. See
-     iosSafari() and the master-chain build in bedStart. -->
+     The src below is a silent WAV, and that is all this element ever plays: for one day the
+     walk itself was routed through it on iOS, for the lock screen, and it wrecked the sound
+     there (see bedStart's master chain). -->
 <audio id="keepalive" loop preload="auto" aria-hidden="true"
        src="data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YdAHAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA=="></audio>
 </body>

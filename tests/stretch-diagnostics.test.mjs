@@ -54,9 +54,10 @@ test("the app keeps the engine's report on the voice and paints it only under ?p
   assert.match(paint, /st\.late \/ st\.hops/);
 });
 
-test("?pxdebug survives the URL rewrite, exactly as ?nostream had to", () => {
-  /* Same trap: selecting a route pushes urlForSelection(), a bare path, so a flag read later
-     from location.search is already gone. Captured at load and kept for the tab. */
+test("?pxdebug survives the URL rewrite", () => {
+  /* Selecting a route pushes urlForSelection(), a bare path, so a flag read later from
+     location.search is already gone — the trap that made ?nostream silently inert when it was
+     first shipped. Captured at load and kept for the tab. */
   assert.match(html, /var PXDEBUG = location\.search\.indexOf\("pxdebug"\) !== -1;/);
   assert.match(html, /sessionStorage\.setItem\("fieldarc\.pxdebug", "1"\)/);
   const at = html.indexOf("var PXDEBUG");

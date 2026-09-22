@@ -44,15 +44,16 @@ it.
 There is no cable route to an iPhone from this Windows machine (Safari remote debugging needs a
 Mac), so the iPhone checks are done by hand on the deployed site.
 
-1. **Does it sound?** Open the app, press Sound. On iOS the walk is routed through the page's
-   `#keepalive` element (a MediaStream), not straight to the speaker, so iOS keeps it alive with
-   the screen locked. If a walk is silent while the level meter moves, the reroute is the
-   suspect: the meter taps the limiter, which sits before the reroute.
-2. **Rule the reroute out in one step:** add `?nostream` to the URL (e.g.
-   `.../Fieldscape/?nostream`). That forces the ordinary `limiter.toDestination()` route. If it
-   sounds with `?nostream` and not without, the reroute is broken on that iOS version.
-3. **Does it survive the lock screen?** Press Sound, wait for the fade-in, lock the phone for
-   two minutes, unlock. Sound should never stop. With `?nostream` it is expected to stop when
-   the screen locks; that is the baseline measured on 2026-09-22.
+1. **Does it sound?** Open the app, press Sound. The walk goes straight to the speaker on every
+   platform.
+2. **Does it survive the lock screen?** No, and that is known: on iOS a walk stops when the
+   screen locks. The walk was routed through a media element for one day to get around that, and
+   it wrecked the stretch sound on iOS (2026-09-22) — Kerem chose the sound. Keep the screen on;
+   the wake lock does that for you while a walk is running.
+3. **If a stretch point sounds wrong**, open `diag.html` section 6 ("Stretch engine, playing for
+   real"): it runs the same engine on a synthetic source and says whether the engine itself is
+   healthy on this device. Then open the app with `?pxdebug` and read the overlay — seconds of
+   recording received, read-head position, late hops, render quantum, the stretch and FFT the
+   point is actually using, and whether the row is the published one or a local draft.
 4. `diag.html` section 5 shows the measured render cost, which audio path the device got, and
    `tinyMemory()`/`smallDevice()`. Screenshot that section when reporting.
