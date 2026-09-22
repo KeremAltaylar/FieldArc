@@ -85,3 +85,19 @@ test("the probe asks for the same audio buffer the walk asks for", () => {
   assert.match(diag, /latencyHint: 0\.05/);
   assert.match(html, /Tone\.setContext\(new Tone\.Context\(\{ latencyHint: 0\.05 \}\)\)/);
 });
+
+test("the ?pxdebug overlay also reports the walk, and keeps reporting it with no voice playing", () => {
+  /* The second fault Kerem reported the same day: crossing from one park to another leaves the
+     new route silent. That question is answered by which route the walk believes it is on, how
+     far off its line the walker is, what the synth stage is actually at, and whether a handover
+     is still pending — and by none of them if the overlay only repaints when a recording plays,
+     since the whole symptom is nothing playing. */
+  const paint = fn(html, "pxDebugPaint");
+  assert.match(paint, /pacer\.world \? "world" : "park"/);
+  assert.match(paint, /pacer\.routeId/);
+  assert.match(paint, /pacer\.routeDist/);
+  assert.match(paint, /bed\.synthLevel/);
+  assert.match(paint, /pendingSwapId/);
+  assert.match(html, /if \(PXDEBUG\) \{\n\s+setInterval\(function \(\) \{ try \{ pxDebugPaint\(\); \}/,
+    "repainted on a timer, not only from a stretch voice's position message");
+});

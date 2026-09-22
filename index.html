@@ -10056,6 +10056,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       document.body.appendChild(box);
     }
     var lines = [], ids = Object.keys((bed && bed.voices) || {});
+    /* The walk's own state, on the same overlay, because the other thing Kerem reported on
+       2026-09-22 is a route that never starts sounding after crossing from one park to
+       another — and that question is answered by exactly these five numbers: which route the
+       walk believes it is on, how far off its line the walker is (past the leash, the synths
+       are correctly silent), what level the synth stage is actually at, and whether a route
+       handover is still pending rather than landed. */
+    if (pacer) {
+      var pend = pendingSwapId ? " swap->" + String(pendingSwapId).slice(0, 8) : "";
+      lines.push("walk " + (pacer.world ? "world" : "park") +
+                 "  route " + (pacer.routeId ? String(pacer.routeId).slice(0, 8) : "none") +
+                 "  " + (isFinite(pacer.routeDist) ? Math.round(pacer.routeDist) + "m" : "far") +
+                 "  synth " + (bed && bed.synthLevel !== undefined ? bed.synthLevel.toFixed(2) : "1.00") +
+                 "  zones " + pacer.zones.length + pend);
+    }
     ids.forEach(function (id) {
       var v = bed.voices[id], st = v && v.stretch;
       if (!st || !st.sr) { return; }
@@ -10068,6 +10082,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     });
     if (!lines.length) { lines.push("no stretch voice playing yet — walk into a point's radius"); }
     box.textContent = lines.join("\n");
+  }
+
+  /* A stretch voice paints this whenever it reports its position, but the walk line has to keep
+     moving when no recording is playing at all — which is exactly the case being caught here (a
+     route that never starts sounding). One second is slow enough to cost nothing and fast enough
+     to read while walking. Armed once, only under the flag. */
+  if (PXDEBUG) {
+    setInterval(function () { try { pxDebugPaint(); } catch (e) { /* not ready yet */ } }, 1000);
   }
 
   /* The one writer of the worklet's parameters: ensureVoice, warpStep and the panel all post this. */
