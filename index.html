@@ -7769,6 +7769,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     wantSound = false;
     if (!bed) { return; }
     bed.on = false;
+    mediaSessionStop();
     $("#patch-play").textContent = "Sound";
     $("#patch-play").setAttribute("aria-pressed", "false");
     clearTimeout(bed.fadeTimer);
@@ -7828,6 +7829,49 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        admit it was pressed is a broken control, whatever the audio is doing. bedStop owns it. */
   }
 
+  /* ---- Staying alive with the screen off ----
+     A walk is forty minutes outdoors with the phone in a pocket. Until this existed that needed
+     wakeLock("screen") held for the whole of it — battery, pocket taps, sunlight — and the
+     context still got suspended, which is what bed.resumeLoop has always been patching over.
+
+     Android Chrome keeps a backgrounded page's audio alive while the page owns an active media
+     session. A WebAudio graph does not create one; an <audio> element actually playing does. So
+     the silent loop is not a hack around the rule, it is the rule: the page really is playing
+     media, and the graph it also runs is allowed to keep going.
+
+     Both halves are fully guarded. Safari implements some of mediaSession and none of the
+     background behaviour, so on iPhone this does nothing and must break nothing. */
+  function mediaSessionStart() {
+    var el = $("#keepalive");
+    if (el) {
+      /* Started from inside the Sound click: play() outside a user gesture is refused. */
+      var p = el.play();
+      if (p && p.catch) { p.catch(function () { /* declined — the walk still sounds */ }); }
+    }
+    if (!("mediaSession" in navigator)) { return; }
+    try {
+      var where = (place && place.properties && place.properties.name) || "Open world";
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: "Fieldscape", artist: where, album: "A walk"
+      });
+      navigator.mediaSession.playbackState = "playing";
+      /* The lock screen and the button on a pair of headphones both arrive here. Without these
+         they appear to work and do nothing, which is worse than not appearing at all. */
+      navigator.mediaSession.setActionHandler("play", function () {
+        if (!(bed && bed.on) && !wantSound) { $("#patch-play").click(); }
+      });
+      navigator.mediaSession.setActionHandler("pause", function () { bedStop(); });
+      navigator.mediaSession.setActionHandler("stop", function () { bedStop(); });
+    } catch (e) { /* an older or partial implementation — the walk still sounds */ }
+  }
+
+  function mediaSessionStop() {
+    var el = $("#keepalive");
+    if (el) { try { el.pause(); } catch (e) { /* never played */ } }
+    if (!("mediaSession" in navigator)) { return; }
+    try { navigator.mediaSession.playbackState = "paused"; } catch (e) { /* ignore */ }
+  }
+
   function bedStart() {
     return loadTone().then(function (Tone) {
       return Tone.start().then(function () {
@@ -7876,6 +7920,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         /* Stopped while the context was resuming. Do not build a graph nobody asked for. */
         if (!wantSound) { bed.on = false; return; }
         keepAwake(true);
+        mediaSessionStart();
         if (!bed.rfx) { bed.rfx = buildRhythmFx(Tone, patch); }
         /* Built dry, then given the patch. Without this the drive stage sits at zero
            whatever the patch says, because construction only sets what the constructor
@@ -13556,5 +13601,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   sizePeek();
 })();
 </script>
+<!-- Machinery, not a control. Android Chrome keeps a backgrounded page's audio alive only while
+     the page owns an active media session, and a WebAudio graph alone never creates one — which
+     is why a walk used to need the screen held on for its whole length. This element is one
+     second of silence on a loop; playing it from the Sound gesture is what makes the session
+     real. It is inline because there is no build step and a walk starts where there is no
+     signal. -->
+<audio id="keepalive" loop preload="auto" aria-hidden="true"
+       src="data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YdAHAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA=="></audio>
 </body>
 </html>

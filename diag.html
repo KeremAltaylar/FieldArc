@@ -109,6 +109,12 @@ pre {
 <div id="audioenv"></div>
 <button type="button" id="aud-run">Run the audio budget test</button>
 <pre id="audlog">not run — tap the button (it needs a tap to start audio)</pre>
+<!-- Same recipe as index.html's #keepalive (see bedStart/mediaSessionStart there): a silent
+     looping element, armed from the Run tap's own gesture, is what lets a backgrounded tab's
+     audio context be checked for real rather than guessed at. Machinery, not a control. -->
+<audio id="diag-keepalive" loop preload="auto" aria-hidden="true"
+       src="data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YdAHAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA=="></audio>
+<pre id="audio-summary">audio not run yet</pre>
 
 <h2>6 · Errors</h2>
 <pre id="errlog">none</pre>
@@ -323,6 +329,74 @@ pre {
                       ? "" : el.textContent + "\n") + s;
   }
   function pct(ms, seconds) { return (ms / (seconds * 1000) * 100).toFixed(1) + "%"; }
+
+  /* ---- One copyable line, because the only real Android here is a phone that is not in the
+     room ----
+     Kerem's brother is far away and good for about one test a day; this cannot be a screen
+     someone has to be talked through over a call. So everything section 5 learns — this device,
+     whether it runs the cheap mobile stack, the render numbers, and whether audio survived being
+     backgrounded — collapses into one line he can screenshot and send, with nothing left for the
+     person reading it aloud to interpret.
+
+     The background-audio half of that line needs the same silent-loop-plus-MediaSession trick
+     index.html uses (see mediaSessionStart there) applied to THIS page, armed from the same tap
+     that starts the render test — diag.html deliberately depends on nothing from index.html (see
+     the section-5 header comment), so it carries its own tiny copy rather than importing one. */
+  var liveCtx = null;               /* kept open across the run so its .state can be read later */
+  var bg = { armed: false, startedAt: null, result: null };
+  var results = {};
+
+  function armBackgroundProbe(ctx) {
+    liveCtx = ctx;
+    var el = $("#diag-keepalive");
+    if (el) {
+      var p = el.play();
+      if (p && p.catch) { p.catch(function () { /* declined — the render test still runs */ }); }
+    }
+    if ("mediaSession" in navigator) {
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: "Fieldscape diagnostics", artist: "Background audio probe", album: "diag.html"
+        });
+        navigator.mediaSession.playbackState = "playing";
+      } catch (e) { /* an older or partial implementation */ }
+    }
+    bg.armed = true;
+    bg.startedAt = Date.now();
+    bg.result = null;
+  }
+
+  /* Fires when the tab comes back — locking the phone or switching away counts as hidden on
+     Android Chrome the same way a tab switch does. This is the one moment the answer can be
+     read, so it is read then rather than guessed from a timer, and it re-reads on every return
+     in case the phone is locked and unlocked more than once during one test. */
+  document.addEventListener("visibilitychange", function () {
+    if (!bg.armed || document.hidden) { return; }
+    var el = $("#diag-keepalive");
+    bg.result = {
+      elapsedSec: Math.round((Date.now() - bg.startedAt) / 1000),
+      ctxState: liveCtx ? liveCtx.state : "unknown",
+      keptPlaying: !!(el && !el.paused)
+    };
+    renderSummary();
+  });
+
+  function renderSummary() {
+    var mobile = smallDevice();
+    var renderPart = results.mobile === undefined ? "render: not measured yet"
+      : "phone stack " + pct(results.mobile, results.seconds) +
+        ", desktop stack " + pct(results.desktop, results.seconds) +
+        (results.stretch !== undefined ? ", one recording " + results.stretch.toFixed(1) + "%" : "") +
+        ", total " + results.total.toFixed(0) + "%";
+    var bgPart = bg.result
+      ? ("background audio: ctx " + bg.result.ctxState + " after " + bg.result.elapsedSec +
+         "s backgrounded, keepalive " + (bg.result.keptPlaying ? "still playing" : "paused"))
+      : "background audio: not tested — background this tab 2+ min after tapping Run, then reopen it";
+    $("#audio-summary").textContent = navigator.userAgent +
+      " | mobile audio path: " + (mobile ? "YES" : "NO") +
+      " | " + renderPart + " | " + bgPart;
+  }
+
   function load(src) {
     return new Promise(function (res, rej) {
       var s = document.createElement("script");
@@ -427,11 +501,18 @@ pre {
     var began = performance.now();
     $("#audlog").textContent = "running — this takes about half a minute, leave the screen on";
 
+    /* A second tap re-arms the probe — close whatever the last run left open first, so this
+       page never accumulates AudioContexts across repeated runs. */
+    if (liveCtx) { try { liveCtx.close(); } catch (e) {} }
+
     /* The live context first, because it is the only way to see what buffer this phone actually
-       hands out for the latencyHint the app asks for. */
+       hands out for the latencyHint the app asks for. Kept open (not closed at the end) so its
+       .state can still answer the background-audio question after the tab is backgrounded. */
     var AC = window.AudioContext || window.webkitAudioContext;
     var live = new AC({ latencyHint: 0.05 });
     live.resume();
+    /* Armed from this same tap — play() outside a user gesture is refused, same as bedStart. */
+    armBackgroundProbe(live);
     audLog("sample rate      " + live.sampleRate + " Hz");
     audLog("base latency     " + (live.baseLatency * 1000).toFixed(1) + " ms  (app asks for 50)");
     audLog("output latency   " + (live.outputLatency ? (live.outputLatency * 1000).toFixed(1) + " ms"
@@ -453,7 +534,9 @@ pre {
       audLog("render load      renderCapacity not available in this browser");
     }
 
-    var SECONDS = 4, results = {};
+    var SECONDS = 4;
+    results = { seconds: SECONDS };
+    renderSummary();       /* shows device + mobile-audio-path + "not tested" immediately */
     load("https://unpkg.com/tone@15/build/Tone.js")
       .then(function () { return load("src/paulx-worklet.js"); })
       .then(function () {
@@ -474,6 +557,7 @@ pre {
           audLog("one recording    " + (results.stretch).toFixed(1) + "% each, two play at once");
         }
         var total = results.mobile / (SECONDS * 1000) * 100 + 2 * (results.stretch || 0);
+        results.total = total;
         audLog("");
         audLog("TOTAL, as it runs now: " + total.toFixed(0) + "% of one core");
         audLog(total < 50 ? "comfortable — something else is causing the glitching"
@@ -488,12 +572,16 @@ pre {
           "measured in " + ((performance.now() - began) / 1000).toFixed(0) + "s");
         $("#audlog").className = total < 75 ? "ok" : "bad";
         btn.disabled = false;
-        live.close();
+        renderSummary();
+        /* Not closed: this AudioContext is the background-audio probe's own witness, and
+           closing it here would make every backgrounded reading come back "closed" instead of
+           the real answer. It closes on the next run (above) or when the tab itself goes away. */
       })
       .catch(function (e) {
         pushErr("audio budget: " + (e && e.message ? e.message : e));
         audLog("FAILED: " + (e && e.message ? e.message : e));
         btn.disabled = false;
+        renderSummary();
       });
   });
 }());
