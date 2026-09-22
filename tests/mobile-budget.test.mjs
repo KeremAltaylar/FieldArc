@@ -40,7 +40,8 @@ test("latency is an explicit 50ms, not a keyword", () => {
 
 test("a phone's warp is a Vibrato; everything else keeps its chorus", () => {
   const fn = src("makeWarp");
-  assert.match(fn, /smallDevice\(\)/);
+  assert.match(fn, /richAudio\(\)/,
+    "measured now, not guessed from screen size — see tests/audio-capability.test.mjs");
   assert.match(fn, /new Tone\.Chorus\(opts\)/, "a desktop is unchanged");
   assert.match(fn, /new Tone\.Vibrato/,
     "the same modulated-delay idea with one line instead of a stereo pair: measured 16.3% " +
@@ -76,24 +77,25 @@ test("a warp never borrows a parameter something else already drives", () => {
 
 /* ---- Delays ---- */
 
-test("a phone's voices reach the room without the delay line", () => {
+test("a device that measures too expensive reaches the room without the delay line", () => {
   const fn = src("buildFxChain");
-  assert.match(fn, /if \(smallDevice\(\)\)/);
-  assert.match(fn, /new Tone\.FeedbackDelay/, "a desktop still has its echoes");
-  const small = fn.slice(fn.indexOf("if (smallDevice())"));
+  assert.match(fn, /if \(!richAudio\(\)\)/,
+    "measured now, not guessed from screen size — see tests/audio-capability.test.mjs");
+  assert.match(fn, /new Tone\.FeedbackDelay/, "a device that measures cheap enough still has echoes");
+  const small = fn.slice(fn.indexOf("if (!richAudio())"));
   assert.ok(!/FeedbackDelay/.test(small.slice(0, small.indexOf("return fx;"))) ||
             small.indexOf("FeedbackDelay") > small.indexOf("return fx;"),
-    "the small-device branch must not build one");
+    "the cheap branch must not build one");
 });
 
-test("the delay handles still exist on a phone, so every patch write lands somewhere", () => {
+test("the delay handles still exist on the cheap path, so every patch write lands somewhere", () => {
   /* applyPatchToVoice ramps fx/fx2/fx3 .delay.delayTime/.feedback/.wet unconditionally, and
-     buildVoice CONNECTS voices into fx.delay. A phone that simply omitted them would throw on
+     buildVoice CONNECTS voices into fx.delay. A branch that simply omitted them would throw on
      the first patch apply and route no audio at all. */
   const fn = src("buildFxChain");
-  const small = fn.slice(fn.indexOf("if (smallDevice())"), fn.indexOf("return fx;"));
+  const small = fn.slice(fn.indexOf("if (!richAudio())"), fn.indexOf("return fx;"));
   ["delayTime", "feedback", "wet"].forEach((k) => {
-    assert.ok(small.includes("dIn." + k + " ="), "the small-device branch must still expose ." + k);
+    assert.ok(small.includes("dIn." + k + " ="), "the cheap branch must still expose ." + k);
   });
   assert.match(small, /dIn\.connect\(fx\.reverb\)/, "and still carry the audio to the room");
 });

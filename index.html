@@ -7751,9 +7751,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      exactly what Kerem saw in Koşuyolu on 2026-09-21. The patch's own number stays the ceiling;
      this only lowers it on a device that cannot pay. deviceMemory is absent on iOS, so a coarse
      pointer on a small screen counts as a phone too. */
-  /* "Can this device pay for the heavy things?" — asked by the voice budget and by the rooms,
-     so it lives in one place rather than being re-derived at each. deviceMemory is absent on
-     iOS, so a coarse pointer on a small screen counts as a phone too. */
+  /* A guess, kept only as the fallback for a device richAudio() cannot measure (see below) — it
+     used to be the answer itself, gating makeRoom/makeWarp/buildFxChain/voiceBudget directly,
+     and it guessed wrong: Kerem's iPhone (390px, coarse pointer, no deviceMemory) fails this and
+     was stripped of convolution reverb, the chorus warp and every delay line while rendering the
+     full stack it was stripped of at 9.7% of one core — the phone had 94% of a core to spare.
+     deviceMemory is absent on iOS, so a coarse pointer on a small screen still counts as "small"
+     here, which is exactly the shape of guess that produced that regression. */
   function smallDevice() {
     var mem = navigator.deviceMemory;
     return (mem !== undefined && mem <= 4) ||
@@ -7761,8 +7765,174 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        Math.min(screen.width, screen.height) <= 500);
   }
 
+  /* ---- Deciding by measuring, not by guessing ----
+     smallDevice() answers "does this look like a phone?" richAudio() answers the question that
+     actually matters — "can this device render the full stack in real time?" — by rendering a
+     short copy of it through an OfflineAudioContext and timing it, the same method diag.html
+     section 5 proved: wall time to produce N seconds of audio, over N, is the share of one core
+     that stack needs, and it does not depend on the output device or on what else the phone
+     happens to be doing at the moment someone asks navigator.deviceMemory.
+
+     A fine pointer (a mouse) is never measured and never downgraded — a probe that happened to
+     land on a busy desktop must not be able to take away Kerem's own convolution and chorus, so
+     desktop returns true unconditionally, before any of the rest of this runs. */
+  var AUDIOCAP_KEY = "fieldarc.audiocap";     /* the measured %, not just yes/no — see richAudio */
+  /* Calibrated from two real renders of the full stack (task-8-brief.md), not chosen to make a
+     number come out right: Kerem's iPhone 9.7% (kept full quality — overwhelming headroom, and
+     it sounded wrong without it), the dev desktop 70.6% (also full quality, which is what it
+     ships today). A device that renders above this cannot keep up in real time and earns the
+     cuts smallDevice() used to hand out by guesswork. */
+  var AUDIOCAP_THRESHOLD = 80;
+
+  var finePointerCached = null;
+  function finePointer() {
+    if (finePointerCached === null) {
+      finePointerCached = !!(window.matchMedia && window.matchMedia("(pointer: fine)").matches);
+    }
+    return finePointerCached;
+  }
+
+  /* A sane render-cost percentage: finite, positive, and not so large that the clock or the
+     context lied to us. Nonsense (zero, negative, NaN, absurdly large) is not "fast" or "slow",
+     it is "unmeasured", and unmeasured is not a case to guess optimistically on. */
+  function saneCapabilityPct(pct) {
+    return typeof pct === "number" && isFinite(pct) && pct > 0 && pct < 100000;
+  }
+
+  /* Pure on purpose — no localStorage, no matchMedia, no probe — so the threshold and the
+     fallback can be tested as plain functions rather than through a browser. richAudio() below
+     is the only caller; it supplies the two facts (is the pointer fine, what did the probe read
+     back, if anything) that decide everything else. */
+  function richAudioVerdict(isFinePointer, pct) {
+    if (isFinePointer) { return true; }
+    if (saneCapabilityPct(pct)) { return pct <= AUDIOCAP_THRESHOLD; }
+    /* Missing, thrown, or nonsense: a device that cannot even be measured is not a device to
+       hand the expensive path to on an optimistic guess. Fall back to the old answer rather
+       than a new one. */
+    return !smallDevice();
+  }
+
+  var audioCapPct;             /* undefined until primeAudioCapability resolves or finds a cache */
+
+  /* The four call sites (makeRoom, makeWarp, buildFxChain, voiceBudget) all ask this instead of
+     smallDevice() now. It never blocks: primeAudioCapability has already run, once, inside the
+     first bedStart(), before buildVoice() is reachable — see the ordering note there. */
+  function richAudio() {
+    if (finePointer()) { return true; }
+    if (audioCapPct === undefined) {
+      try {
+        var cached = localStorage.getItem(AUDIOCAP_KEY);
+        if (cached !== null) { audioCapPct = parseFloat(cached); }
+      } catch (e) { /* private mode — primeAudioCapability tries again this session */ }
+    }
+    return richAudioVerdict(false, audioCapPct);
+  }
+
+  /* The same node types and counts as the full route stack buildVoice/buildFxChain/makeRoom
+     build when richAudio() is true: three effect chains (a room and a delay line each), the
+     pad's two synths, the sector line and the third voice each through a waveshaper/warp/filter,
+     and the rhythm room — mirrors diag.html's buildStack(T, false). Built standalone rather than
+     through buildFxChain/makeRoom/makeWarp themselves, because those now ask richAudio() — the
+     very answer this probe exists to produce — and calling them here would measure whichever
+     path they happened to fall back to rather than the path actually being decided. If buildVoice
+     changes shape, this and diag.html's buildStack both need the same change. */
+  function audioCapabilityStack(Tone) {
+    var dest = new Tone.Gain(0.8).toDestination();
+    var lim = new Tone.Limiter(-1).connect(dest);
+    var bus = new Tone.Gain(1).connect(lim);
+    function room(decay) { return new Tone.Reverb({ decay: decay, wet: 0.4 }).connect(bus); }
+    function chain(c) {
+      var rev = room(c.d), dIn = new Tone.Gain(1);
+      var hp = new Tone.Filter({ type: "highpass", frequency: 170, Q: 0.7 });
+      var del = new Tone.FeedbackDelay({ maxDelay: 4, delayTime: c.t, feedback: c.fb, wet: 1 });
+      var send = new Tone.Gain(c.w);
+      dIn.connect(rev); dIn.connect(hp); hp.connect(del); del.connect(send); send.connect(rev);
+      return dIn;
+    }
+    var fx = chain({ d: 3.4, t: 0.3, fb: 0.72, w: 0.75 });
+    var fx2 = chain({ d: 0.4, t: 0.2, fb: 0.70, w: 0.40 });
+    var fx3 = chain({ d: 7.6, t: 0.5, fb: 0.70, w: 0.68 });
+    function voice(into, n, rate) {
+      var vb = new Tone.Gain(0.8).connect(into), mod = new Tone.Gain(1).connect(vb);
+      var filt = new Tone.Filter(1200, "lowpass").connect(mod);
+      var warp = new Tone.Chorus({ frequency: rate, delayTime: 5.5, depth: 0.6, wet: 0.3 });
+      warp.start();
+      warp.connect(filt);
+      var drive = new Tone.Gain(1).connect(warp);
+      var ws = new Tone.WaveShaper(function (x) { return Math.tanh(x * 2.6); }, 2048).connect(drive);
+      for (var i = 0; i < n; i++) {
+        var s = new Tone.FMSynth({ harmonicity: 1, modulationIndex: 4 }).connect(ws);
+        s.triggerAttack(110 * (i + 1), 0);
+      }
+    }
+    voice(fx, 2, 0.55);          /* the pad: bass and top */
+    voice(fx2, 1, 1.7);          /* the sector counter-line */
+    voice(fx3, 1, 0.35);         /* the third voice */
+    var rr = room(1.2);
+    var rd = new Tone.FeedbackDelay({ delayTime: 0.25, feedback: 0.34, wet: 0.22 }).connect(rr);
+    var rf = new Tone.Filter(9000, "lowpass").connect(rd);
+    var rs = new Tone.NoiseSynth().connect(rf); rs.triggerAttack(0);
+  }
+
+  /* Renders 1.5s of the full stack offline and returns the wall time to do it as a percentage of
+     realtime — a couple hundred milliseconds of real work on a phone with headroom, which is why
+     1.5s was chosen over diag.html's 4s: this runs once, unattended, on the first Sound press of
+     a person's life with this device, and has to be short enough not to be felt there. Resolves
+     -1 (nonsense — see saneCapabilityPct) rather than rejecting on any failure, because a phone
+     that cannot even run this probe is not a phone to leave hanging. */
+  function audioCapability(Tone) {
+    var SECONDS = 1.5;
+    if (typeof OfflineAudioContext === "undefined") { return Promise.resolve(-1); }
+    return new Promise(function (resolve) {
+      try {
+        var ctx = new OfflineAudioContext(2, Math.round(48000 * SECONDS), 48000);
+        var prev = Tone.getContext();
+        Tone.setContext(ctx);
+        audioCapabilityStack(Tone);
+        /* A convolver's impulse renders before the clock starts (Tone.Reverb builds it by
+           rendering offline internally) — waiting the same 400ms diag.html's renderCost does
+           measures the cost of RUNNING the stack, which is what the threshold above is
+           calibrated from, not the one-off cost of building it. */
+        setTimeout(function () {
+          var t0 = performance.now();
+          ctx.startRendering().then(function () {
+            var ms = performance.now() - t0;
+            try { Tone.setContext(prev); } catch (e) {}
+            resolve(ms / (SECONDS * 1000) * 100);
+          }).catch(function () {
+            try { Tone.setContext(prev); } catch (e) {}
+            resolve(-1);
+          });
+        }, 400);
+      } catch (e) { resolve(-1); }
+    });
+  }
+
+  var audioCapPriming = null;   /* the in-flight probe, so two overlapping bedStarts share one */
+
+  /* Run once, before buildVoice() can choose anything — see the ordering note in bedStart. A
+     fine-pointer device resolves immediately without ever touching OfflineAudioContext; a phone
+     with a cached reading from a previous session resolves immediately too. Only a coarse-pointer
+     device on its first-ever Sound press actually waits on the probe. */
+  function primeAudioCapability(Tone) {
+    if (finePointer()) { return Promise.resolve(); }
+    if (audioCapPct !== undefined) { return Promise.resolve(); }
+    try {
+      var cached = localStorage.getItem(AUDIOCAP_KEY);
+      if (cached !== null) { audioCapPct = parseFloat(cached); return Promise.resolve(); }
+    } catch (e) { /* private mode: measure fresh below rather than fail closed */ }
+    if (audioCapPriming) { return audioCapPriming; }
+    audioCapPriming = audioCapability(Tone).then(function (pct) {
+      audioCapPct = pct;
+      if (saneCapabilityPct(pct)) {
+        try { localStorage.setItem(AUDIOCAP_KEY, String(pct)); } catch (e) { /* private mode */ }
+      }
+    });
+    return audioCapPriming;
+  }
+
   function voiceBudget(n) {
-    return smallDevice() ? Math.min(n, 2) : n;
+    return richAudio() ? n : Math.min(n, 2);
   }
 
   /* Stopping is two moments, not one. First the whole walk fades — and it has to keep sounding
@@ -7850,11 +8020,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      Both halves are fully guarded. Safari implements some of mediaSession and none of the
      background behaviour, so on iPhone this does nothing and must break nothing.
 
-     Gated to smallDevice() — the same check makeWarp/buildFxChain/voiceBudget already use — for
-     the opposite reason those gate their own cost: desktop has no backgrounding problem this
-     solves (no screen to lock, no phone in a pocket), and arming it there is a regression, not a
-     bonus: a "Fieldscape" Now Playing entry, and desktop media keys silently retargeting to the
-     walk whenever Sound is on, for an owner who runs DAWs and media players for a living. */
+     Gated to smallDevice() still, on purpose, even though makeWarp/buildFxChain/voiceBudget have
+     moved on to richAudio(): this is not a cost question — a capable phone still needs the
+     backgrounding trick as much as a weak one does — so the render-cost probe has nothing to say
+     here, and the old "does this look like a phone" guess is exactly the right question this
+     time. Desktop has no backgrounding problem this solves (no screen to lock, no phone in a
+     pocket), and arming it there is a regression, not a bonus: a "Fieldscape" Now Playing entry,
+     and desktop media keys silently retargeting to the walk whenever Sound is on, for an owner
+     who runs DAWs and media players for a living. */
   function mediaSessionStart() {
     if (!smallDevice()) { return; }
     var el = $("#keepalive");
@@ -7900,104 +8073,106 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function bedStart() {
     return loadTone().then(function (Tone) {
       return Tone.start().then(function () {
-        if (!bed || !bed.master) {
-          /* A-6: a limiter on the master, and a meter that reads the signal rather than
-             inferring level from fader positions. */
-          var limiter = new Tone.Limiter(-1).toDestination();
-          var meter = new Tone.Meter();
-          limiter.connect(meter);
-          /* The Sound toggle's own fade, and nothing else's. It has to be its own node because
-             bed.walk already belongs to the GPS walk fade (setWalkLevel ramps it every time the
-             walker drifts off the route) — one node with two writers means the last ramp to
-             fire wins, and a listener walking back onto the route mid-fade would cancel it.
-             Two nodes in series multiply instead, which is what "both fades apply" means.
-             Starts at 0: pressing Sound blooms rather than switches. */
-          var fade = new Tone.Gain(0).connect(limiter);
-          /* Everything the walk plays meets here before the limiter, so straying off the route
-             fades the whole piece with one ramp rather than each voice arguing with its own
-             proximity curve. At 1 it is not audible in the signal path at all. */
-          var walk = new Tone.Gain(1).connect(fade);
-          /* The route's own voices meet here, so the route card's mute and solo have one place
-             to act — the points keep their own gains, which is what makes them separate
-             sources in the mixer. */
-          var synth = new Tone.Gain(1).connect(walk);
-          bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: walk,
-                  walk: walk, synth: synth, fade: fade, fadeTimer: null,
-                  limiter: limiter, meter: meter, Tone: Tone };
-          /* synth was just built at Gain(1) — in open world that is wrong the instant the
-             route is further than GPS_FADE_FROM away. Give it the level the walker's distance
-             already earned instead of leaving it full until the next worldMove tick happens to
-             land (which, standing still, might be never). Place mode leaves this alone: the
-             whole-walk fade is bed.walk's job there, so bed.synthLevel stays undefined and
-             applyMixer's default of 1 is correct. */
-          if (pacer && pacer.world) {
-            setSynthLevel(walkLevel(pacer.routeDist, GPS_FADE_FROM, GPS_LEASH));
-          }
-        }
-        bed.on = true;
-        window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
-        window.__fa.mixer = { state: mixer, level: mixLevel, apply: applyMixer,
-                              route: MIX_ROUTE };
-
-        var patch = pacer ? pacer.patch : defaultPatch();
-        /* A-1: the Transport is a lookahead scheduler. Never a UI callback or a draw loop. */
-        Tone.Transport.bpm.value = patch.tempo;
-        /* Stopped while the context was resuming. Do not build a graph nobody asked for. */
-        if (!wantSound) { bed.on = false; return; }
-        keepAwake(true);
-        mediaSessionStart();
-        if (!bed.rfx) { bed.rfx = buildRhythmFx(Tone, patch); }
-        /* Built dry, then given the patch. Without this the drive stage sits at zero
-           whatever the patch says, because construction only sets what the constructor
-           takes and the drive is three nodes deep. */
-        applyRhythmFx(patch);
-        /* Built from this patch the first time; told this patch every time after, because
-           bedStop leaves the voice standing and the next Sound press may well belong to a
-           different route than the one that built it. */
-        if (!bed.voice) { bed.voice = buildVoice(Tone, patch); }
-        else { applyPatchToVoice(patch); }
-        if (!bed.loop) {
-          bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
-          bed.barLoop = Tone.Transport.scheduleRepeat(harmonyBar, "1m");
-          /* A fixed grid, with the division applied inside the callback. Clearing a repeat
-             and scheduling a replacement while the Transport runs means an id to keep in
-             step and a new phase starting from bar zero; getting either wrong takes the
-             voice out with it. Nothing is torn down here, so a rhythm change cannot. */
-          bed.sectLoop = Tone.Transport.scheduleRepeat(sectorStep, SECT_GRID);
-          bed.sectDiv = patch.sect.rhythm;
-          /* One grid for every point's sequencer; each counts its own ticks against it. */
-          bed.rhythmLoop = Tone.Transport.scheduleRepeat(rhythmStep, SECT_GRID);
-          bed.thirdLoop = Tone.Transport.scheduleRepeat(thirdStep, SECT_GRID);
-          /* The soundscape bed's own warp/morph/field/grit tick — a quarter-note grid is
-             musical enough for a slow wobble or drift without needing its own tempo math. */
-          bed.warpLoop = Tone.Transport.scheduleRepeat(warpStep, "4n");
-          /* A watchdog, not a musical tick: visibilitychange only resumes the context on
-             a tab-hidden/tab-visible transition, but a context can suspend or degrade for
-             other reasons while the tab stays foregrounded and visible the whole time —
-             an OS audio-focus change, a phone call, a Bluetooth device switching, a
-             power-saving heuristic after a long session. Any voice sharing bed.Tone.context
-             would go silent at once when that happens, whether or not it was the one just
-             being adjusted — which is why "playing for a while" was enough on its own,
-             with no tab switch and no screen lock required. Every 5 real seconds,
-             independent of tempo, since this has nothing to do with the music. */
-          bed.resumeLoop = Tone.Transport.scheduleRepeat(function () {
-            if (bed && bed.Tone && bed.Tone.context.state !== "running") {
-              bed.Tone.start().catch(function () {});
+        return primeAudioCapability(Tone).then(function () {
+          if (!bed || !bed.master) {
+            /* A-6: a limiter on the master, and a meter that reads the signal rather than
+               inferring level from fader positions. */
+            var limiter = new Tone.Limiter(-1).toDestination();
+            var meter = new Tone.Meter();
+            limiter.connect(meter);
+            /* The Sound toggle's own fade, and nothing else's. It has to be its own node because
+               bed.walk already belongs to the GPS walk fade (setWalkLevel ramps it every time the
+               walker drifts off the route) — one node with two writers means the last ramp to
+               fire wins, and a listener walking back onto the route mid-fade would cancel it.
+               Two nodes in series multiply instead, which is what "both fades apply" means.
+               Starts at 0: pressing Sound blooms rather than switches. */
+            var fade = new Tone.Gain(0).connect(limiter);
+            /* Everything the walk plays meets here before the limiter, so straying off the route
+               fades the whole piece with one ramp rather than each voice arguing with its own
+               proximity curve. At 1 it is not audible in the signal path at all. */
+            var walk = new Tone.Gain(1).connect(fade);
+            /* The route's own voices meet here, so the route card's mute and solo have one place
+               to act — the points keep their own gains, which is what makes them separate
+               sources in the mixer. */
+            var synth = new Tone.Gain(1).connect(walk);
+            bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: walk,
+                    walk: walk, synth: synth, fade: fade, fadeTimer: null,
+                    limiter: limiter, meter: meter, Tone: Tone };
+            /* synth was just built at Gain(1) — in open world that is wrong the instant the
+               route is further than GPS_FADE_FROM away. Give it the level the walker's distance
+               already earned instead of leaving it full until the next worldMove tick happens to
+               land (which, standing still, might be never). Place mode leaves this alone: the
+               whole-walk fade is bed.walk's job there, so bed.synthLevel stays undefined and
+               applyMixer's default of 1 is correct. */
+            if (pacer && pacer.world) {
+              setSynthLevel(walkLevel(pacer.routeDist, GPS_FADE_FROM, GPS_LEASH));
             }
-          }, 5);
-        }
-        Tone.Transport.start();
-        /* A teardown may still be pending from a Stop less than SOUND_FADE_OUT ago — pressing
-           Sound again inside the fade must come back up on the graph that is still there,
-           not have it disposed out from under it a moment later. bedTeardown also stands down
-           on its own when it finds bed.on true, so this is belt and braces. */
-        clearTimeout(bed.fadeTimer);
-        bed.fadeTimer = null;
-        fadeSound(bed.fade.gain, 1, SOUND_FADE_IN);
-        $("#patch-play").textContent = "Stop";
-        $("#patch-play").setAttribute("aria-pressed", "true");
-        updateBed();
-        meterLoop();
+          }
+          bed.on = true;
+          window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
+          window.__fa.mixer = { state: mixer, level: mixLevel, apply: applyMixer,
+                                route: MIX_ROUTE };
+  
+          var patch = pacer ? pacer.patch : defaultPatch();
+          /* A-1: the Transport is a lookahead scheduler. Never a UI callback or a draw loop. */
+          Tone.Transport.bpm.value = patch.tempo;
+          /* Stopped while the context was resuming. Do not build a graph nobody asked for. */
+          if (!wantSound) { bed.on = false; return; }
+          keepAwake(true);
+          mediaSessionStart();
+          if (!bed.rfx) { bed.rfx = buildRhythmFx(Tone, patch); }
+          /* Built dry, then given the patch. Without this the drive stage sits at zero
+             whatever the patch says, because construction only sets what the constructor
+             takes and the drive is three nodes deep. */
+          applyRhythmFx(patch);
+          /* Built from this patch the first time; told this patch every time after, because
+             bedStop leaves the voice standing and the next Sound press may well belong to a
+             different route than the one that built it. */
+          if (!bed.voice) { bed.voice = buildVoice(Tone, patch); }
+          else { applyPatchToVoice(patch); }
+          if (!bed.loop) {
+            bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
+            bed.barLoop = Tone.Transport.scheduleRepeat(harmonyBar, "1m");
+            /* A fixed grid, with the division applied inside the callback. Clearing a repeat
+               and scheduling a replacement while the Transport runs means an id to keep in
+               step and a new phase starting from bar zero; getting either wrong takes the
+               voice out with it. Nothing is torn down here, so a rhythm change cannot. */
+            bed.sectLoop = Tone.Transport.scheduleRepeat(sectorStep, SECT_GRID);
+            bed.sectDiv = patch.sect.rhythm;
+            /* One grid for every point's sequencer; each counts its own ticks against it. */
+            bed.rhythmLoop = Tone.Transport.scheduleRepeat(rhythmStep, SECT_GRID);
+            bed.thirdLoop = Tone.Transport.scheduleRepeat(thirdStep, SECT_GRID);
+            /* The soundscape bed's own warp/morph/field/grit tick — a quarter-note grid is
+               musical enough for a slow wobble or drift without needing its own tempo math. */
+            bed.warpLoop = Tone.Transport.scheduleRepeat(warpStep, "4n");
+            /* A watchdog, not a musical tick: visibilitychange only resumes the context on
+               a tab-hidden/tab-visible transition, but a context can suspend or degrade for
+               other reasons while the tab stays foregrounded and visible the whole time —
+               an OS audio-focus change, a phone call, a Bluetooth device switching, a
+               power-saving heuristic after a long session. Any voice sharing bed.Tone.context
+               would go silent at once when that happens, whether or not it was the one just
+               being adjusted — which is why "playing for a while" was enough on its own,
+               with no tab switch and no screen lock required. Every 5 real seconds,
+               independent of tempo, since this has nothing to do with the music. */
+            bed.resumeLoop = Tone.Transport.scheduleRepeat(function () {
+              if (bed && bed.Tone && bed.Tone.context.state !== "running") {
+                bed.Tone.start().catch(function () {});
+              }
+            }, 5);
+          }
+          Tone.Transport.start();
+          /* A teardown may still be pending from a Stop less than SOUND_FADE_OUT ago — pressing
+             Sound again inside the fade must come back up on the graph that is still there,
+             not have it disposed out from under it a moment later. bedTeardown also stands down
+             on its own when it finds bed.on true, so this is belt and braces. */
+          clearTimeout(bed.fadeTimer);
+          bed.fadeTimer = null;
+          fadeSound(bed.fade.gain, 1, SOUND_FADE_IN);
+          $("#patch-play").textContent = "Stop";
+          $("#patch-play").setAttribute("aria-pressed", "true");
+          updateBed();
+          meterLoop();
+        });
       });
     });
   }
@@ -8028,11 +8203,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      stack exists for come to 6.6 %. The convolvers were about 90 % of the route stack. Decay
      length barely moved the number, so it is the count of convolvers that costs, not the tails.
 
-     A desktop keeps its convolution: Kerem wrote these patches in those rooms. A phone gets an
-     algorithmic room of the same size instead, which is the difference between a walk that
-     sounds slightly less like a real space and one that glitches the whole way. */
+     Those numbers still stand — a convolver really does cost that much more than an algorithmic
+     room — but which device pays them changed on 2026-09-22: richAudio() decides by measuring
+     this device's own render cost against that budget (see the comment above richAudio), not by
+     guessing "phone" from screen size the way smallDevice() did. A device that measures cheap
+     enough keeps its convolution, whatever it looks like; only one that genuinely cannot afford
+     it gets the algorithmic room of the same size instead. */
   function makeRoom(Tone, decay) {
-    if (smallDevice()) {
+    if (!richAudio()) {
       return new Tone.Freeverb({ roomSize: roomSize(decay), dampening: 3000, wet: 0 });
     }
     return new Tone.Reverb({ decay: decay, wet: 0 });
@@ -8043,8 +8221,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      after the rooms were made cheap: those three choruses had become the single most expensive
      thing in the route stack, more than all four rooms together. Replacing them with an LFO on
      the filter each one already fed saves about 10 points of a desktop core and keeps the
-     movement, which is the part that matters. A desktop still gets the chorus: Kerem wrote
-     these patches with it.
+     movement, which is the part that matters.
+
+     What decides which one a device gets changed on 2026-09-22: richAudio() measures this
+     device's own render cost rather than guessing "phone" from screen size the way smallDevice()
+     did — Kerem's own iPhone guessed small and lost the chorus at 9.7% of one core, four times
+     the headroom the dev desktop needed to keep it at 70.6%. A device richAudio() finds cheap
+     enough keeps the chorus Kerem wrote these patches with, whatever it looks like.
 
      The stand-in has to answer everything a Chorus answers here, or it fails on the first morph
      tick rather than at build time: .wet (ramped every tick by voiceStep/sectorStep/thirdStep),
@@ -8056,7 +8239,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function makeWarp(Tone, opts) {
     /* Not started here: every call site starts its own warp, and Chorus.start() twice is not
        something to rely on. */
-    if (!smallDevice()) { return new Tone.Chorus(opts); }
+    if (richAudio()) { return new Tone.Chorus(opts); }
 
     /* Vibrato is the same idea as the chorus with one delay line instead of a stereo pair, so
        the character survives: warp is "a modulated delay — literally a time warp, the delay
@@ -8089,9 +8272,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     fx.reverb = makeRoom(Tone, cfg.revDecay).connect(out);
     var dIn = new Tone.Gain(1);
 
-    /* A phone reaches the room without the echo. Three FeedbackDelay lines measured ~9 points
-       of a desktop core, and Kerem chose to spend that elsewhere on mobile rather than lose a
-       musical line to pay for it.
+    /* A device that measures too expensive (richAudio() false) reaches the room without the
+       echo. Three FeedbackDelay lines measured ~9 points of a desktop core, and Kerem chose to
+       spend that elsewhere on a device that cannot afford it rather than lose a musical line to
+       pay for it. Which device that is is now measured, not guessed from screen size — see the
+       richAudio comment near smallDevice, above.
 
        The handles stay, and that is not decoration: buildVoice connects each voice INTO
        fx.delay, and applyPatchToVoice ramps .delayTime/.feedback/.wet on all three chains
@@ -8099,7 +8284,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        first patch apply. Two spare gains stand in for the two params nothing reads back, and
        the wet handle is a real gain that drives nothing — so every write still lands somewhere
        real and the patch panel keeps working, it just has no echo to show for it. */
-    if (smallDevice()) {
+    if (!richAudio()) {
       dIn.connect(fx.reverb);
       dIn.delayTime = new Tone.Gain(0).gain;
       dIn.feedback = new Tone.Gain(0).gain;

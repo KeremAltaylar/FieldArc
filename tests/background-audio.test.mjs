@@ -72,8 +72,10 @@ test("play() is guarded against a synchronous throw, not just a rejected promise
 test("desktop is left alone — no backgrounding problem there, and arming it is a regression", () => {
   /* Desktop has no screen to lock and no phone in a pocket — nothing here helps it. Arming it
      anyway would be a live annoyance: a "Fieldscape" Now Playing entry, and desktop media keys
-     silently retargeting to the walk whenever Sound is on. Gated the same way makeWarp,
-     buildFxChain and voiceBudget already gate their own, opposite-direction cost. */
+     silently retargeting to the walk whenever Sound is on. Still gated on smallDevice() directly
+     (unlike makeWarp/buildFxChain/voiceBudget, which moved to richAudio() in task 8) because this
+     is not a cost question a render-time probe has anything to say about — see the comment above
+     mediaSessionStart in index.html. */
   [src("mediaSessionStart"), src("mediaSessionStop")].forEach((fn) => {
     const guardAt = fn.indexOf("if (!smallDevice()) { return; }");
     assert.ok(guardAt !== -1, "missing the smallDevice() gate");
