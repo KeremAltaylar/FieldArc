@@ -129,7 +129,22 @@ pre {
 <button type="button" id="px-run">Run the stretch test (6s, makes sound)</button>
 <pre id="pxlog">not run — tap the button (it needs a tap to start audio)</pre>
 
-<h2>7 · Errors</h2>
+<h2>7 · Decoding a published recording</h2>
+<!-- Kerem, 2026-09-22: micro-glitches on the Koşuyolu points, even with the stretch soloed,
+     while the Validebağ points sound clean on the same phone in the same walk. The archive says
+     why that split might not be a coincidence: everything in Koşuyolu was re-encoded to Opus in
+     a WebM container at publish (a 115 MB WAV shrunk to 13 MB — see src/shrink.mjs), and the
+     Validebağ file is a plain mp3 that fitted the 50 MB limit untouched. Safari's support for
+     Opus-in-WebM through decodeAudioData is the weakest link in that chain.
+
+     So this decodes the two real files, on the device doing the complaining, and measures what
+     comes back: length against what the archive claims, and the two shapes a bad decode takes —
+     digital silence where there should be sound, and sample-to-sample jumps that are heard as
+     clicks. The engine is not involved. It needs about 19 MB, so use wifi. -->
+<button type="button" id="dec-run">Decode both recordings (19 MB)</button>
+<pre id="declog">not run — needs wifi and about a minute</pre>
+
+<h2>8 · Errors</h2>
 <pre id="errlog">none</pre>
 
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
@@ -599,6 +614,112 @@ pre {
     var el = $("#pxlog");
     el.textContent = (el.textContent.indexOf("not run") === 0 ? "" : el.textContent + "\n") + line;
   }
+
+  /* ---- 7. what the browser's own decoder returns for a published recording ----
+     Everything here is the app's: the same bucket, the same anon key (public by design, it is
+     what row-level security is written against), the same decodeAudioData call ensureVoice
+     makes. The only thing this adds is measuring the result instead of playing it. */
+  var DEC_BASE = "https://ujdygmcpqsbyeysggypc.supabase.co/storage/v1/object/recordings/";
+  var DEC_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqZHlnbWNwcXNieWV5c2dneXBjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNDE4NDIsImV4cCI6MjEwNDYxNzg0Mn0.SJlrNKQftKxdM0G6f18e6PsRCvdhIH8fco5tW3CktwM";
+  /* Two real published recordings, chosen because they differ in exactly the way under
+     suspicion and nothing else that matters: both 48 kHz stereo, both played by the same engine
+     through the same graph. If the Opus one comes back short or gappy here and the mp3 one does
+     not, the publish-time re-encode is the fault and no amount of work on the engine will fix
+     it. */
+  var DEC_FILES = [
+    { what: "Ko\u015fuyolu Stretch  (Opus in WebM, re-encoded at publish)",
+      path: "6c20e5a2-a9dc-462f-9ae9-cd93e6d2c2fe/take.webm", expect: 399.76 },
+    { what: "Valideba\u011f Stretch  (mp3, published untouched)",
+      path: "d4ada7ce-c52a-42bc-be92-1f325e4180cd/take.webm", expect: 152.69 }
+  ];
+
+  function decLog(line) {
+    var el = $("#declog");
+    el.textContent = (el.textContent.indexOf("not run") === 0 ? "" : el.textContent + "\n") + line;
+  }
+
+  /* Two faults, both audible as the "micro glitches" being chased, neither visible in the
+     decoded length: a run of exact digital silence (a decoder dropping a packet and filling the
+     hole), and a step between consecutive samples too large to be signal (heard as a click).
+     The thresholds are deliberately generous so that ordinary quiet music does not register:
+     5 ms of EXACT zeroes, and a jump of more than half full scale in one sample. */
+  function decMeasure(buf) {
+    var ch = buf.getChannelData(0), n = ch.length, sr = buf.sampleRate;
+    var runNeeded = Math.round(sr * 0.005), zeros = 0, runs = 0, maxRun = 0;
+    var jumps = 0, maxJump = 0, prev = ch[0], d, i, v;
+    for (i = 0; i < n; i++) {
+      v = ch[i];
+      if (v === 0) {
+        zeros++;
+        if (zeros === runNeeded) { runs++; }
+        if (zeros > maxRun) { maxRun = zeros; }
+      } else { zeros = 0; }
+      d = v - prev;
+      if (d < 0) { d = -d; }
+      if (d > maxJump) { maxJump = d; }
+      if (d > 0.5) { jumps++; }
+      prev = v;
+    }
+    return { runs: runs, maxRunMs: maxRun / sr * 1000, jumps: jumps, maxJump: maxJump };
+  }
+
+  $("#dec-run").addEventListener("click", function () {
+    var btn = this;
+    btn.disabled = true;
+    $("#declog").textContent = "running \u2014 downloading and decoding, this takes a minute";
+    $("#declog").className = "";
+    var ctx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 1, 48000);
+    var bad = false;
+    DEC_FILES.reduce(function (chain, f) {
+      return chain.then(function () {
+        var t0 = performance.now();
+        return fetch(DEC_BASE + f.path, { headers: { apikey: DEC_KEY, Authorization: "Bearer " + DEC_KEY } })
+          .then(function (r) {
+            if (!r.ok) { throw new Error("download failed, HTTP " + r.status); }
+            return r.arrayBuffer();
+          })
+          .then(function (ab) {
+            var bytes = ab.byteLength;
+            return ctx.decodeAudioData(ab).then(function (buf) {
+              var m = decMeasure(buf);
+              var shortBy = f.expect - buf.duration;
+              decLog("");
+              decLog(f.what);
+              decLog("  downloaded    " + Math.round(bytes / 1024) + " KB in " +
+                     ((performance.now() - t0) / 1000).toFixed(1) + "s");
+              decLog("  decoded       " + buf.duration.toFixed(2) + "s of " + f.expect + "s expected" +
+                     (Math.abs(shortBy) > 1 ? "   <- SHORT by " + shortBy.toFixed(1) + "s" : "  ok") +
+                     ",  " + buf.sampleRate + " Hz, " + buf.numberOfChannels + " ch");
+              decLog("  silent gaps   " + m.runs + " runs of 5ms+ digital silence" +
+                     (m.runs ? "   (longest " + m.maxRunMs.toFixed(0) + " ms)  <- dropped packets" : "  ok"));
+              decLog("  fast jumps    " + m.jumps + " over half scale" +
+                     (m.jumps ? "   (largest " + m.maxJump.toFixed(2) + ")  — transients or ticks, " +
+                                "compare against the same file on desktop" : "  ok"));
+              /* The verdict rests on the two faults that cannot be musical: a decode that comes
+                 back short, and exact digital silence where the recording has sound. Big
+                 sample-to-sample jumps are reported but never decide it — calibrated on desktop
+                 Chrome, 2026-09-22, where the Opus file came back perfect and the MP3 of bird
+                 calls showed 29 of them, which are its transients, not damage. */
+              if (Math.abs(shortBy) > 1 || m.runs) { bad = true; }
+            });
+          })
+          .catch(function (e) {
+            bad = true;
+            decLog("");
+            decLog(f.what);
+            decLog("  FAILED: " + (e && e.message ? e.message : e) +
+                   "   <- this browser cannot decode this file at all");
+          });
+      });
+    }, Promise.resolve()).then(function () {
+      decLog("");
+      decLog(bad ? "VERDICT: a recording decodes SHORT or with silent gaps on this device — the " +
+                   "glitches are in the file as this browser reads it, before any of our audio runs."
+                 : "VERDICT: both recordings decode full length with no gaps here.");
+      $("#declog").className = bad ? "bad" : "ok";
+      btn.disabled = false;
+    });
+  });
 
   $("#px-run").addEventListener("click", function () {
     var btn = this;

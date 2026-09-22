@@ -115,3 +115,34 @@ test("the overlay names the parameters and where the row came from", () => {
   assert.match(paint, /pxBufsize\(q\.px && q\.px\.fft\)/);
   assert.match(paint, /_remote \? "published" : "local draft"/);
 });
+
+/* ---- Decoding a published recording, 2026-09-22 ----
+   Kerem: micro-glitches on the Koşuyolu points, stretch soloed, while Validebağ stays clean on
+   the same phone in the same walk — and his phone reports 0% late hops, so the engine is
+   delivering on time. The archive splits the same way the sound does: Koşuyolu was re-encoded
+   to Opus in WebM at publish (115 MB WAV -> 13 MB, src/shrink.mjs), Validebağ is an mp3 that
+   fitted the 50 MB limit untouched. Both files were fetched and sniffed here to be sure of
+   that. Whether Safari's decoder handles Opus-in-WebM can only be answered on the phone. */
+
+test("the decode check measures the two faults a bad decode leaves behind", () => {
+  assert.match(diag, /function decMeasure\(buf\)/);
+  assert.match(diag, /sr \* 0\.005/, "5 ms of EXACT digital silence — a dropped packet's filler");
+  assert.match(diag, /shortBy = f\.expect - buf\.duration/, "and a decode that comes back short");
+});
+
+test("the verdict ignores fast jumps, which are musical as often as not", () => {
+  /* Calibrated on desktop Chrome, which decodes both files perfectly: the Opus one showed
+     nothing, and the MP3 of bird calls showed 29 jumps over half scale — its transients. A
+     metric that fails on those would have called a healthy decode broken. */
+  assert.match(diag, /if \(Math\.abs\(shortBy\) > 1 \|\| m\.runs\) \{ bad = true; \}/);
+  assert.ok(!/m\.runs \|\| m\.jumps\) \{ bad = true/.test(diag));
+});
+
+test("it decodes the real published files, through the app's own bucket and key", () => {
+  /* Not a synthetic stand-in: the fault is suspected in the publish-time re-encode, so the test
+     has to read what listeners actually download. */
+  assert.match(diag, /6c20e5a2-a9dc-462f-9ae9-cd93e6d2c2fe\/take\.webm/);
+  assert.match(diag, /d4ada7ce-c52a-42bc-be92-1f325e4180cd\/take\.webm/);
+  assert.match(diag, /storage\/v1\/object\/recordings\//);
+  assert.match(diag, /decodeAudioData/);
+});
