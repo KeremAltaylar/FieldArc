@@ -2091,6 +2091,21 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       (rest ? "?" + rest : "") + location.hash);
   })();
 
+  /* ?nostream is read HERE, at load, and never again — see the nostream() escape hatch far
+     below for what it does. It cannot be read at Sound-press time: selecting a route pushes
+     urlForSelection() into the address bar, which is a path with no query string at all, so by
+     the time anyone presses Sound the flag is gone from location.search. Measured in a
+     fake-iPhone browser on 2026-09-22: ?nostream survived load, the first route selection
+     replaced the URL with /R8845862, and bedStart still took the stream path — the escape hatch
+     silently did nothing. Kept in sessionStorage as well, so a reload, a deep link or the
+     service worker's own redirect keeps it for as long as that tab lives; it is a debugging
+     switch for one session, never something that should outlive the tab. */
+  var NOSTREAM = location.search.indexOf("nostream") !== -1;
+  try {
+    if (NOSTREAM) { sessionStorage.setItem("fieldarc.nostream", "1"); }
+    else if (sessionStorage.getItem("fieldarc.nostream") === "1") { NOSTREAM = true; }
+  } catch (e) { /* private mode: the URL alone still works for this page load */ }
+
   /* Matches 404.html's pathSegmentsToKeep = 1: the deployed GitHub Pages project page is
      rooted one segment deep ("/Fieldscape"), so a deep link's own segments start after that.
      Local development (npx serve . from the repo root) is rooted at "/", with no base
@@ -4286,7 +4301,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState !== "visible") { return; }
     if ((track || gps.on || (bed && bed.on)) && !wakeLock) { keepAwake(true); }
-    if (bed && bed.on && bed.Tone && bed.Tone.context.state !== "running") {
+    if (bed && bed.on && bed.Tone && bed.Tone.getContext().state !== "running") {
       bed.Tone.start().catch(function () {});
     }
   });
@@ -8265,9 +8280,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      ear, to tell a real success from that failure. `?nostream` in the URL forces the ordinary
      `limiter.toDestination()` route used everywhere else, regardless of iosSafari() — a bad
      outcome on the owner's own iPhone is then one URL away from being ruled out rather than
-     needing a redeploy. See docs/mobile-testing.md. */
+     needing a redeploy. See docs/mobile-testing.md. The flag itself is captured at load (search
+     for `var NOSTREAM`) because the address bar loses its query string on the first route
+     selection. */
   function nostream() {
-    return location.search.indexOf("nostream") !== -1;
+    return NOSTREAM;
   }
 
   /* ---- When the iOS reroute itself fails ----
@@ -8322,7 +8339,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                  WAV is simply never reached on this branch). mediaSessionStart still plays the
                  element from the same Sound gesture as always, further down this chain — only
                  what it is playing has changed. */
-              iosStream = Tone.context.createMediaStreamDestination();
+              iosStream = Tone.getContext().createMediaStreamDestination();
               limiter.connect(iosStream);
               keepaliveEl.srcObject = iosStream.stream;
             } else {
@@ -8404,7 +8421,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                with no tab switch and no screen lock required. Every 5 real seconds,
                independent of tempo, since this has nothing to do with the music. */
             bed.resumeLoop = Tone.Transport.scheduleRepeat(function () {
-              if (bed && bed.Tone && bed.Tone.context.state !== "running") {
+              if (bed && bed.Tone && bed.Tone.getContext().state !== "running") {
                 bed.Tone.start().catch(function () {});
               }
             }, 5);

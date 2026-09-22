@@ -29,7 +29,7 @@ test("visibilitychange re-acquires the wake lock for track, gps.on or an active 
 
 test("visibilitychange resumes the AudioContext when it isn't running, not only the wake lock", () => {
   const src = slice('document.addEventListener("visibilitychange"', "\n  });\n");
-  assert.match(src, /bed\.Tone\.context\.state !== "running"/);
+  assert.match(src, /bed\.Tone\.getContext\(\)\.state !== "running"/);
   assert.match(src, /bed\.Tone\.start\(\)/);
 });
 
@@ -40,7 +40,7 @@ test("bedStart schedules a periodic watchdog that resumes the context independen
      visible the whole time, which visibilitychange alone would never catch. */
   const src = slice("function bedStart()", "\n  }\n");
   assert.match(src, /bed\.resumeLoop = Tone\.Transport\.scheduleRepeat\(/);
-  assert.match(src, /bed\.Tone\.context\.state !== "running"/);
+  assert.match(src, /bed\.Tone\.getContext\(\)\.state !== "running"/);
   assert.match(src, /bed\.Tone\.start\(\)/);
   assert.match(src, /\},\s*5\)/,
     "must be a fixed number of real seconds, not a musical division — this has nothing " +

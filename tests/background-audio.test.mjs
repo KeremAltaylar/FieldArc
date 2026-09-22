@@ -292,3 +292,50 @@ test("both play() failure paths reach the fallback, not just a comment saying it
   assert.match(fn.slice(catchAt, catchAt + 60), /keepaliveFallback\(\)/,
     "a synchronous throw must reach the fallback too, not just be swallowed");
 });
+
+/* ---- Two defects found in a fake-iPhone browser on 2026-09-22, after the branch merged ----
+   Kerem pressed Sound on his own iPhone and it would not switch on. Reproduced by shimming
+   desktop Chrome into iOS Safari's shape (UA, maxTouchPoints, coarse pointer, no deviceMemory)
+   against a local copy: "Sound unavailable: Failed to execute 'connect' on 'AudioNode': cannot
+   connect to an AudioNode belonging to a different audio context." */
+
+test("the iOS stream is built on the LIVE Tone context, not the stale Tone.context getter", () => {
+  /* tuneToneContext() calls Tone.setContext(new Tone.Context({ latencyHint: 0.05 })) at load, so
+     every node the app builds belongs to that replacement. `Tone.context` is a getter fixed to
+     the context Tone made for itself when the bundle evaluated — measured in the page:
+     Tone.context === Tone.getContext() is FALSE, and their rawContexts differ. Building the
+     MediaStreamDestination on Tone.context therefore produced a node from a foreign context, and
+     limiter.connect(it) threw — taking the whole of bedStart down with it, which is exactly
+     "Sound does not toggle on". Desktop never reaches this branch, so nothing caught it. */
+  const fn = src("bedStart");
+  assert.match(fn, /Tone\.getContext\(\)\.createMediaStreamDestination\(\)/,
+    "the stream must come from the same context the limiter belongs to");
+  assert.ok(!/Tone\.context\.createMediaStreamDestination/.test(fn),
+    "Tone.context is the pre-tuneToneContext context and its nodes cannot connect to ours");
+});
+
+test("the context watchdogs ask the live context whether it is running", () => {
+  /* Same root cause, quieter symptom: both watchdogs read bed.Tone.context.state — the stale
+     context, which is never the one the walk plays through, so they were reporting on something
+     the app does not use. */
+  const html2 = html;
+  assert.ok(!/bed\.Tone\.context\.state/.test(html2),
+    "a watchdog that watches the wrong context cannot see the right one suspend");
+  assert.match(html2, /bed\.Tone\.getContext\(\)\.state !== "running"/);
+});
+
+test("?nostream survives the first route selection, which rewrites the address bar", () => {
+  /* Selecting a route pushes urlForSelection() — a bare path, no query string — so reading
+     location.search at Sound-press time found nothing and the escape hatch silently did nothing.
+     Captured at load instead, and kept in sessionStorage for the tab. */
+  assert.match(html, /var NOSTREAM = location\.search\.indexOf\("nostream"\) !== -1;/);
+  assert.match(src("nostream"), /return NOSTREAM;/,
+    "read once at load — location.search is gone by the time Sound is pressed");
+  assert.ok(!/return location\.search\.indexOf\("nostream"\)/.test(html));
+  const at = html.indexOf("var NOSTREAM");
+  const pushAt = html.indexOf("history.pushState(null");
+  assert.ok(at !== -1 && pushAt !== -1 && at < pushAt,
+    "and captured before anything can rewrite the URL");
+  assert.match(html, /sessionStorage\.setItem\("fieldarc\.nostream", "1"\)/,
+    "a reload or a deep-link redirect keeps the switch for this tab");
+});
