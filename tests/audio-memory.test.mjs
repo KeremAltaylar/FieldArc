@@ -112,7 +112,12 @@ test("the voice budget lowers the patch's number on an unmeasured small device, 
 /* Disposal moved out of bedStop into bedTeardown on 2026-09-21, when Stop became a 1.5s fade
    that has to keep sounding before anything is disposed. */
 test("disposal tolerates a voice that never needed a player", () => {
-  assert.match(src("bedTeardown"), /if \(v\.player\) \{ v\.player\.stop\(\); v\.player\.dispose\(\); \}/);
+  /* Moved out of bedTeardown into freeVoice on 2026-09-22, when walking out of range started
+     freeing a voice too — the two paths share one routine precisely so a node freed in one and
+     not the other cannot happen again. */
+  assert.match(src("freeVoice"), /if \(v\.player\) \{ v\.player\.stop\(\); v\.player\.dispose\(\); \}/);
+  assert.match(src("bedTeardown"), /freeVoice\(bed\.voices\[id\]\)/,
+    "and the teardown goes through it rather than keeping a second copy");
 });
 
 /* The subtle half, and the one my first attempt got wrong: supabase-js does not reject when the
@@ -144,4 +149,41 @@ test("a successful read refreshes the cache and the flag", () => {
   assert.match(fetchPublished, /cachePublished\(placeId, r\.data\);/);
   assert.match(src("cachePublished"), /"pub:" \+ placeId/, "one key per place");
   assert.match(src("cachedPublished"), /"pub:" \+ placeId/);
+});
+
+/* ---- A voice that is out of range keeps its engine, 2026-09-22 ----
+   Found on Kerem's own iPhone with ?pxdebug: three PaulStretch engines computing, hop counts
+   climbing, while the transport said "1 voice" — only one point was in range. Walking out of a
+   point's radius faded the voice to silence and left everything behind it alive for the rest of
+   the session. At 399.8 s stereo that is ~73 MB of resident Int16 and a couple of per cent of a
+   core, per point walked past, on a forty-minute walk. The voice budget does not help: it caps
+   what SOUNDS, never what stays alive. */
+
+test("a voice that has been out of range long enough is freed, engine and all", () => {
+  const rel = src("releaseIdleVoices");
+  assert.match(rel, /v\.idle/, "only an idle voice is a candidate");
+  assert.match(rel, /now - v\.idleAt < VOICE_RELEASE \* 1000/,
+    "and only after the window, so tracing a zone boundary does not thrash");
+  assert.match(rel, /freeVoice\(v\);/);
+  assert.match(rel, /delete bed\.voices\[id\];/,
+    "the entry goes too, or ensureVoice would find a husk and treat it as live");
+});
+
+test("going idle stamps the clock, and coming back clears it", () => {
+  /* Without the stamp there is no window at all; without the clear, a voice that has been in
+     range for half an hour is still carrying the moment it briefly went idle, and the next
+     sweep frees a voice you are standing inside. */
+  const upd = src("updateBed");
+  assert.match(upd, /v\.idleAt = Date\.now\(\);/);
+  assert.match(upd, /releaseIdleVoices\(\);/);
+  assert.match(src("ensureVoice"), /v\.idleAt = 0;/);
+});
+
+test("the release window is long enough to walk a boundary and short enough to matter", () => {
+  const m = html.match(/var VOICE_RELEASE = (\d+);/);
+  assert.ok(m, "VOICE_RELEASE must be a named number, not a literal buried in the sweep");
+  const secs = Number(m[1]);
+  assert.ok(secs >= 20 && secs <= 120,
+    "under ~20s a walker pacing a zone edge pays repeated decodes; over ~120s a walk past " +
+    "several points is still holding all of them, which is the leak this closes");
 });

@@ -118,10 +118,14 @@ test("ensureVoice no longer references GrainPlayer or applyStretch for the sound
   assert.doesNotMatch(src, /applyStretch\(/);
 });
 
-test("bedStop's voice-disposal block disconnects the worklet node rather than disposing a Tone object it no longer has", () => {
-  const src = slice("v.player.stop(); v.player.dispose();", "v.filter.dispose(); v.gain.dispose();");
+test("voice disposal disconnects the worklet node rather than disposing a Tone object it no longer has", () => {
+  const src = slice("function freeVoice(v)", "\n  }\n");
   assert.match(src, /v\.stretch\.node\.disconnect\(\)/);
   assert.doesNotMatch(src, /v\.grainPlayer/);
+  /* And the references go with it: the processor holds the whole recording for as long as the
+     node is reachable, which is the leak freeVoice was extracted to fix. */
+  assert.match(src, /v\.stretch\.node\.port\.onmessage = null;/);
+  assert.match(src, /v\.stretch\.node = null;/);
 });
 
 test("warpStep no longer references GrainPlayer-specific properties", () => {

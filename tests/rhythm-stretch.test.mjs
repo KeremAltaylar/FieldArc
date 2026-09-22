@@ -361,8 +361,10 @@ test("bedStart schedules warpStep on the Transport, never a UI callback, only on
 
 /* Disposal moved into bedTeardown on 2026-09-21: Stop is a 1.5s fade now, and nothing may be
    disposed until it has finished sounding. */
-test("bedTeardown disposes every grit-chain node, each in its own guarded segment", () => {
-  const src = slice("function bedTeardown()", "\n  }\n");
+test("every grit-chain node is disposed, each in its own guarded segment", () => {
+  /* In freeVoice since 2026-09-22 — bedTeardown calls it, and so does the release of a voice
+     that has been out of range long enough for its engine to be let go. */
+  const src = slice("function freeVoice(v)", "\n  }\n");
   assert.match(src, /v\.grit\.input,\s*v\.grit\.crush,\s*v\.grit\.shape,\s*v\.grit\.blend/);
 });
 

@@ -8115,24 +8115,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     /* Disposed outright, with no further wait: the fade has already run and everything here is
        silent by now. The 300 ms this used to sit behind existed to let a 0.2 s per-voice ramp
        finish, and that ramp is gone. */
-    Object.keys(bed.voices).forEach(function (id) {
-      var v = bed.voices[id];
-      /* A voice only has a player if its engine failed — see dryFallback in ensureVoice. */
-      try { if (v.player) { v.player.stop(); v.player.dispose(); } } catch (e) {}
-      try {
-        if (v.stretch && v.stretch.node) { v.stretch.node.disconnect(); }
-        if (v.stretchBlend) { v.stretchBlend.dispose(); }
-      } catch (e) {}
-      try {
-        if (v.grit) {
-          [v.grit.input, v.grit.crush, v.grit.shape, v.grit.blend].forEach(function (n) {
-            try { n.dispose(); } catch (e) {}
-          });
-        }
-      } catch (e) {}
-      try { v.filter.dispose(); v.gain.dispose(); } catch (e) {}
-      if (v.url) { URL.revokeObjectURL(v.url); }
-    });
+    /* One routine, shared with releaseIdleVoices above, so the two paths cannot drift. */
+    Object.keys(bed.voices).forEach(function (id) { freeVoice(bed.voices[id]); });
     bed.voices = {};
     Object.keys(bed.rhythms || {}).forEach(function (id) { disposeRhythm(id); });
     /* Everything a zone started, whether or not it has finished. */
@@ -9819,6 +9803,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         applyGrit(v.grit, q.grit);
       }
       v.idle = false;
+      v.idleAt = 0;               /* back in range inside the window: nothing was freed */
       return;
     }
 
@@ -10846,6 +10831,63 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     }
   }
 
+  /* How long a voice that has gone out of range keeps its engine before it is released. Long
+     enough that walking along a zone's edge, or stepping out and back, does not pay for a
+     decode each time; short enough that a walk past several points is not still holding all of
+     them. Kerem's walks are forty minutes, so the cost of being wrong the slow way compounds. */
+  var VOICE_RELEASE = 45;
+
+  /* Everything one voice owns, freed. Called when a voice has been out of range long enough
+     (releaseIdleVoices) and by bedTeardown, which used to be the ONLY place this happened —
+     which is the defect this exists for: walking out of a point's radius faded the voice to
+     silence and left its PaulStretch engine running and its whole recording resident for the
+     rest of the session. Measured on Kerem's iPhone, 2026-09-22 (?pxdebug): three engines
+     computing, hop counts climbing, for one audible point. At 399.8 s stereo that is ~73 MB
+     and a couple of per cent of a core each, accumulating past every point on the walk — the
+     same shape as the Koşuyolu tab-kill the voice budget was written to stop, arrived at from
+     the other side, because the budget caps what SOUNDS and never what stays alive.
+
+     Written as one function rather than inlined so the teardown path and this one cannot drift
+     apart: a node freed in one place and not the other is exactly how the last leak got in. */
+  function freeVoice(v) {
+    try { if (v.player) { v.player.stop(); v.player.dispose(); } } catch (e) { /* never built */ }
+    try {
+      if (v.stretch && v.stretch.node) {
+        /* The processor keeps its source buffer alive for as long as the node exists, so the
+           disconnect has to be followed by dropping every reference to it. */
+        v.stretch.node.disconnect();
+        v.stretch.node.port.onmessage = null;
+        v.stretch.node = null;
+      }
+      if (v.stretchBlend) { v.stretchBlend.dispose(); }
+    } catch (e) { /* half-built voice: the rest still frees */ }
+    try {
+      if (v.grit) {
+        [v.grit.input, v.grit.crush, v.grit.shape, v.grit.blend].forEach(function (n) {
+          try { n.dispose(); } catch (e) { /* already gone */ }
+        });
+      }
+    } catch (e) { /* ignore */ }
+    try { if (v.filter) { v.filter.dispose(); } } catch (e) { /* ignore */ }
+    try { if (v.gain) { v.gain.dispose(); } } catch (e) { /* ignore */ }
+    if (v.url) { URL.revokeObjectURL(v.url); }
+  }
+
+  /* A voice is released only after it has been idle for VOICE_RELEASE seconds AND its fade has
+     run — never on the tick that takes it out of range, or a walker tracing a zone boundary
+     would hear the tail cut and then pay a decode to get back in. ensureVoice clears idleAt on
+     the way back, so returning inside the window costs nothing at all. */
+  function releaseIdleVoices() {
+    if (!bed || !bed.voices) { return; }
+    var now = Date.now();
+    Object.keys(bed.voices).forEach(function (id) {
+      var v = bed.voices[id];
+      if (!v || !v.idle || !v.idleAt || now - v.idleAt < VOICE_RELEASE * 1000) { return; }
+      freeVoice(v);
+      delete bed.voices[id];
+    });
+  }
+
   function updateBed() {
     if (!bed || !bed.on || !pacer) { return; }
     /* The panel's bed toggle used to be decorative — patch.bed.on was written and never
@@ -10866,8 +10908,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       var v = bed.voices[id];
       if (want[id] || v.idle || !v.ready) { return; }
       v.idle = true;
+      v.idleAt = Date.now();      /* when its engine becomes eligible to be freed — see above */
       v.gain.gain.rampTo(0, BED.fade);
     });
+    releaseIdleVoices();
     bed.playing = near.length;
     updateRhythms();
   }
