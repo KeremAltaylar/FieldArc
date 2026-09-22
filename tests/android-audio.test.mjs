@@ -58,23 +58,37 @@ test("the context is tuned once, before any node is built", () => {
 
 /* ---- The rooms ---- */
 
-test("smallDevice is one definition, and the voice budget uses it", () => {
+/* smallDevice() stopped being the decision on 2026-09-22 (task 8) — it guessed "phone" from
+   screen size and deviceMemory, and guessed wrong for Kerem's own iPhone: 390px and a coarse
+   pointer read as small while the full stack cost it 9.7% of one core, four times the headroom
+   the dev desktop needed to run the same stack at 70.6%. richAudio() replaced it at every call
+   site that spends CPU (the four this file and mobile-budget.test.mjs cover); smallDevice()
+   survives only as richAudio()'s fallback for a device that cannot be measured, and as the gate
+   on mediaSessionStart/Stop, which is not a cost question — see tests/audio-capability.test.mjs
+   for the threshold and fallback themselves. */
+test("smallDevice still exists: richAudio()'s fallback, the recording cap, and the media-session gate", () => {
   const small = src("smallDevice");
   assert.match(small, /navigator\.deviceMemory/);
   assert.match(small, /pointer: coarse/);
   assert.match(small, /Math\.min\(screen\.width, screen\.height\) <= 500/);
+  /* Review CRITICAL 2, 2026-09-22: the recording cap is a memory ceiling (each soundscape voice
+     holds its whole recording), which a render-cost probe knows nothing about. Asking richAudio()
+     here gave Kerem's 9.7% iPhone four resident recordings — the Koşuyolu tab-kill again. */
   const budget = src("voiceBudget");
-  assert.match(budget, /smallDevice\(\)/,
-    "the budget must ask the shared question, not keep a second copy of it");
-  assert.ok(!/navigator\.deviceMemory/.test(budget), "and not re-derive it");
+  assert.match(budget, /smallDevice\(\)/, "the recording cap asks the memory question");
+  assert.ok(!/richAudio\(\)/.test(budget), "not the render-cost one");
+  /* mediaSessionStart/Stop are a real, deliberate exception: backgrounding is not a cost
+     question, so they still gate on smallDevice() directly rather than richAudio(). */
+  assert.match(src("mediaSessionStart"), /smallDevice\(\)/);
+  assert.match(src("mediaSessionStop"), /smallDevice\(\)/);
 });
 
-test("a small device gets algorithmic rooms; everything else keeps its convolution", () => {
+test("a device that measures too expensive gets algorithmic rooms; a capable one keeps convolution", () => {
   const fn = src("makeRoom");
-  assert.match(fn, /smallDevice\(\)/);
+  assert.match(fn, /richAudio\(\)/);
   assert.match(fn, /new Tone\.Freeverb/, "measured 9.0% against the convolver's 60.9%");
   assert.match(fn, /new Tone\.Reverb\(\{ decay: decay, wet: 0 \}\)/,
-    "a desktop is unchanged — Kerem's patches keep the rooms he wrote them in");
+    "a device that measures cheap enough is unchanged — Kerem's patches keep the rooms he wrote them in");
   /* buildFxChain must go through it rather than constructing a Reverb itself. */
   const chain = src("buildFxChain");
   assert.match(chain, /makeRoom\(Tone, cfg\.revDecay\)/);

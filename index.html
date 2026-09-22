@@ -6,6 +6,14 @@
 <title>Fieldscape — Belgrad Ormanı</title>
 
 <link rel="manifest" href="./manifest.webmanifest">
+<!-- iOS reads none of the manifest for the home screen: it wants its own icon and its own
+     standalone flag, and without them an installed Fieldscape launches in a Safari chrome with a
+     screenshot for an icon. Background audio still does not work there (Safari does not allow
+     it) — this is only about the app being recognisably itself once installed. -->
+<link rel="apple-touch-icon" href="./icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fieldscape">
 <meta name="theme-color" content="#0d1310">
 <link rel="icon" href="./icon.svg" type="image/svg+xml">
 
@@ -7743,9 +7751,17 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      exactly what Kerem saw in Koşuyolu on 2026-09-21. The patch's own number stays the ceiling;
      this only lowers it on a device that cannot pay. deviceMemory is absent on iOS, so a coarse
      pointer on a small screen counts as a phone too. */
-  /* "Can this device pay for the heavy things?" — asked by the voice budget and by the rooms,
-     so it lives in one place rather than being re-derived at each. deviceMemory is absent on
-     iOS, so a coarse pointer on a small screen counts as a phone too. */
+  /* A guess, kept only as the fallback for a device richAudio() cannot measure (see below) — it
+     used to be the answer itself, gating makeRoom/makeWarp/buildFxChain/voiceBudget directly,
+     and it guessed wrong: Kerem's iPhone (390px, coarse pointer, no deviceMemory) fails this and
+     was stripped of convolution reverb, the chorus warp and every delay line while rendering the
+     full stack it was stripped of at 9.7% of one core — the phone had 94% of a core to spare.
+     deviceMemory is absent on iOS, so a coarse pointer on a small screen still counts as "small"
+     here, which is exactly the shape of guess that produced that regression. voiceBudget() below
+     went back to asking this directly on 2026-09-22 (review finding CRITICAL 2) — it caps how
+     many full recordings can be resident in memory at once, which is what this function's OWN
+     comment two blocks above already explains, and is not the render-cost question richAudio()
+     answers for the other three call sites. */
   function smallDevice() {
     var mem = navigator.deviceMemory;
     return (mem !== undefined && mem <= 4) ||
@@ -7753,8 +7769,283 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        Math.min(screen.width, screen.height) <= 500);
   }
 
+  /* A real reading, not a guess: the one clause of smallDevice() that comes from the platform
+     actually reporting its RAM rather than this code inferring "phone" from a coarse pointer and
+     a small screen. Used below as richAudio()'s FLOOR (review finding IMPORTANT 3b/6,
+     2026-09-22) — deliberately narrower than smallDevice() itself, and that narrowness is the
+     point: smallDevice()'s screen-size clause is exactly the guess that called Kerem's own
+     iPhone "small" (no deviceMemory on iOS) while it measured 9.7% of one core, and flooring on
+     THAT clause too would undo the entire reason richAudio() exists — see the calibration
+     comment on AUDIOCAP_THRESHOLD below. A real deviceMemory<=4 reading is a different kind of
+     fact: it says this device is short on RAM regardless of how fast its CPU renders, which is
+     exactly the 4 GB laptop of IMPORTANT 6 — a fine pointer with a genuinely small memory
+     budget, still getting full convolution/chorus/delays/4 voices before this floor existed. */
+  function tinyMemory() {
+    var mem = navigator.deviceMemory;
+    return mem !== undefined && mem <= 4;
+  }
+
+  /* ---- Deciding by measuring, not by guessing ----
+     smallDevice() answers "does this look like a phone?" richAudio() answers the question that
+     actually matters — "can this device render the full stack in real time?" — by rendering a
+     short copy of it through an OfflineAudioContext and timing it, the same method diag.html
+     section 5 proved: wall time to produce N seconds of audio, over N, is the share of one core
+     that stack needs, and it does not depend on the output device or on what else the phone
+     happens to be doing at the moment someone asks navigator.deviceMemory.
+
+     A fine pointer (a mouse) is never measured — a probe that happened to land on a busy desktop
+     must not be able to take away Kerem's own convolution and chorus. It CAN still be downgraded
+     by tinyMemory()'s floor, though (IMPORTANT 6): a fast core says nothing about whether this
+     machine has the RAM to hold four rooms' worth of convolution buffers, delay lines and chorus
+     taps at once. */
+  var AUDIOCAP_KEY = "fieldarc.audiocap";     /* the measured %, not just yes/no — see richAudio */
+  /* Calibrated from two real renders of the full stack (task-8-brief.md): Kerem's iPhone 9.7%,
+     the dev desktop 70.6%. The threshold used to sit at 80 — comfortably above BOTH readings, so
+     it never actually excluded anything; a coarse-pointer device measuring, say, 79% passed and
+     then ran the full stack plus the two PaulX recording voices and the map/GPS at 82%+ total,
+     which diag.html's own scale calls "no headroom" (review finding IMPORTANT 3, 2026-09-22).
+     Lowered to 60: Kerem's own 9.7% iPhone is still nowhere near it (kept full quality —
+     overwhelming headroom, and it sounded wrong without it) and the dev desktop's 70.6% never
+     actually goes through this numeric branch at all (a mouse is a fine pointer, so it is
+     answered by the unconditional branch above, floor aside) — but a device that only measures
+     moderately fast, with none of the margin those two calibration points have, now correctly
+     earns the cuts smallDevice() used to hand out by guesswork. */
+  var AUDIOCAP_THRESHOLD = 60;
+
+  var finePointerCached = null;
+  function finePointer() {
+    if (finePointerCached === null) {
+      finePointerCached = !!(window.matchMedia && window.matchMedia("(pointer: fine)").matches);
+    }
+    return finePointerCached;
+  }
+
+  /* A sane render-cost percentage: finite, positive, and not so large that the clock or the
+     context lied to us. Nonsense (zero, negative, NaN, absurdly large) is not "fast" or "slow",
+     it is "unmeasured", and unmeasured is not a case to guess optimistically on. */
+  function saneCapabilityPct(pct) {
+    return typeof pct === "number" && isFinite(pct) && pct > 0 && pct < 100000;
+  }
+
+  /* Pure on purpose — no localStorage, no matchMedia, no probe — so the threshold and the
+     fallback can be tested as plain functions rather than through a browser. richAudio() below
+     is the only caller; it supplies the two facts (is the pointer fine, what did the probe read
+     back, if anything) that decide everything else. */
+  function richAudioVerdict(isFinePointer, pct) {
+    /* tinyMemory()'s floor applies BEFORE the fine-pointer bypass and BEFORE a successful
+       measurement gets to answer — "over a successful measurement, not merely as the fallback
+       for an unmeasurable one" (IMPORTANT 3b). This is deliberately the narrow, measured-RAM
+       clause, not the whole of smallDevice() — see the comment on tinyMemory() for why the
+       screen-size guess must stay out of this floor or Kerem's own iPhone regresses. */
+    if (tinyMemory()) { return false; }
+    if (isFinePointer) { return true; }
+    if (saneCapabilityPct(pct)) { return pct <= AUDIOCAP_THRESHOLD; }
+    /* Missing, thrown, or nonsense: a device that cannot even be measured is not a device to
+       hand the expensive path to on an optimistic guess. Fall back to the old answer rather
+       than a new one. */
+    return !smallDevice();
+  }
+
+  var audioCapPct;             /* undefined until primeAudioCapability resolves or finds a cache */
+
+  /* Three call sites now — makeRoom, makeWarp, buildFxChain — ask this instead of smallDevice().
+     voiceBudget() asked it too between 2026-09-22's task 8 and this same day's review fix
+     (CRITICAL 2): it caps concurrent RECORDING memory, a question richAudio()'s render-cost
+     probe has nothing to say about, and moving it here re-opened the exact tab-kill it was
+     written to close on Kerem's own iPhone. It reads smallDevice() again now. This function
+     never blocks: primeAudioCapability has already run, once, inside the first bedStart(),
+     before buildVoice() is reachable — see the ordering note there.
+
+     A cached string that fails saneCapabilityPct (corrupted, or written by some future format
+     change) must NOT become a sticky, permanent audioCapPct — that would strand a device on the
+     smallDevice() fallback forever, with no way back, which is exactly the class of bug this
+     whole task exists to remove, just relocated into storage. So an insane cached reading is
+     left alone here (audioCapPct stays undefined) rather than adopted; primeAudioCapability is
+     what actually owns recovery, by re-probing and overwriting the bad entry. */
+  function richAudio() {
+    /* The floor (IMPORTANT 3b/6) has to sit ahead of the fine-pointer bypass, not just inside
+       richAudioVerdict — richAudio() always calls that with isFinePointer hardcoded to false
+       (below) and answers the fine-pointer case itself, right here, which is exactly the branch
+       IMPORTANT 6 found unconditional. */
+    if (tinyMemory()) { return false; }
+    if (finePointer()) { return true; }
+    if (audioCapPct === undefined) {
+      try {
+        var cached = localStorage.getItem(AUDIOCAP_KEY);
+        if (cached !== null) {
+          var cachedPct = parseFloat(cached);
+          if (saneCapabilityPct(cachedPct)) { audioCapPct = cachedPct; }
+        }
+      } catch (e) { /* private mode — primeAudioCapability tries again this session */ }
+    }
+    return richAudioVerdict(false, audioCapPct);
+  }
+
+  /* The same node types and counts as the full route stack buildVoice/buildFxChain/makeRoom
+     build when richAudio() is true: three effect chains (a room and a delay line each), the
+     pad's two synths, the sector line and the third voice each through a waveshaper/warp/filter,
+     and the rhythm room — mirrors diag.html's buildStack(T, false). Built standalone rather than
+     through buildFxChain/makeRoom/makeWarp themselves, because those now ask richAudio() — the
+     very answer this probe exists to produce — and calling them here would measure whichever
+     path they happened to fall back to rather than the path actually being decided. If buildVoice
+     changes shape, this and diag.html's buildStack both need the same change.
+
+     readyList, if given, collects each Tone.Reverb's own .ready promise — see audioCapability,
+     which awaits them instead of guessing how long impulse generation takes. */
+  function audioCapabilityStack(Tone, readyList) {
+    var dest = new Tone.Gain(0.8).toDestination();
+    var lim = new Tone.Limiter(-1).connect(dest);
+    var bus = new Tone.Gain(1).connect(lim);
+    function room(decay) {
+      var r = new Tone.Reverb({ decay: decay, wet: 0.4 }).connect(bus);
+      if (readyList) { readyList.push(r.ready); }
+      return r;
+    }
+    function chain(c) {
+      var rev = room(c.d), dIn = new Tone.Gain(1);
+      var hp = new Tone.Filter({ type: "highpass", frequency: 170, Q: 0.7 });
+      var del = new Tone.FeedbackDelay({ maxDelay: 4, delayTime: c.t, feedback: c.fb, wet: 1 });
+      var send = new Tone.Gain(c.w);
+      dIn.connect(rev); dIn.connect(hp); hp.connect(del); del.connect(send); send.connect(rev);
+      return dIn;
+    }
+    var fx = chain({ d: 3.4, t: 0.3, fb: 0.72, w: 0.75 });
+    var fx2 = chain({ d: 0.4, t: 0.2, fb: 0.70, w: 0.40 });
+    var fx3 = chain({ d: 7.6, t: 0.5, fb: 0.70, w: 0.68 });
+    function voice(into, n, rate) {
+      var vb = new Tone.Gain(0.8).connect(into), mod = new Tone.Gain(1).connect(vb);
+      var filt = new Tone.Filter(1200, "lowpass").connect(mod);
+      var warp = new Tone.Chorus({ frequency: rate, delayTime: 5.5, depth: 0.6, wet: 0.3 });
+      warp.start();
+      warp.connect(filt);
+      var drive = new Tone.Gain(1).connect(warp);
+      var ws = new Tone.WaveShaper(function (x) { return Math.tanh(x * 2.6); }, 2048).connect(drive);
+      for (var i = 0; i < n; i++) {
+        var s = new Tone.FMSynth({ harmonicity: 1, modulationIndex: 4 }).connect(ws);
+        s.triggerAttack(110 * (i + 1), 0);
+      }
+    }
+    voice(fx, 2, 0.55);          /* the pad: bass and top */
+    voice(fx2, 1, 1.7);          /* the sector counter-line */
+    voice(fx3, 1, 0.35);         /* the third voice */
+    var rr = room(1.2);
+    var rd = new Tone.FeedbackDelay({ delayTime: 0.25, feedback: 0.34, wet: 0.22 }).connect(rr);
+    var rf = new Tone.Filter(9000, "lowpass").connect(rd);
+    var rs = new Tone.NoiseSynth().connect(rf); rs.triggerAttack(0);
+  }
+
+  /* Renders 1.5s of the full stack offline and returns the wall time to do it as a percentage of
+     realtime — a couple hundred milliseconds of real work on a phone with headroom, which is why
+     1.5s was chosen over diag.html's 4s: this runs once, unattended, on the first Sound press of
+     a person's life with this device, and has to be short enough not to be felt there. Resolves
+     -1 (nonsense — see saneCapabilityPct) rather than rejecting on any failure, because a phone
+     that cannot even run this probe is not a phone to leave hanging.
+
+     A convolver's impulse renders before the clock starts — Tone.Reverb's constructor kicks off
+     generate() itself and keeps the render's own completion promise on .ready (checked directly
+     against Tone.js's source: the constructor sets `this.ready = Promise.resolve()`, then calls
+     generate(), which synchronously reassigns `this.ready` to the real offline render before it
+     ever awaits anything — so by the time `new Tone.Reverb(...)` returns, .ready already IS that
+     promise; nothing here calls generate() a second time). An earlier version of this function
+     waited a fixed 400ms instead, copied from diag.html's renderCost — measured after the fact to
+     be both unnecessarily slow on a quick device and not necessarily enough on a genuinely slow
+     one, since a guessed duration cannot know how long generation actually takes on THIS device.
+     Promise.all over the real promises is exact either way. */
+  function audioCapability(Tone) {
+    var SECONDS = 1.5;
+    if (typeof OfflineAudioContext === "undefined") { return Promise.resolve(-1); }
+    return new Promise(function (resolve) {
+      try {
+        var ctx = new OfflineAudioContext(2, Math.round(48000 * SECONDS), 48000);
+        var prev = Tone.getContext();
+        Tone.setContext(ctx);
+        var ready = [];
+        audioCapabilityStack(Tone, ready);
+        Promise.all(ready).then(function () {
+          var t0 = performance.now();
+          return ctx.startRendering().then(function () {
+            var ms = performance.now() - t0;
+            try { Tone.setContext(prev); } catch (e) {}
+            resolve(ms / (SECONDS * 1000) * 100);
+          });
+        }).catch(function () {
+          try { Tone.setContext(prev); } catch (e) {}
+          resolve(-1);
+        });
+      } catch (e) { resolve(-1); }
+    });
+  }
+
+  var audioCapPriming = null;   /* the in-flight probe, so two overlapping bedStarts share one */
+
+  /* The odd one out among the call sites that moved to richAudio() in task 8, and the fix for
+     review finding CRITICAL 2 (2026-09-22): a soundscape voice holds its whole recording in
+     memory for as long as it plays — see the comment two blocks above smallDevice() — so the
+     number of voices that can be live at once is a MEMORY ceiling, not a render-cost one, and
+     richAudio() measures render cost and knows nothing about RAM. The coordinator's original
+     ruling for task 8 said "replace smallDevice() at every call site"; that was right for
+     makeRoom/makeWarp/buildFxChain and wrong here — moving this one re-opened the exact tab-kill
+     smallDevice()'s cap exists to close, on Kerem's own iPhone (9.7% render cost, plenty of CPU
+     headroom, still only a phone's worth of RAM), the failure he actually reported in Koşuyolu on
+     2026-09-21. Back to smallDevice(), the memory guess, alone. */
   function voiceBudget(n) {
     return smallDevice() ? Math.min(n, 2) : n;
+  }
+
+  /* pacerStart, worldStart, worldSwap's take() and commitPatch all set BED.maxVoices from
+     voiceBudget() before this function ever runs. That used to matter because voiceBudget() read
+     richAudio(), an async probe that might not have settled yet — a capable phone's first walk
+     could start with a stale, too-low voice cap. voiceBudget() reads smallDevice() now (see
+     above), which is synchronous and never changes mid-session, so every one of those call sites
+     already gets the right answer the first time and this recompute is a no-op reproduction of
+     it, not a correction. Left in place anyway: it costs nothing, and it keeps BED.maxVoices
+     honest without every future caller needing to know which of the two questions voiceBudget()
+     happens to be asking this month.
+
+     Recomputed here, against whichever patch is current AT THE MOMENT primeAudioCapability
+     resolves, never a patch captured earlier — so a route reselect that happened while the probe
+     was in flight is never clobbered: it is simply recomputed with the same, by-then-current,
+     smallDevice() answer, which is a no-op either way. */
+  function recomputeVoiceBudget() {
+    if (pacer && pacer.patch && pacer.patch.bed) {
+      BED.maxVoices = voiceBudget(pacer.patch.bed.voices);
+    }
+  }
+
+  /* Run once, before buildVoice() can choose anything — see the ordering note in bedStart. A
+     fine-pointer device resolves immediately without ever touching OfflineAudioContext; a phone
+     with a cached reading from a previous session resolves immediately too. Only a coarse-pointer
+     device on its first-ever Sound press actually waits on the probe. Every path recomputes
+     BED.maxVoices before resolving — see recomputeVoiceBudget above — because makeRoom/makeWarp/
+     buildFxChain still depend on richAudio() settling before buildVoice() is reachable (the
+     ordering note in bedStart), even though voiceBudget() itself no longer needs the probe. */
+  function primeAudioCapability(Tone) {
+    if (finePointer()) { recomputeVoiceBudget(); return Promise.resolve(); }
+    if (audioCapPct !== undefined) { recomputeVoiceBudget(); return Promise.resolve(); }
+    try {
+      var cached = localStorage.getItem(AUDIOCAP_KEY);
+      if (cached !== null) {
+        var cachedPct = parseFloat(cached);
+        /* A corrupt or otherwise-insane cached string must not be adopted as the answer — that
+           would strand this device on the fallback forever, with the probe never running again
+           to correct it (see the comment on richAudio). Falling through here re-probes and
+           overwrites the bad entry below, exactly like finding nothing cached at all. */
+        if (saneCapabilityPct(cachedPct)) {
+          audioCapPct = cachedPct;
+          recomputeVoiceBudget();
+          return Promise.resolve();
+        }
+      }
+    } catch (e) { /* private mode: measure fresh below rather than fail closed */ }
+    if (audioCapPriming) { return audioCapPriming; }
+    audioCapPriming = audioCapability(Tone).then(function (pct) {
+      audioCapPct = pct;
+      if (saneCapabilityPct(pct)) {
+        try { localStorage.setItem(AUDIOCAP_KEY, String(pct)); } catch (e) { /* private mode */ }
+      }
+      recomputeVoiceBudget();
+    });
+    return audioCapPriming;
   }
 
   /* Stopping is two moments, not one. First the whole walk fades — and it has to keep sounding
@@ -7769,6 +8060,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     wantSound = false;
     if (!bed) { return; }
     bed.on = false;
+    mediaSessionStop();
     $("#patch-play").textContent = "Sound";
     $("#patch-play").setAttribute("aria-pressed", "false");
     clearTimeout(bed.fadeTimer);
@@ -7779,6 +8071,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function bedTeardown() {
     /* Sound came back on inside the fade: this teardown belongs to a stop that was undone. */
     if (!bed || bed.on) { return; }
+    /* The master chain — limiter, fade, walk, synth, and on iOS the MediaStream feeding
+       #keepalive — is deliberately NOT disposed here, same as it always wasn't for limiter/fade/
+       walk/synth: bedStart only builds it once, guarded by `!bed.master`, so tearing any of it
+       down would leave the next Sound press with nothing to reconnect to — a real "stale stream
+       on the second walk" bug, just arrived at by deleting the wrong thing. The per-walk release
+       already happened: mediaSessionStop()'s el.pause(), called from bedStop before the fade even
+       starts, stops the walk reaching the speaker without touching wiring a second Sound press
+       needs — true on iOS exactly as it already was on Android. */
     /* Disposed outright, with no further wait: the fade has already run and everything here is
        silent by now. The 300 ms this used to sit behind existed to let a 0.2 s per-voice ramp
        finish, and that ramp is gone. */
@@ -7828,106 +8128,300 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        admit it was pressed is a broken control, whatever the audio is doing. bedStop owns it. */
   }
 
+  /* ---- Staying alive with the screen off ----
+     A walk is forty minutes outdoors with the phone in a pocket. Until this existed that needed
+     wakeLock("screen") held for the whole of it — battery, pocket taps, sunlight — and the
+     context still got suspended, which is what bed.resumeLoop has always been patching over.
+
+     Android Chrome keeps a backgrounded page's audio alive while the page owns an active media
+     session. A WebAudio graph does not create one; an <audio> element actually playing does. So
+     the silent loop is not a hack around the rule, it is the rule: the page really is playing
+     media, and the graph it also runs is allowed to keep going.
+
+     Both halves are fully guarded. Safari implements some of mediaSession and none of the
+     background behaviour, so on iPhone this does nothing and must break nothing.
+
+     TWO different questions live in this function, and CRITICAL 1 of the 2026-09-22 review is
+     what happens when they are answered by the same gate:
+       - must #keepalive be PLAYING at all? On iOS it is the ONLY path to the speaker once
+         bedStart's master chain reroutes the limiter into it (see iosSafari() below) — so this
+         must run whenever iosSafari() is true, full stop, regardless of what smallDevice() says.
+         Everywhere else it is the Android backgrounding trick, which stays a smallDevice()
+         question exactly as before.
+       - should this device get a lock-screen card and answer headphone/media-key buttons? That
+         is the desktop-annoyance question alone — a "Fieldscape" Now Playing entry, and desktop
+         media keys silently retargeting to the walk, for an owner who runs DAWs and media
+         players for a living — and it stays smallDevice()-only, on purpose: an iPad is not a
+         desktop, but it is not the machine this gate protects either, and richAudio()/
+         smallDevice() are both render/memory questions with nothing to say about the lock
+         screen either way.
+     Before this fix both lived behind one `if (!smallDevice()) return;` at the top, and an iPad
+     — iosSafari() true, smallDevice() false (no deviceMemory on Safari, and its screen sits
+     744-834px, over the 500px cutoff the guess uses) — returned before el.play() was ever
+     reached. bedStart had already routed the walk's only output into that element's srcObject;
+     nothing ever played it. Total silence: the meter still read signal (it taps the limiter,
+     upstream of the reroute), the button still said Stop, and keepaliveFallback() was
+     unreachable — it only fires from play()'s catch, which this already-returned function never
+     got to. */
+  function mediaSessionStart() {
+    var el = $("#keepalive");
+    /* The element must play whenever it is the sole output path (iosSafari()) as well as
+       whenever smallDevice() wants the Android backgrounding trick — two independent reasons,
+       checked independently, not folded into one guess the way an iPad's failing smallDevice()
+       would wrongly answer for it. */
+    if (el && (smallDevice() || iosSafari())) {
+      /* Started from inside the Sound click: play() outside a user gesture is refused. Wrapped
+         all the way round, not just the promise: a rejection is normal (declined) and handled
+         below, but a SYNCHRONOUS throw from play() itself would otherwise escape this function
+         and, since it runs inside bedStart's .then() chain after bed.on is already true, skip
+         every step after it — buildRhythmFx, buildVoice, the loop scheduling, Transport.start(),
+         the fade-in. The button would say Stop over a graph that was never built.
+
+         What a decline or a throw MEANS is platform-dependent, and that is new as of the iOS
+         reroute: on Android/desktop-shaped phones #keepalive is still a decoy, the real signal
+         already reaches ctx.destination regardless of whether this element plays, so failing
+         here only costs the backgrounding trick. On iOS it is the ONLY output path (see
+         bedStart's master chain) — failing here means total silence unless something falls the
+         graph back to ctx.destination, which is exactly what keepaliveFallback does; it is a
+         no-op on every other platform (bed.iosStream is null there, see keepaliveFallback). */
+      try {
+        var p = el.play();
+        if (p && p.catch) { p.catch(keepaliveFallback); }
+      } catch (e) { keepaliveFallback(); }
+    }
+    /* Metadata and action handlers stay smallDevice()-only, unconditionally — see the comment
+       above this function for why an iPad, which just earned an audible element above, does not
+       also earn a lock-screen card here. */
+    if (!smallDevice()) { return; }
+    if (!("mediaSession" in navigator)) { return; }
+    try {
+      var where = (place && place.properties && place.properties.name) || "Open world";
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: "Fieldscape", artist: where, album: "A walk"
+      });
+      navigator.mediaSession.playbackState = "playing";
+      /* The lock screen and the button on a pair of headphones both arrive here. Without these
+         they appear to work and do nothing, which is worse than not appearing at all. */
+      navigator.mediaSession.setActionHandler("play", function () {
+        if (!(bed && bed.on) && !wantSound) { $("#patch-play").click(); }
+      });
+      navigator.mediaSession.setActionHandler("pause", function () { bedStop(); });
+      navigator.mediaSession.setActionHandler("stop", function () { bedStop(); });
+    } catch (e) { /* an older or partial implementation — the walk still sounds */ }
+  }
+
+  function mediaSessionStop() {
+    /* Mirrors mediaSessionStart's gate exactly: the element must be paused on every platform it
+       might have been started on — smallDevice() alone no longer covers that, an iPad pauses it
+       through iosSafari() alone — while the mediaSession half stays smallDevice()-only, matching
+       what mediaSessionStart actually armed. */
+    var el = $("#keepalive");
+    if (el && (smallDevice() || iosSafari())) {
+      try { el.pause(); } catch (e) { /* never played */ }
+    }
+    if (!smallDevice()) { return; }
+    if (!("mediaSession" in navigator)) { return; }
+    try { navigator.mediaSession.playbackState = "paused"; } catch (e) { /* ignore */ }
+  }
+
+  /* ---- iOS: the only web-side idea left ----
+     The recipe above (silent looping element + MediaSession) is Chrome's documented Android
+     trick, and it does not survive an iOS lock screen — confirmed by ear, on Kerem's own iPhone,
+     with that recipe already deployed: sound stopped the instant the screen locked. iOS treats a
+     pure WebAudio graph as inaudible the moment the screen locks, whatever MediaSession claims;
+     the one thing iOS is documented to keep alive in the background is a media element that is
+     genuinely playing. So on iOS the walk's real output is rerouted to flow through #keepalive
+     itself — the element becomes the walk, not a decoy beside it (see bedStart's master chain).
+
+     This is UNPROVEN, not a known fix: the technique is well established on Android and reported
+     inconsistent on iOS across versions. If Kerem's own lock test still comes back silent with
+     this shipped, that is a real, complete answer — it closes the web-side options for iOS
+     background audio, not a bug in this function.
+
+     iosSafari() answers a PLATFORM question ("is this engine Safari on iOS"), not a capability
+     question. smallDevice()'s screen-size guess and richAudio()'s render-cost probe both answer
+     "how much can this device render" — a question with nothing to do with which background-audio
+     trick applies. A capable iPhone and a struggling one need exactly the same reroute; an
+     Android phone, however weak, needs none of it. So this stays its own function: it must never
+     fold into smallDevice() or richAudio(), and it must never widen past iOS Safari itself — an
+     Android phone routed through a MediaStream would gain nothing and only add buffering latency. */
+  function iosSafari() {
+    /* iPhone and iPod identify themselves outright; so does an older iPad. */
+    var ua = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    /* iPadOS 13+ ships a Mac-shaped user agent by default, so the check above misses every
+       modern iPad. The one thing that still tells an iPad wearing that UA apart from an actual
+       Mac is touch: no Mac has ever reported more than one simultaneous touch point (most report
+       zero), while the iPad underneath still reports its real hardware here. */
+    var ipadAsMac = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+    return ua || ipadAsMac;
+  }
+
+  /* ---- Escape hatch: ?nostream ----
+     IMPORTANT 4 of the 2026-09-22 review: the MediaStream reroute above is UNPROVEN on iOS, and
+     its likeliest failure is worse than keepaliveFallback()'s case (a rejected or thrown
+     play()) — WebKit resolving play() while the stream itself carries no audio. Nothing rejects,
+     nothing throws, the meter still reads signal (it taps the limiter, upstream of the reroute),
+     the button still says Stop, and there is no way for a listener, or Kerem testing this by
+     ear, to tell a real success from that failure. `?nostream` in the URL forces the ordinary
+     `limiter.toDestination()` route used everywhere else, regardless of iosSafari() — a bad
+     outcome on the owner's own iPhone is then one URL away from being ruled out rather than
+     needing a redeploy. See docs/mobile-testing.md. */
+  function nostream() {
+    return location.search.indexOf("nostream") !== -1;
+  }
+
+  /* ---- When the iOS reroute itself fails ----
+     On iOS #keepalive is the ONLY path to the speaker (bedStart's master chain never connects
+     the limiter to ctx.destination there) — so a decline or a throw from el.play() is not a
+     harmless miss the way it always was on Android, it is total, unexplained silence, on the
+     very build Kerem is about to test by ear for the first time. Falling back to the destination
+     everyone else already uses is the correct trade: background survival is lost, but a walk
+     that only sounds while the screen is on is still a walk, and silence with no explanation is
+     the one outcome indistinguishable from "the change broke it."
+
+     bed.iosStream doubles as its own guard: null on every platform that never built it (this
+     returns immediately, matching the old "still sounds" comment exactly where it is still
+     true), and set back to null the first time this runs so a second failure — including a
+     rejection that was already in flight and arrives after bed.iosStream was cleared, or after
+     a Stop — is a safe no-op rather than a second disconnect or a second toast. Nothing here can
+     "resurrect" the walk: bed.fade's gain, not this wiring, is what makes the graph audible, and
+     Stop already rides that down to 0 on its own timeline regardless of when this fires. */
+  function keepaliveFallback() {
+    if (!bed || !bed.iosStream) { return; }
+    /* Disconnect before connect, explicit: the both-paths trap this task exists to close — the
+       limiter reaching ctx.destination AND the stream at once — must not reopen here, in the
+       one place it was never exercised before this fix. */
+    try { bed.limiter.disconnect(bed.iosStream); } catch (e) { /* already gone */ }
+    bed.iosStream = null;
+    bed.limiter.toDestination();
+    toast("Background audio isn't available on this iPhone — the walk is playing normally, " +
+          "but it will stop if you lock the screen.");
+  }
+
   function bedStart() {
     return loadTone().then(function (Tone) {
       return Tone.start().then(function () {
-        if (!bed || !bed.master) {
-          /* A-6: a limiter on the master, and a meter that reads the signal rather than
-             inferring level from fader positions. */
-          var limiter = new Tone.Limiter(-1).toDestination();
-          var meter = new Tone.Meter();
-          limiter.connect(meter);
-          /* The Sound toggle's own fade, and nothing else's. It has to be its own node because
-             bed.walk already belongs to the GPS walk fade (setWalkLevel ramps it every time the
-             walker drifts off the route) — one node with two writers means the last ramp to
-             fire wins, and a listener walking back onto the route mid-fade would cancel it.
-             Two nodes in series multiply instead, which is what "both fades apply" means.
-             Starts at 0: pressing Sound blooms rather than switches. */
-          var fade = new Tone.Gain(0).connect(limiter);
-          /* Everything the walk plays meets here before the limiter, so straying off the route
-             fades the whole piece with one ramp rather than each voice arguing with its own
-             proximity curve. At 1 it is not audible in the signal path at all. */
-          var walk = new Tone.Gain(1).connect(fade);
-          /* The route's own voices meet here, so the route card's mute and solo have one place
-             to act — the points keep their own gains, which is what makes them separate
-             sources in the mixer. */
-          var synth = new Tone.Gain(1).connect(walk);
-          bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: walk,
-                  walk: walk, synth: synth, fade: fade, fadeTimer: null,
-                  limiter: limiter, meter: meter, Tone: Tone };
-          /* synth was just built at Gain(1) — in open world that is wrong the instant the
-             route is further than GPS_FADE_FROM away. Give it the level the walker's distance
-             already earned instead of leaving it full until the next worldMove tick happens to
-             land (which, standing still, might be never). Place mode leaves this alone: the
-             whole-walk fade is bed.walk's job there, so bed.synthLevel stays undefined and
-             applyMixer's default of 1 is correct. */
-          if (pacer && pacer.world) {
-            setSynthLevel(walkLevel(pacer.routeDist, GPS_FADE_FROM, GPS_LEASH));
-          }
-        }
-        bed.on = true;
-        window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
-        window.__fa.mixer = { state: mixer, level: mixLevel, apply: applyMixer,
-                              route: MIX_ROUTE };
-
-        var patch = pacer ? pacer.patch : defaultPatch();
-        /* A-1: the Transport is a lookahead scheduler. Never a UI callback or a draw loop. */
-        Tone.Transport.bpm.value = patch.tempo;
-        /* Stopped while the context was resuming. Do not build a graph nobody asked for. */
-        if (!wantSound) { bed.on = false; return; }
-        keepAwake(true);
-        if (!bed.rfx) { bed.rfx = buildRhythmFx(Tone, patch); }
-        /* Built dry, then given the patch. Without this the drive stage sits at zero
-           whatever the patch says, because construction only sets what the constructor
-           takes and the drive is three nodes deep. */
-        applyRhythmFx(patch);
-        /* Built from this patch the first time; told this patch every time after, because
-           bedStop leaves the voice standing and the next Sound press may well belong to a
-           different route than the one that built it. */
-        if (!bed.voice) { bed.voice = buildVoice(Tone, patch); }
-        else { applyPatchToVoice(patch); }
-        if (!bed.loop) {
-          bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
-          bed.barLoop = Tone.Transport.scheduleRepeat(harmonyBar, "1m");
-          /* A fixed grid, with the division applied inside the callback. Clearing a repeat
-             and scheduling a replacement while the Transport runs means an id to keep in
-             step and a new phase starting from bar zero; getting either wrong takes the
-             voice out with it. Nothing is torn down here, so a rhythm change cannot. */
-          bed.sectLoop = Tone.Transport.scheduleRepeat(sectorStep, SECT_GRID);
-          bed.sectDiv = patch.sect.rhythm;
-          /* One grid for every point's sequencer; each counts its own ticks against it. */
-          bed.rhythmLoop = Tone.Transport.scheduleRepeat(rhythmStep, SECT_GRID);
-          bed.thirdLoop = Tone.Transport.scheduleRepeat(thirdStep, SECT_GRID);
-          /* The soundscape bed's own warp/morph/field/grit tick — a quarter-note grid is
-             musical enough for a slow wobble or drift without needing its own tempo math. */
-          bed.warpLoop = Tone.Transport.scheduleRepeat(warpStep, "4n");
-          /* A watchdog, not a musical tick: visibilitychange only resumes the context on
-             a tab-hidden/tab-visible transition, but a context can suspend or degrade for
-             other reasons while the tab stays foregrounded and visible the whole time —
-             an OS audio-focus change, a phone call, a Bluetooth device switching, a
-             power-saving heuristic after a long session. Any voice sharing bed.Tone.context
-             would go silent at once when that happens, whether or not it was the one just
-             being adjusted — which is why "playing for a while" was enough on its own,
-             with no tab switch and no screen lock required. Every 5 real seconds,
-             independent of tempo, since this has nothing to do with the music. */
-          bed.resumeLoop = Tone.Transport.scheduleRepeat(function () {
-            if (bed && bed.Tone && bed.Tone.context.state !== "running") {
-              bed.Tone.start().catch(function () {});
+        return primeAudioCapability(Tone).then(function () {
+          if (!bed || !bed.master) {
+            /* A-6: a limiter on the master, and a meter that reads the signal rather than
+               inferring level from fader positions. */
+            var limiter = new Tone.Limiter(-1);
+            var meter = new Tone.Meter();
+            limiter.connect(meter);
+            /* Exactly one output path, chosen once — see iosSafari() above for why iOS needs a
+               different one at all. Reaching BOTH ctx.destination and a MediaStream here would
+               play the walk twice, once direct and once through #keepalive, which sounds like
+               phasing or doubled loudness rather than an obvious routing bug — so this is an
+               if/else, never two unconditional connects. */
+            var iosStream = null;
+            var keepaliveEl = $("#keepalive");
+            if (iosSafari() && !nostream() && keepaliveEl) {
+              /* #keepalive stops being a silent decoy on iOS: its srcObject becomes this stream,
+                 so it carries the walk's real mix from here on rather than the 0.25s of silence
+                 in its src attribute (srcObject takes priority over src by spec, so the silent
+                 WAV is simply never reached on this branch). mediaSessionStart still plays the
+                 element from the same Sound gesture as always, further down this chain — only
+                 what it is playing has changed. */
+              iosStream = Tone.context.createMediaStreamDestination();
+              limiter.connect(iosStream);
+              keepaliveEl.srcObject = iosStream.stream;
+            } else {
+              /* Every other platform: unchanged from before this task. */
+              limiter.toDestination();
             }
-          }, 5);
-        }
-        Tone.Transport.start();
-        /* A teardown may still be pending from a Stop less than SOUND_FADE_OUT ago — pressing
-           Sound again inside the fade must come back up on the graph that is still there,
-           not have it disposed out from under it a moment later. bedTeardown also stands down
-           on its own when it finds bed.on true, so this is belt and braces. */
-        clearTimeout(bed.fadeTimer);
-        bed.fadeTimer = null;
-        fadeSound(bed.fade.gain, 1, SOUND_FADE_IN);
-        $("#patch-play").textContent = "Stop";
-        $("#patch-play").setAttribute("aria-pressed", "true");
-        updateBed();
-        meterLoop();
+            /* The Sound toggle's own fade, and nothing else's. It has to be its own node because
+               bed.walk already belongs to the GPS walk fade (setWalkLevel ramps it every time the
+               walker drifts off the route) — one node with two writers means the last ramp to
+               fire wins, and a listener walking back onto the route mid-fade would cancel it.
+               Two nodes in series multiply instead, which is what "both fades apply" means.
+               Starts at 0: pressing Sound blooms rather than switches. */
+            var fade = new Tone.Gain(0).connect(limiter);
+            /* Everything the walk plays meets here before the limiter, so straying off the route
+               fades the whole piece with one ramp rather than each voice arguing with its own
+               proximity curve. At 1 it is not audible in the signal path at all. */
+            var walk = new Tone.Gain(1).connect(fade);
+            /* The route's own voices meet here, so the route card's mute and solo have one place
+               to act — the points keep their own gains, which is what makes them separate
+               sources in the mixer. */
+            var synth = new Tone.Gain(1).connect(walk);
+            bed = { on: false, voices: {}, rhythms: {}, oneShots: [], master: walk,
+                    walk: walk, synth: synth, fade: fade, fadeTimer: null,
+                    limiter: limiter, meter: meter, Tone: Tone, iosStream: iosStream };
+            /* synth was just built at Gain(1) — in open world that is wrong the instant the
+               route is further than GPS_FADE_FROM away. Give it the level the walker's distance
+               already earned instead of leaving it full until the next worldMove tick happens to
+               land (which, standing still, might be never). Place mode leaves this alone: the
+               whole-walk fade is bed.walk's job there, so bed.synthLevel stays undefined and
+               applyMixer's default of 1 is correct. */
+            if (pacer && pacer.world) {
+              setSynthLevel(walkLevel(pacer.routeDist, GPS_FADE_FROM, GPS_LEASH));
+            }
+          }
+          bed.on = true;
+          window.__fa.bed = bed;   /* measurable: voice count, gains, cutoffs, meter */
+          window.__fa.mixer = { state: mixer, level: mixLevel, apply: applyMixer,
+                                route: MIX_ROUTE };
+  
+          var patch = pacer ? pacer.patch : defaultPatch();
+          /* A-1: the Transport is a lookahead scheduler. Never a UI callback or a draw loop. */
+          Tone.Transport.bpm.value = patch.tempo;
+          /* Stopped while the context was resuming. Do not build a graph nobody asked for. */
+          if (!wantSound) { bed.on = false; return; }
+          keepAwake(true);
+          mediaSessionStart();
+          if (!bed.rfx) { bed.rfx = buildRhythmFx(Tone, patch); }
+          /* Built dry, then given the patch. Without this the drive stage sits at zero
+             whatever the patch says, because construction only sets what the constructor
+             takes and the drive is three nodes deep. */
+          applyRhythmFx(patch);
+          /* Built from this patch the first time; told this patch every time after, because
+             bedStop leaves the voice standing and the next Sound press may well belong to a
+             different route than the one that built it. */
+          if (!bed.voice) { bed.voice = buildVoice(Tone, patch); }
+          else { applyPatchToVoice(patch); }
+          if (!bed.loop) {
+            bed.loop = Tone.Transport.scheduleRepeat(voiceStep, "8n");
+            bed.barLoop = Tone.Transport.scheduleRepeat(harmonyBar, "1m");
+            /* A fixed grid, with the division applied inside the callback. Clearing a repeat
+               and scheduling a replacement while the Transport runs means an id to keep in
+               step and a new phase starting from bar zero; getting either wrong takes the
+               voice out with it. Nothing is torn down here, so a rhythm change cannot. */
+            bed.sectLoop = Tone.Transport.scheduleRepeat(sectorStep, SECT_GRID);
+            bed.sectDiv = patch.sect.rhythm;
+            /* One grid for every point's sequencer; each counts its own ticks against it. */
+            bed.rhythmLoop = Tone.Transport.scheduleRepeat(rhythmStep, SECT_GRID);
+            bed.thirdLoop = Tone.Transport.scheduleRepeat(thirdStep, SECT_GRID);
+            /* The soundscape bed's own warp/morph/field/grit tick — a quarter-note grid is
+               musical enough for a slow wobble or drift without needing its own tempo math. */
+            bed.warpLoop = Tone.Transport.scheduleRepeat(warpStep, "4n");
+            /* A watchdog, not a musical tick: visibilitychange only resumes the context on
+               a tab-hidden/tab-visible transition, but a context can suspend or degrade for
+               other reasons while the tab stays foregrounded and visible the whole time —
+               an OS audio-focus change, a phone call, a Bluetooth device switching, a
+               power-saving heuristic after a long session. Any voice sharing bed.Tone.context
+               would go silent at once when that happens, whether or not it was the one just
+               being adjusted — which is why "playing for a while" was enough on its own,
+               with no tab switch and no screen lock required. Every 5 real seconds,
+               independent of tempo, since this has nothing to do with the music. */
+            bed.resumeLoop = Tone.Transport.scheduleRepeat(function () {
+              if (bed && bed.Tone && bed.Tone.context.state !== "running") {
+                bed.Tone.start().catch(function () {});
+              }
+            }, 5);
+          }
+          Tone.Transport.start();
+          /* A teardown may still be pending from a Stop less than SOUND_FADE_OUT ago — pressing
+             Sound again inside the fade must come back up on the graph that is still there,
+             not have it disposed out from under it a moment later. bedTeardown also stands down
+             on its own when it finds bed.on true, so this is belt and braces. */
+          clearTimeout(bed.fadeTimer);
+          bed.fadeTimer = null;
+          fadeSound(bed.fade.gain, 1, SOUND_FADE_IN);
+          $("#patch-play").textContent = "Stop";
+          $("#patch-play").setAttribute("aria-pressed", "true");
+          updateBed();
+          meterLoop();
+        });
       });
     });
   }
@@ -7958,11 +8452,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      stack exists for come to 6.6 %. The convolvers were about 90 % of the route stack. Decay
      length barely moved the number, so it is the count of convolvers that costs, not the tails.
 
-     A desktop keeps its convolution: Kerem wrote these patches in those rooms. A phone gets an
-     algorithmic room of the same size instead, which is the difference between a walk that
-     sounds slightly less like a real space and one that glitches the whole way. */
+     Those numbers still stand — a convolver really does cost that much more than an algorithmic
+     room — but which device pays them changed on 2026-09-22: richAudio() decides by measuring
+     this device's own render cost against that budget (see the comment above richAudio), not by
+     guessing "phone" from screen size the way smallDevice() did. A device that measures cheap
+     enough keeps its convolution, whatever it looks like; only one that genuinely cannot afford
+     it gets the algorithmic room of the same size instead. */
   function makeRoom(Tone, decay) {
-    if (smallDevice()) {
+    if (!richAudio()) {
       return new Tone.Freeverb({ roomSize: roomSize(decay), dampening: 3000, wet: 0 });
     }
     return new Tone.Reverb({ decay: decay, wet: 0 });
@@ -7973,8 +8470,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      after the rooms were made cheap: those three choruses had become the single most expensive
      thing in the route stack, more than all four rooms together. Replacing them with an LFO on
      the filter each one already fed saves about 10 points of a desktop core and keeps the
-     movement, which is the part that matters. A desktop still gets the chorus: Kerem wrote
-     these patches with it.
+     movement, which is the part that matters.
+
+     What decides which one a device gets changed on 2026-09-22: richAudio() measures this
+     device's own render cost rather than guessing "phone" from screen size the way smallDevice()
+     did — Kerem's own iPhone guessed small and lost the chorus at 9.7% of one core, four times
+     the headroom the dev desktop needed to keep it at 70.6%. A device richAudio() finds cheap
+     enough keeps the chorus Kerem wrote these patches with, whatever it looks like.
 
      The stand-in has to answer everything a Chorus answers here, or it fails on the first morph
      tick rather than at build time: .wet (ramped every tick by voiceStep/sectorStep/thirdStep),
@@ -7986,7 +8488,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   function makeWarp(Tone, opts) {
     /* Not started here: every call site starts its own warp, and Chorus.start() twice is not
        something to rely on. */
-    if (!smallDevice()) { return new Tone.Chorus(opts); }
+    if (richAudio()) { return new Tone.Chorus(opts); }
 
     /* Vibrato is the same idea as the chorus with one delay line instead of a stereo pair, so
        the character survives: warp is "a modulated delay — literally a time warp, the delay
@@ -8019,9 +8521,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     fx.reverb = makeRoom(Tone, cfg.revDecay).connect(out);
     var dIn = new Tone.Gain(1);
 
-    /* A phone reaches the room without the echo. Three FeedbackDelay lines measured ~9 points
-       of a desktop core, and Kerem chose to spend that elsewhere on mobile rather than lose a
-       musical line to pay for it.
+    /* A device that measures too expensive (richAudio() false) reaches the room without the
+       echo. Three FeedbackDelay lines measured ~9 points of a desktop core, and Kerem chose to
+       spend that elsewhere on a device that cannot afford it rather than lose a musical line to
+       pay for it. Which device that is is now measured, not guessed from screen size — see the
+       richAudio comment near smallDevice, above.
 
        The handles stay, and that is not decoration: buildVoice connects each voice INTO
        fx.delay, and applyPatchToVoice ramps .delayTime/.feedback/.wet on all three chains
@@ -8029,7 +8533,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        first patch apply. Two spare gains stand in for the two params nothing reads back, and
        the wet handle is a real gain that drives nothing — so every write still lands somewhere
        real and the patch panel keeps working, it just has no echo to show for it. */
-    if (smallDevice()) {
+    if (!richAudio()) {
       dIn.connect(fx.reverb);
       dIn.delayTime = new Tone.Gain(0).gain;
       dIn.feedback = new Tone.Gain(0).gain;
@@ -13556,5 +14060,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   sizePeek();
 })();
 </script>
+<!-- Machinery, not a control. Android Chrome keeps a backgrounded page's audio alive only while
+     the page owns an active media session, and a WebAudio graph alone never creates one — which
+     is why a walk used to need the screen held on for its whole length. This element is 0.25s
+     of silence on a loop; playing it from the Sound gesture is what makes the session
+     real. It is inline because there is no build step and a walk starts where there is no
+     signal.
+
+     The src below (the silent WAV) is what plays on Android and desktop. On iOS, bedStart's
+     master chain instead sets this element's srcObject to a MediaStream carrying the walk's
+     real mix — srcObject overrides src by spec, so the silent WAV is never reached there. See
+     iosSafari() and the master-chain build in bedStart. -->
+<audio id="keepalive" loop preload="auto" aria-hidden="true"
+       src="data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YdAHAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA=="></audio>
 </body>
 </html>
