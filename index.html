@@ -9805,6 +9805,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
               v.stretch.late = e.data.late;
               v.stretch.quantum = e.data.quantum;
               v.stretch.sr = e.data.sr;
+              /* Dropped output buffers — the audio device losing samples the engine delivered
+                 on time. This is the one number that separates "our code is late" from "the
+                 output could not keep up", and only the audio thread can see it. */
+              v.stretch.skips = e.data.skips;
               if (PXDEBUG) { pxDebugPaint(); }
             }
           };
@@ -9953,7 +9957,8 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       lines.push(id.slice(0, 8) + "  src " + secs.toFixed(1) + "s  at " + at.toFixed(1) + "s  " +
                  "x" + (xs < 10 ? xs.toFixed(1) : Math.round(xs)) +
                  " fft" + pxBufsize(q.px && q.px.fft) +
-                 "  hops " + st.hops + " (" + latePct + "% late)  q" + st.quantum + " @" +
+                 "  hops " + st.hops + " (" + latePct + "% late)  drop " + (st.skips || 0) +
+                 "  q" + st.quantum + " @" +
                  Math.round(st.sr / 1000) + "k  " +
                  (f0 && f0.properties._remote ? "published" : "local draft"));
     });

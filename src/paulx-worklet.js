@@ -572,6 +572,13 @@ if (typeof AudioWorkletProcessor !== "undefined") {
          the first; readPos over time says the second; quantum and sr say whether the host is
          even giving this processor the 128-sample callback its budgeting assumes. */
       this.hops = 0; this.late = 0; this.quantum = 0;
+      /* Underruns, counted from the clock rather than guessed at. process() is called once per
+         render quantum and currentFrame advances by exactly that much each time — UNLESS the
+         audio device dropped a buffer, in which case the frame counter jumps. That jump is the
+         micro-glitch: our samples were right and never reached the speaker. Kerem, 2026-09-22,
+         on a phone whose engine reports 0% late hops and whose whole stack costs 6% of a core:
+         the ticks have to come from the output, not from the computation. */
+      this.lastFrame = 0; this.skips = 0; this.maxSkip = 0;
       this.bb = new PxBinaural(sampleRate);
       this.port.onmessage = (e) => this.onMsg(e.data);
     }
@@ -614,6 +621,16 @@ if (typeof AudioWorkletProcessor !== "undefined") {
     process(inputs, outputs) {
       var out = outputs[0], L = out[0], R = out[1], n = L.length, i, c, k, s, dst, b;
       this.quantum = n;
+      /* currentFrame is an AudioWorkletGlobalScope global; the test harness runs this class in
+         plain Node, where it does not exist, and a browser that never defines it simply reports
+         no drops rather than throwing on the audio thread. */
+      var frame = (typeof currentFrame === "undefined") ? 0 : currentFrame;
+      if (frame && this.lastFrame && frame - this.lastFrame > n) {
+        var gap = frame - this.lastFrame - n;
+        this.skips++;
+        if (gap > this.maxSkip) { this.maxSkip = gap; }
+      }
+      this.lastFrame = frame;
       if (!this.ch.length) { L.fill(0); if (R) { R.fill(0); } return true; }
       for (c = 0; c < this.ch.length; c++) {
         s = this.ch[c];
@@ -653,7 +670,8 @@ if (typeof AudioWorkletProcessor !== "undefined") {
       if (this.posCount >= 2048) {
         this.posCount = 0;
         this.port.postMessage({ type: "pos", readPos: this.ch[0].rd.pos, sourceLength: this.ch[0].rd.data.length,
-                                hops: this.hops, late: this.late, quantum: this.quantum, sr: sampleRate });
+                                hops: this.hops, late: this.late, quantum: this.quantum, sr: sampleRate,
+                                skips: this.skips, maxSkip: this.maxSkip });
       }
       return true;
     }

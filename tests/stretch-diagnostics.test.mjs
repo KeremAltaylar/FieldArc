@@ -146,3 +146,36 @@ test("it decodes the real published files, through the app's own bucket and key"
   assert.match(diag, /storage\/v1\/object\/recordings\//);
   assert.match(diag, /decodeAudioData/);
 });
+
+/* ---- Dropped output buffers, 2026-09-22 ----
+   Every other explanation is now measured false on Kerem's own phone: the engine reports 0%
+   late hops, the whole stack costs 6% of a core, both published recordings decode full length
+   with no gaps, the parameters match desktop, and the iOS reroute is gone. The samples are
+   right when they leave our code. What the audio thread can still see, and nothing else can, is
+   the device dropping them afterwards: currentFrame advances by exactly one render quantum per
+   process() call unless a buffer was lost, and then it jumps. */
+
+test("the engine counts frame-clock jumps, which are dropped buffers", () => {
+  assert.match(worklet, /this\.lastFrame = 0; this\.skips = 0; this\.maxSkip = 0;/);
+  assert.match(worklet, /frame - this\.lastFrame > n/,
+    "a gap wider than the quantum just rendered is a buffer the device lost");
+  assert.match(worklet, /typeof currentFrame === "undefined"/,
+    "guarded: the processor also runs in the Node test harness, which has no such global");
+  assert.match(worklet, /skips: this\.skips, maxSkip: this\.maxSkip/);
+});
+
+test("both readouts show drops, since either venue may be the one that catches it", () => {
+  assert.match(diag, /dropped buffers/);
+  assert.match(html, /v\.stretch\.skips = e\.data\.skips;/);
+  assert.match(fn(html, "pxDebugPaint"), /drop " \+ \(st\.skips \|\| 0\)/);
+});
+
+test("a drop verdict points at the buffer, not at the computation", () => {
+  /* The distinction matters because the two fixes are opposite: a late engine wants less work
+     per quantum, a starved output wants a bigger buffer. Saying "glitch" without saying which
+     is how the last three rounds were spent. */
+  assert.match(diag, /DROPPED BUFFERS/);
+  assert.match(diag, /function pxLatencyTable\(\)/);
+  assert.match(diag, /\["interactive", "balanced", "playback", 0\.05, 0\.2\]/,
+    "and it says what this platform will actually give, since Safari ignores the number");
+});

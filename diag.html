@@ -610,6 +610,29 @@ pre {
              binaural: { on: false, power: 0.5, hz: 4, mode: 0 } };
   }
 
+  /* What buffer this platform will actually give, which is not what it is asked for: Safari
+     ignores a numeric latencyHint outright (measured on Kerem's iPhone — the app asks for 50 ms
+     and gets 2.7), and 2.7 ms of slack is nothing to absorb a stall with. The keywords are worth
+     trying because they are the only other lever the spec offers, and this says whether any of
+     them moves the number on THIS device before anything is changed in the app. */
+  function pxLatencyTable() {
+    pxLog("");
+    pxLog("what this device gives for each request:");
+    var hints = ["interactive", "balanced", "playback", 0.05, 0.2];
+    hints.forEach(function (h) {
+      var c = null;
+      try {
+        c = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: h });
+        pxLog("  " + String(h) + (String(h).length < 12 ? "            ".slice(String(h).length) : " ") +
+              (c.baseLatency ? (c.baseLatency * 1000).toFixed(1) + " ms" : "not reported") +
+              "   (" + Math.round((c.baseLatency || 0) * c.sampleRate) + " samples)");
+      } catch (e) {
+        pxLog("  " + String(h) + "   refused: " + e.message);
+      }
+      if (c) { try { c.close(); } catch (e) { /* already closed */ } }
+    });
+  }
+
   function pxLog(line) {
     var el = $("#pxlog");
     el.textContent = (el.textContent.indexOf("not run") === 0 ? "" : el.textContent + "\n") + line;
@@ -841,8 +864,19 @@ pre {
               "s real" + (wall > 0 && elapsed / wall < 0.9 ? "   <- the audio clock is running slow" : ""));
         pxLog("hops             " + d.hops + " computed, " + d.late + " finished late  (" +
               Math.round(100 * lateFrac) + "%)");
+        pxLog("dropped buffers  " + (d.skips || 0) + (d.skips ? "   <- THE GLITCHES: the audio " +
+              "device lost " + d.maxSkip + " samples at worst; our samples were on time" : "  ok"));
         pxLog("hop-to-hop       " + (repeat === null ? "not captured"
               : repeat.toFixed(2) + " similarity  (0 = every hop new, 1 = the same hop again)"));
+        if (d.skips) {
+          pxLog("");
+          pxLog("VERDICT: DROPPED BUFFERS — the engine delivered and the output could not keep " +
+                "up. That is a buffer-size problem, not a compute problem; see the table below.");
+          $("#pxlog").className = "bad";
+          pxLatencyTable();
+          btn.disabled = false;
+          return;
+        }
         var verdict = repeat === null
           ? (lateFrac < 0.25
               ? "INCONCLUSIVE \u2014 the output could not be captured; the hops look healthy"
