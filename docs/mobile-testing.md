@@ -25,3 +25,16 @@ is a host-side shim; a clean run there is not evidence that a real phone is clea
 
 Every mobile finding in this project up to 2026-09-21 was relayed verbatim between a phone screen
 and this session. That is slow and it loses detail. The driver above removes the relay.
+
+## Before the emulator will start
+
+`sdkmanager`, `avdmanager` and the emulator all need a JDK, and `JAVA_HOME` is not set globally on
+this machine — a fresh shell will fail with a bare "JAVA_HOME is not set" and no hint about which
+Java. It is installed; point at it for the session:
+
+    export JAVA_HOME="/c/Program Files/Microsoft/jdk-21.0.12.101-hotspot"
+    export PATH="$JAVA_HOME/bin:$PATH"
+
+Recorded here because an agent working on the audio-capability probe lost the emulator as a
+measurement venue to exactly this, and reasonably declined to install a second JDK to get around
+it.
