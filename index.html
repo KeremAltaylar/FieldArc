@@ -8105,11 +8105,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
          below, but a SYNCHRONOUS throw from play() itself would otherwise escape this function
          and, since it runs inside bedStart's .then() chain after bed.on is already true, skip
          every step after it — buildRhythmFx, buildVoice, the loop scheduling, Transport.start(),
-         the fade-in. The button would say Stop over a graph that was never built. */
+         the fade-in. The button would say Stop over a graph that was never built.
+
+         What a decline or a throw MEANS is platform-dependent, and that is new as of the iOS
+         reroute: on Android/desktop-shaped phones #keepalive is still a decoy, the real signal
+         already reaches ctx.destination regardless of whether this element plays, so failing
+         here only costs the backgrounding trick. On iOS it is the ONLY output path (see
+         bedStart's master chain) — failing here means total silence unless something falls the
+         graph back to ctx.destination, which is exactly what keepaliveFallback does; it is a
+         no-op on every other platform (bed.iosStream is null there, see keepaliveFallback). */
       try {
         var p = el.play();
-        if (p && p.catch) { p.catch(function () { /* declined — the walk still sounds */ }); }
-      } catch (e) { /* synchronous throw — the walk still sounds */ }
+        if (p && p.catch) { p.catch(keepaliveFallback); }
+      } catch (e) { keepaliveFallback(); }
     }
     if (!("mediaSession" in navigator)) { return; }
     try {
@@ -8168,6 +8176,34 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        zero), while the iPad underneath still reports its real hardware here. */
     var ipadAsMac = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
     return ua || ipadAsMac;
+  }
+
+  /* ---- When the iOS reroute itself fails ----
+     On iOS #keepalive is the ONLY path to the speaker (bedStart's master chain never connects
+     the limiter to ctx.destination there) — so a decline or a throw from el.play() is not a
+     harmless miss the way it always was on Android, it is total, unexplained silence, on the
+     very build Kerem is about to test by ear for the first time. Falling back to the destination
+     everyone else already uses is the correct trade: background survival is lost, but a walk
+     that only sounds while the screen is on is still a walk, and silence with no explanation is
+     the one outcome indistinguishable from "the change broke it."
+
+     bed.iosStream doubles as its own guard: null on every platform that never built it (this
+     returns immediately, matching the old "still sounds" comment exactly where it is still
+     true), and set back to null the first time this runs so a second failure — including a
+     rejection that was already in flight and arrives after bed.iosStream was cleared, or after
+     a Stop — is a safe no-op rather than a second disconnect or a second toast. Nothing here can
+     "resurrect" the walk: bed.fade's gain, not this wiring, is what makes the graph audible, and
+     Stop already rides that down to 0 on its own timeline regardless of when this fires. */
+  function keepaliveFallback() {
+    if (!bed || !bed.iosStream) { return; }
+    /* Disconnect before connect, explicit: the both-paths trap this task exists to close — the
+       limiter reaching ctx.destination AND the stream at once — must not reopen here, in the
+       one place it was never exercised before this fix. */
+    try { bed.limiter.disconnect(bed.iosStream); } catch (e) { /* already gone */ }
+    bed.iosStream = null;
+    bed.limiter.toDestination();
+    toast("Background audio isn't available on this iPhone — the walk is playing normally, " +
+          "but it will stop if you lock the screen.");
   }
 
   function bedStart() {

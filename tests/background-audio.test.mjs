@@ -208,3 +208,71 @@ test("the master chain, including the iOS stream, is a page-lifetime singleton �
   assert.match(stop, /mediaSessionStop\(\)/,
     "el.pause() — the real per-walk release, on every platform — runs from bedStop");
 });
+
+/* ---- When the iOS reroute itself fails ----
+   On Android/desktop, #keepalive failing to play was always harmless — the real signal reached
+   ctx.destination regardless. After the iOS reroute, #keepalive is the ONLY path there, so a
+   decline or a throw means total silence unless something falls the graph back to the
+   destination everyone else uses. Silence with no explanation, on the first audible test this
+   build has ever had, is indistinguishable from "the change broke it" — so this must fall back
+   audibly and say so, not fail quietly. */
+
+function fallbackFn() {
+  /* keepaliveFallback() closes over `bed` and `toast` as free variables in the real code — both
+     become this generated function's own parameters here, the same pattern
+     tests/audio-capability.test.mjs uses for richAudioVerdict's navigator/window/screen. */
+  return new Function("bed", "toast", src("keepaliveFallback") + "; return keepaliveFallback;");
+}
+
+test("a failed play() on iOS falls back to the context destination — disconnect before connect, never both", () => {
+  const calls = [];
+  const mockStream = { tag: "the-ios-stream" };
+  const limiter = {
+    disconnect: function (n) { calls.push(["disconnect", n]); },
+    toDestination: function () { calls.push(["toDestination"]); }
+  };
+  const bed = { iosStream: mockStream, limiter: limiter };
+  const toastCalls = [];
+  const fallback = fallbackFn()(bed, function (msg) { toastCalls.push(msg); });
+  fallback();
+  assert.deepEqual(calls, [["disconnect", mockStream], ["toDestination"]],
+    "must disconnect from the stream before connecting to the destination, in that order — " +
+    "the both-paths trap must not reopen in the one place it was never tested before");
+  assert.equal(bed.iosStream, null,
+    "cleared so a later, stale rejection (or a second decline) is a no-op, not a second fallback");
+  assert.equal(toastCalls.length, 1, "the owner must be told — silence with no explanation is " +
+    "indistinguishable from the change having broken the sound");
+  assert.match(toastCalls[0], /background/i);
+});
+
+test("the fallback is a no-op off the iOS branch, and idempotent once it has already run", () => {
+  const calls = [];
+  const limiter = { disconnect: function () { calls.push("disconnect"); },
+                     toDestination: function () { calls.push("toDestination"); } };
+  const toastCalls = [];
+  const toastFn = function (m) { toastCalls.push(m); };
+  /* Android/desktop: bed.iosStream was never built — a decline there was always harmless, and
+     must stay that way; no reconnect, no toast. */
+  fallbackFn()({ iosStream: null, limiter: limiter }, toastFn)();
+  assert.equal(calls.length, 0, "nothing built the stream, so there is nothing to fall back from");
+  assert.equal(toastCalls.length, 0);
+  /* A second call after the first already ran (bed.iosStream now null) — e.g. a stale rejection
+     arriving late, or mediaSessionStart trying again on the next Sound press — must not touch
+     the limiter or the owner a second time. */
+  const bed2 = { iosStream: null, limiter: limiter };
+  fallbackFn()(bed2, toastFn)();
+  assert.equal(calls.length, 0);
+  assert.equal(toastCalls.length, 0);
+});
+
+test("both play() failure paths reach the fallback, not just a comment saying it's harmless", () => {
+  const fn = src("mediaSessionStart");
+  const playAt = fn.indexOf("el.play()");
+  assert.ok(playAt !== -1);
+  assert.match(fn, /p\.catch\(keepaliveFallback\)/,
+    "a declined play() must reach the fallback — the old bare comment is no longer true on iOS");
+  const catchAt = fn.indexOf("catch (e)", playAt);
+  assert.ok(catchAt !== -1);
+  assert.match(fn.slice(catchAt, catchAt + 60), /keepaliveFallback\(\)/,
+    "a synchronous throw must reach the fallback too, not just be swallowed");
+});
