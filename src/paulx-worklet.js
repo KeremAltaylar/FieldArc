@@ -563,6 +563,15 @@ if (typeof AudioWorkletProcessor !== "undefined") {
       super();
       this.p = null; this.src = null; this.ch = [];
       this.gain = 1; this.rebuild = false; this.posCount = 0; this.tick = 0;
+      /* Diagnostics, reported with the position message this already sends (see process()).
+         They exist because a stretch that sounds wrong on a phone has two very different
+         causes and no way to tell them apart by ear from the outside: the engine starved (it
+         could not finish a hop in time, so hops were drained late) or it is not advancing
+         through the recording at all (the same short window replaying, which is what Kerem
+         heard on iOS on 2026-09-22 — "like repeating a 2 note pattern"). hops and late say
+         the first; readPos over time says the second; quantum and sr say whether the host is
+         even giving this processor the 128-sample callback its budgeting assumes. */
+      this.hops = 0; this.late = 0; this.quantum = 0;
       this.bb = new PxBinaural(sampleRate);
       this.port.onmessage = (e) => this.onMsg(e.data);
     }
@@ -595,6 +604,8 @@ if (typeof AudioWorkletProcessor !== "undefined") {
       });
     }
     swap(s) {
+      if (s.job) { this.late++; }
+      this.hops++;
       while (s.job && !s.job.next().done) { s.steps++; }
       if (s.steps) { s.est = s.steps + 1; }
       var t = s.cur; s.cur = s.nxt; s.nxt = t; s.idx = 0; s.steps = 0;
@@ -602,6 +613,7 @@ if (typeof AudioWorkletProcessor !== "undefined") {
     }
     process(inputs, outputs) {
       var out = outputs[0], L = out[0], R = out[1], n = L.length, i, c, k, s, dst, b;
+      this.quantum = n;
       if (!this.ch.length) { L.fill(0); if (R) { R.fill(0); } return true; }
       for (c = 0; c < this.ch.length; c++) {
         s = this.ch[c];
@@ -640,7 +652,8 @@ if (typeof AudioWorkletProcessor !== "undefined") {
       this.posCount += n;
       if (this.posCount >= 2048) {
         this.posCount = 0;
-        this.port.postMessage({ type: "pos", readPos: this.ch[0].rd.pos, sourceLength: this.ch[0].rd.data.length });
+        this.port.postMessage({ type: "pos", readPos: this.ch[0].rd.pos, sourceLength: this.ch[0].rd.data.length,
+                                hops: this.hops, late: this.late, quantum: this.quantum, sr: sampleRate });
       }
       return true;
     }

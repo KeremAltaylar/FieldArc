@@ -2106,6 +2106,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     else if (sessionStorage.getItem("fieldarc.nostream") === "1") { NOSTREAM = true; }
   } catch (e) { /* private mode: the URL alone still works for this page load */ }
 
+  /* ?pxdebug: an on-screen readout of what each stretch voice's engine is actually doing —
+     how much recording it received, whether its hops are on time, what render quantum the
+     platform gives it. Captured at load like NOSTREAM above, and for the same reason: the
+     first route selection rewrites the address bar and the query string is gone.
+
+     It exists because the stretch engine can only be watched from inside. Kerem, 2026-09-22,
+     on iOS: the stretch points "are not stretched as on the browser... like repeating a 2 note
+     pattern", right in desktop Chrome and wrong on the phone. Two very different faults sound
+     like that — a starved engine (hops finishing late) and a short source (a few seconds of
+     recording stretched round and round) — and no amount of listening from outside separates
+     them. diag.html section 6 answers the first for a synthetic source; this answers both for
+     the real recordings on the real walk. */
+  var PXDEBUG = location.search.indexOf("pxdebug") !== -1;
+  try {
+    if (PXDEBUG) { sessionStorage.setItem("fieldarc.pxdebug", "1"); }
+    else if (sessionStorage.getItem("fieldarc.pxdebug") === "1") { PXDEBUG = true; }
+  } catch (e) { /* private mode: the URL alone still works for this page load */ }
+
   /* Matches 404.html's pathSegmentsToKeep = 1: the deployed GitHub Pages project page is
      rooted one segment deep ("/Fieldscape"), so a deep link's own segments start after that.
      Local development (npx serve . from the repo root) is rooted at "/", with no base
@@ -9913,6 +9931,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
             if (e.data.type === "pos") {
               v.stretch.readPos = e.data.readPos;
               v.stretch.sourceLength = e.data.sourceLength;
+              /* The rest of the engine's report: hops computed, hops that had to be drained
+                 late, the render quantum it is actually being called with, and its sample
+                 rate. Stored whether or not anyone is looking — it is four numbers per 2048
+                 samples — and painted only under ?pxdebug (pxDebugPaint). */
+              v.stretch.hops = e.data.hops;
+              v.stretch.late = e.data.late;
+              v.stretch.quantum = e.data.quantum;
+              v.stretch.sr = e.data.sr;
+              if (PXDEBUG) { pxDebugPaint(); }
             }
           };
           node.port.postMessage({ type: "params", params: pxParams(soundOfZone(z), v) });
@@ -10010,6 +10037,37 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   /* setFFTSize() without prebuffering: 2^(7 + 10x), rounded to a power of two for the FFT. */
   function pxBufsize(fft) {
     return Math.pow(2, Math.round(7 + 10 * Math.max(0, Math.min(1, fft || 0))));
+  }
+
+  /* The ?pxdebug readout. One line per live stretch voice, over the map, where a phone can
+     read it without a cable: how many seconds of recording the engine received (a recording
+     that arrived short is heard as a short loop, whatever the stretch says), how far into it
+     the read head is, how many hops finished late (a starved engine), and the render quantum
+     and sample rate the platform is giving the audio thread. Built lazily and only under the
+     flag, so nothing exists on a normal walk. */
+  function pxDebugPaint() {
+    var box = $("#pxdebug");
+    if (!box) {
+      box = document.createElement("pre");
+      box.id = "pxdebug";
+      box.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:9999;margin:0;padding:6px 8px;" +
+        "max-width:calc(100vw - 16px);background:rgba(0,0,0,0.78);color:#cfe8c8;font:11px/1.35 " +
+        "ui-monospace,monospace;white-space:pre-wrap;border-radius:3px;pointer-events:none";
+      document.body.appendChild(box);
+    }
+    var lines = [], ids = Object.keys((bed && bed.voices) || {});
+    ids.forEach(function (id) {
+      var v = bed.voices[id], st = v && v.stretch;
+      if (!st || !st.sr) { return; }
+      var secs = st.sourceLength / st.sr;
+      var at = st.readPos / st.sr;
+      var latePct = st.hops ? Math.round(100 * st.late / st.hops) : 0;
+      lines.push(id.slice(0, 8) + "  src " + secs.toFixed(1) + "s  at " + at.toFixed(1) + "s  " +
+                 "hops " + st.hops + " (" + latePct + "% late)  q" + st.quantum + " @" +
+                 Math.round(st.sr / 1000) + "k");
+    });
+    if (!lines.length) { lines.push("no stretch voice playing yet — walk into a point's radius"); }
+    box.textContent = lines.join("\n");
   }
 
   /* The one writer of the worklet's parameters: ensureVoice, warpStep and the panel all post this. */

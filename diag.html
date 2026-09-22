@@ -116,7 +116,20 @@ pre {
        src="data:audio/wav;base64,UklGRvQHAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YdAHAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA=="></audio>
 <pre id="audio-summary">audio not run yet</pre>
 
-<h2>6 · Errors</h2>
+<h2>6 · Stretch engine, playing for real</h2>
+<!-- Section 5 measures the engine's COST, offline, with no audio device. This one runs the real
+     worklet through the real output — the only way to see what a phone's audio thread actually
+     does with it. Kerem, 2026-09-22, on iOS: the stretch points "are not stretched as on the
+     browser... like repeating a 2 note pattern", while the same recordings are right in desktop
+     Chrome. Two causes sound like that and nothing outside the engine tells them apart: the
+     engine starving (hops finishing late, over and over) or the read head not advancing (the
+     same window replaying). The engine reports both now. Turn the volume up: this is the same
+     engine the walk uses, on a synthetic recording, so if it is wrong on this phone it should
+     be wrong here too. -->
+<button type="button" id="px-run">Run the stretch test (6s, makes sound)</button>
+<pre id="pxlog">not run — tap the button (it needs a tap to start audio)</pre>
+
+<h2>7 · Errors</h2>
 <pre id="errlog">none</pre>
 
 <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
@@ -559,6 +572,177 @@ pre {
     for (var h = 0; h < hops; h++) { PX.pxRun(st.hopJob(rd, p, hop)); }
     return { ms: performance.now() - t0, produced: hops * bufsize / sr };
   }
+
+  /* ---- 6. the stretch engine, in real time ----
+     Deliberately NOT index.html's ensureVoice path: no Tone, no Supabase, no recording to fetch,
+     no map. A raw AudioContext, the real worklet module, one synthetic source, the patch's own
+     default parameters. Everything that could differ between this and a walk is something the
+     walk ADDS, so a failure here is the engine itself and a pass here narrows it to the wrapper. */
+  function pxProbeParams() {
+    /* pxDefaults()/pxParams() from index.html, evaluated: fft 0.7 -> bufsize 16384, and stretch
+       x32 (the slider's midpoint, 1024^0.5). Copied rather than imported, like everything else on
+       this page \u2014 if those defaults change, this should change with them. */
+    return { stretch: 32, bufsize: 16384, freeze: false, onset: 0, start: 0, end: 1, xfade: 0.01,
+             morph: 0, field: 0, warpHz: 0,
+             mods: { harmonics: { on: false, n: 10, freq: 128, bw: 25, gauss: false },
+                     tonal: { on: false, bw: 0.74, preserve: 0.5 },
+                     fshift: { on: true, hz: 0 }, pitch: { on: true, st: 0 },
+                     ratios: { on: false, r: [0.25, 0.5, 1, 2, 3, 4, 1.5, 1 / 1.5],
+                               l: [0, 0, 1, 0, 0, 0, 0, 0] },
+                     spread: { on: false, bw: 0 },
+                     filter: { on: false, low: 20, high: 20000, stop: false },
+                     compress: { on: false, power: 0 } },
+             binaural: { on: false, power: 0.5, hz: 4, mode: 0 } };
+  }
+
+  function pxLog(line) {
+    var el = $("#pxlog");
+    el.textContent = (el.textContent.indexOf("not run") === 0 ? "" : el.textContent + "\n") + line;
+  }
+
+  $("#px-run").addEventListener("click", function () {
+    var btn = this;
+    btn.disabled = true;
+    $("#pxlog").textContent = "running \u2014 6 seconds, leave the screen on";
+    $("#pxlog").className = "";
+    var ctx, node, SECONDS = 6, last = null, first = null, captured = null;
+    try {
+      /* The app's own latencyHint, so this asks the phone for the buffer a walk asks for. */
+      ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 0.05 });
+    } catch (e) {
+      pxLog("FAILED: no AudioContext \u2014 " + e.message);
+      btn.disabled = false;
+      return;
+    }
+    var native = typeof AudioWorklet !== "undefined" && !!ctx.audioWorklet;
+    Promise.resolve(ctx.resume())
+      .then(function () {
+        if (!native) { throw new Error("no AudioWorklet on this browser \u2014 the engine cannot run at all"); }
+        return ctx.audioWorklet.addModule("src/paulx-worklet.js");
+      })
+      .then(function () {
+        /* Eight seconds of tone plus noise \u2014 the source shape section 5 measures with \u2014 handed
+           over as Int16 and transferred, exactly as ensureVoice does it, since the handover is
+           itself one of the things that could behave differently here. */
+        var sr = ctx.sampleRate, n = Math.round(sr * 8), seed = 3, i16 = new Int16Array(n), r;
+        for (var i = 0; i < n; i++) {
+          seed = (seed * 16807) % 2147483647;
+          r = seed / 2147483647 * 2 - 1;
+          i16[i] = Math.round(32767 * (0.3 * Math.sin(2 * Math.PI * 440 * i / sr) + 0.1 * r));
+        }
+        node = new AudioWorkletNode(ctx, "paulx-processor",
+          { numberOfInputs: 0, outputChannelCount: [2] });
+        node.port.onmessage = function (e) {
+          if (!e.data || e.data.type !== "pos") { return; }
+          /* Two clocks. readPos is measured against the AUDIO clock, because that is what the
+             stretch ratio is defined against and it stays meaningful on a browser whose audio
+             clock runs slow. The wall clock is kept beside it so a context that is itself being
+             throttled shows up as drift rather than hiding inside the ratio. */
+          if (!first) { first = { d: e.data, t: performance.now(), a: ctx.currentTime }; }
+          last = { d: e.data, t: performance.now(), a: ctx.currentTime };
+        };
+        node.port.postMessage({ type: "params", params: pxProbeParams() });
+        node.port.postMessage({ type: "source", channels: [i16] }, [i16.buffer]);
+        /* Quiet enough not to startle, loud enough to hear what it is doing. */
+        var g = ctx.createGain();
+        g.gain.value = 0.25;
+        node.connect(g);
+        g.connect(ctx.destination);
+        /* A ScriptProcessor is the only way to get contiguous output samples in both Chrome and
+           Safari — deprecated, not gone, and this is a diagnostic page. It only runs while
+           something downstream pulls it, so it ends in a zero gain rather than a second audible
+           copy of the engine. */
+        var cap = ctx.createScriptProcessor(4096, 1, 1);
+        var blocks = [], grabbed = 0, want = Math.round(ctx.sampleRate * (SECONDS - 1));
+        cap.onaudioprocess = function (ev) {
+          if (grabbed >= want) { return; }
+          var inb = ev.inputBuffer.getChannelData(0);
+          blocks.push(new Float32Array(inb));
+          grabbed += inb.length;
+        };
+        node.connect(cap);
+        var sink = ctx.createGain();
+        sink.gain.value = 0;
+        cap.connect(sink);
+        sink.connect(ctx.destination);
+        captured = { blocks: blocks, sp: cap };
+        return new Promise(function (done) { setTimeout(done, SECONDS * 1000); });
+      })
+      .then(function () {
+        try { node.disconnect(); } catch (e) { /* already gone */ }
+        if (captured && captured.sp) { try { captured.sp.disconnect(); } catch (e) { /* already gone */ } }
+        if (!first || !last || last.a === first.a) {
+          pxLog("FAILED: the engine never reported a position \u2014 it is not running at all.");
+          $("#pxlog").className = "bad";
+          btn.disabled = false;
+          return;
+        }
+        var d = last.d, sr = d.sr || ctx.sampleRate;
+        var elapsed = last.a - first.a;                 /* audio seconds */
+        var wall = (last.t - first.t) / 1000;            /* real seconds */
+        var moved = d.readPos - first.d.readPos;
+        var lateFrac = d.hops ? d.late / d.hops : 0;
+        /* The output is the evidence, because the read head is not. At x32 the engine pulls new
+           source material only every stretch*bufsize/sr seconds \u2014 11 s at these settings \u2014 so
+           "the read head did not move" is what a HEALTHY engine looks like over a short test.
+           Measured in Node against the real engine (2026-09-22) before this probe was trusted:
+           rd.pos sat at 49152 for eight consecutive hops, correctly.
+
+           What separates a stretch from "repeating a 2 note pattern" is whether each hop
+           resembles the one before it. PaulStretch randomises the phase of every hop, so
+           consecutive hops never match; a stuck engine replays the same window. */
+        var flat = null, repeat = null;
+        if (captured && captured.blocks.length) {
+          var total = 0, bi, off = 0;
+          for (bi = 0; bi < captured.blocks.length; bi++) { total += captured.blocks[bi].length; }
+          flat = new Float32Array(total);
+          for (bi = 0; bi < captured.blocks.length; bi++) {
+            flat.set(captured.blocks[bi], off);
+            off += captured.blocks[bi].length;
+          }
+          var lag = 16384;                     /* one hop at the probe's bufsize */
+          if (flat.length > lag + sr) {
+            var num = 0, da = 0, db = 0, x, y, k;
+            for (k = 0; k + lag < flat.length; k++) {
+              x = flat[k]; y = flat[k + lag];
+              num += x * y; da += x * x; db += y * y;
+            }
+            repeat = (da > 0 && db > 0) ? num / Math.sqrt(da * db) : null;
+          }
+        }
+        pxLog("engine           native AudioWorklet, module loaded");
+        pxLog("sample rate      " + sr + " Hz   render quantum " + d.quantum + " samples" +
+              (d.quantum === 128 ? "" : "   <- NOT 128; the engine's budgeting assumes 128"));
+        pxLog("read head        " + moved + " samples in " + elapsed.toFixed(1) +
+              "s of audio   (0 is NORMAL: at x32 a chunk is pulled every " +
+              (32 * 16384 / sr).toFixed(0) + "s)");
+        pxLog("clock            " + elapsed.toFixed(1) + "s of audio in " + wall.toFixed(1) +
+              "s real" + (wall > 0 && elapsed / wall < 0.9 ? "   <- the audio clock is running slow" : ""));
+        pxLog("hops             " + d.hops + " computed, " + d.late + " finished late  (" +
+              Math.round(100 * lateFrac) + "%)");
+        pxLog("hop-to-hop       " + (repeat === null ? "not captured"
+              : repeat.toFixed(2) + " similarity  (0 = every hop new, 1 = the same hop again)"));
+        var verdict = repeat === null
+          ? (lateFrac < 0.25
+              ? "INCONCLUSIVE \u2014 the output could not be captured; the hops look healthy"
+              : "STARVED \u2014 hops are finishing late, whatever the output sounds like")
+          : repeat > 0.85
+              ? "REPEATING \u2014 each hop is the one before it: this is the fault you heard"
+          : lateFrac >= 0.25
+              ? "STARVED \u2014 hops finish late, so what you hear is not what it computed"
+              : "OK \u2014 hops are fresh and on time: the engine stretches correctly here";
+        pxLog("");
+        pxLog("VERDICT: " + verdict);
+        $("#pxlog").className = verdict.indexOf("OK") === 0 ? "ok" : "bad";
+        btn.disabled = false;
+      })
+      .catch(function (e) {
+        pushErr("stretch engine: " + (e && e.message ? e.message : e));
+        pxLog("FAILED: " + (e && e.message ? e.message : e));
+        $("#pxlog").className = "bad";
+        btn.disabled = false;
+      });
+  });
 
   $("#aud-run").addEventListener("click", function () {
     var btn = this;
