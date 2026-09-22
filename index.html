@@ -7816,13 +7816,23 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   /* The four call sites (makeRoom, makeWarp, buildFxChain, voiceBudget) all ask this instead of
      smallDevice() now. It never blocks: primeAudioCapability has already run, once, inside the
-     first bedStart(), before buildVoice() is reachable — see the ordering note there. */
+     first bedStart(), before buildVoice() is reachable — see the ordering note there.
+
+     A cached string that fails saneCapabilityPct (corrupted, or written by some future format
+     change) must NOT become a sticky, permanent audioCapPct — that would strand a device on the
+     smallDevice() fallback forever, with no way back, which is exactly the class of bug this
+     whole task exists to remove, just relocated into storage. So an insane cached reading is
+     left alone here (audioCapPct stays undefined) rather than adopted; primeAudioCapability is
+     what actually owns recovery, by re-probing and overwriting the bad entry. */
   function richAudio() {
     if (finePointer()) { return true; }
     if (audioCapPct === undefined) {
       try {
         var cached = localStorage.getItem(AUDIOCAP_KEY);
-        if (cached !== null) { audioCapPct = parseFloat(cached); }
+        if (cached !== null) {
+          var cachedPct = parseFloat(cached);
+          if (saneCapabilityPct(cachedPct)) { audioCapPct = cachedPct; }
+        }
       } catch (e) { /* private mode — primeAudioCapability tries again this session */ }
     }
     return richAudioVerdict(false, audioCapPct);
@@ -7835,12 +7845,19 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      through buildFxChain/makeRoom/makeWarp themselves, because those now ask richAudio() — the
      very answer this probe exists to produce — and calling them here would measure whichever
      path they happened to fall back to rather than the path actually being decided. If buildVoice
-     changes shape, this and diag.html's buildStack both need the same change. */
-  function audioCapabilityStack(Tone) {
+     changes shape, this and diag.html's buildStack both need the same change.
+
+     readyList, if given, collects each Tone.Reverb's own .ready promise — see audioCapability,
+     which awaits them instead of guessing how long impulse generation takes. */
+  function audioCapabilityStack(Tone, readyList) {
     var dest = new Tone.Gain(0.8).toDestination();
     var lim = new Tone.Limiter(-1).connect(dest);
     var bus = new Tone.Gain(1).connect(lim);
-    function room(decay) { return new Tone.Reverb({ decay: decay, wet: 0.4 }).connect(bus); }
+    function room(decay) {
+      var r = new Tone.Reverb({ decay: decay, wet: 0.4 }).connect(bus);
+      if (readyList) { readyList.push(r.ready); }
+      return r;
+    }
     function chain(c) {
       var rev = room(c.d), dIn = new Tone.Gain(1);
       var hp = new Tone.Filter({ type: "highpass", frequency: 170, Q: 0.7 });
@@ -7879,7 +7896,18 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      1.5s was chosen over diag.html's 4s: this runs once, unattended, on the first Sound press of
      a person's life with this device, and has to be short enough not to be felt there. Resolves
      -1 (nonsense — see saneCapabilityPct) rather than rejecting on any failure, because a phone
-     that cannot even run this probe is not a phone to leave hanging. */
+     that cannot even run this probe is not a phone to leave hanging.
+
+     A convolver's impulse renders before the clock starts — Tone.Reverb's constructor kicks off
+     generate() itself and keeps the render's own completion promise on .ready (checked directly
+     against Tone.js's source: the constructor sets `this.ready = Promise.resolve()`, then calls
+     generate(), which synchronously reassigns `this.ready` to the real offline render before it
+     ever awaits anything — so by the time `new Tone.Reverb(...)` returns, .ready already IS that
+     promise; nothing here calls generate() a second time). An earlier version of this function
+     waited a fixed 400ms instead, copied from diag.html's renderCost — measured after the fact to
+     be both unnecessarily slow on a quick device and not necessarily enough on a genuinely slow
+     one, since a guessed duration cannot know how long generation actually takes on THIS device.
+     Promise.all over the real promises is exact either way. */
   function audioCapability(Tone) {
     var SECONDS = 1.5;
     if (typeof OfflineAudioContext === "undefined") { return Promise.resolve(-1); }
@@ -7888,38 +7916,73 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         var ctx = new OfflineAudioContext(2, Math.round(48000 * SECONDS), 48000);
         var prev = Tone.getContext();
         Tone.setContext(ctx);
-        audioCapabilityStack(Tone);
-        /* A convolver's impulse renders before the clock starts (Tone.Reverb builds it by
-           rendering offline internally) — waiting the same 400ms diag.html's renderCost does
-           measures the cost of RUNNING the stack, which is what the threshold above is
-           calibrated from, not the one-off cost of building it. */
-        setTimeout(function () {
+        var ready = [];
+        audioCapabilityStack(Tone, ready);
+        Promise.all(ready).then(function () {
           var t0 = performance.now();
-          ctx.startRendering().then(function () {
+          return ctx.startRendering().then(function () {
             var ms = performance.now() - t0;
             try { Tone.setContext(prev); } catch (e) {}
             resolve(ms / (SECONDS * 1000) * 100);
-          }).catch(function () {
-            try { Tone.setContext(prev); } catch (e) {}
-            resolve(-1);
           });
-        }, 400);
+        }).catch(function () {
+          try { Tone.setContext(prev); } catch (e) {}
+          resolve(-1);
+        });
       } catch (e) { resolve(-1); }
     });
   }
 
   var audioCapPriming = null;   /* the in-flight probe, so two overlapping bedStarts share one */
 
+  function voiceBudget(n) {
+    return richAudio() ? n : Math.min(n, 2);
+  }
+
+  /* pacerStart, worldStart, worldSwap's take() and commitPatch all set BED.maxVoices from
+     voiceBudget() well before this probe can possibly have settled — pacerStart/worldStart in
+     particular can run on first load, before Sound is ever pressed. Each of those reads
+     richAudio() in that window and gets the OLD smallDevice() fallback, so a capable phone's
+     first walk could start with a stale, too-low voice cap even though makeRoom/makeWarp/
+     buildFxChain get it right (they build a fresh graph every time, so they simply see whatever
+     richAudio() answers when THEY next run). voiceBudget()'s answer, by contrast, was already
+     written into BED.maxVoices and nothing was watching it to correct it.
+
+     Recomputed here, against whichever patch is current AT THE MOMENT the probe settles — never
+     a patch captured earlier — so a route reselect that happened while the probe was in flight is
+     never clobbered: it is simply recomputed with the same, by-then-final, richAudio() answer,
+     which is a no-op. */
+  function recomputeVoiceBudget() {
+    if (pacer && pacer.patch && pacer.patch.bed) {
+      BED.maxVoices = voiceBudget(pacer.patch.bed.voices);
+    }
+  }
+
   /* Run once, before buildVoice() can choose anything — see the ordering note in bedStart. A
      fine-pointer device resolves immediately without ever touching OfflineAudioContext; a phone
      with a cached reading from a previous session resolves immediately too. Only a coarse-pointer
-     device on its first-ever Sound press actually waits on the probe. */
+     device on its first-ever Sound press actually waits on the probe. Every path recomputes
+     BED.maxVoices before resolving — see recomputeVoiceBudget above — because voiceBudget() may
+     already have run against the pre-measurement fallback by the time any of these paths settle,
+     on any of them: a cached reading is just as capable of arriving after pacerStart/worldStart
+     as a fresh probe is. */
   function primeAudioCapability(Tone) {
-    if (finePointer()) { return Promise.resolve(); }
-    if (audioCapPct !== undefined) { return Promise.resolve(); }
+    if (finePointer()) { recomputeVoiceBudget(); return Promise.resolve(); }
+    if (audioCapPct !== undefined) { recomputeVoiceBudget(); return Promise.resolve(); }
     try {
       var cached = localStorage.getItem(AUDIOCAP_KEY);
-      if (cached !== null) { audioCapPct = parseFloat(cached); return Promise.resolve(); }
+      if (cached !== null) {
+        var cachedPct = parseFloat(cached);
+        /* A corrupt or otherwise-insane cached string must not be adopted as the answer — that
+           would strand this device on the fallback forever, with the probe never running again
+           to correct it (see the comment on richAudio). Falling through here re-probes and
+           overwrites the bad entry below, exactly like finding nothing cached at all. */
+        if (saneCapabilityPct(cachedPct)) {
+          audioCapPct = cachedPct;
+          recomputeVoiceBudget();
+          return Promise.resolve();
+        }
+      }
     } catch (e) { /* private mode: measure fresh below rather than fail closed */ }
     if (audioCapPriming) { return audioCapPriming; }
     audioCapPriming = audioCapability(Tone).then(function (pct) {
@@ -7927,12 +7990,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
       if (saneCapabilityPct(pct)) {
         try { localStorage.setItem(AUDIOCAP_KEY, String(pct)); } catch (e) { /* private mode */ }
       }
+      recomputeVoiceBudget();
     });
     return audioCapPriming;
-  }
-
-  function voiceBudget(n) {
-    return richAudio() ? n : Math.min(n, 2);
   }
 
   /* Stopping is two moments, not one. First the whole walk fades — and it has to keep sounding
