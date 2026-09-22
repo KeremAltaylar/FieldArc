@@ -7903,24 +7903,6 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        a switch that some other rule can overrule answers a different question than the one asked
        of it. */
     if (AUDIOFORCE) { return AUDIOFORCE === "rich"; }
-    /* A phone takes the light stack, whatever it measures. This is v3.0's rule, restored on
-       2026-09-22 at Kerem's decision after a day of measurements that each came back clean while
-       his iPhone kept ticking: engine correct, 0% late hops, 0 dropped buffers, recordings
-       decoding whole, parameters identical to desktop, whole stack at 6% of one core.
-
-       The probe that replaced this rule yesterday asks "can this device render the stack in less
-       than real time", and his iPhone can, four times over. But Safari hands every device a
-       128-sample callback whatever latencyHint it is given — measured on that phone: interactive,
-       balanced, playback, 0.05 and 0.2 all return 2.7 ms — so the question that actually matters
-       is whether the WORST callback fits in 2.7 ms, and an offline render of the average tells
-       nobody that. Four convolvers whose impulses happen to land in the same callback is a spike
-       no average sees. Until something measures peak cost per callback, the guess that a phone
-       cannot afford convolution is the better answer, and it is the one the version he called
-       clean shipped with.
-
-       What this costs: a fast phone loses convolution rooms, the chorus warp and the delay
-       lines. Desktop is untouched. ?rich overrides it for testing. */
-    if (smallDevice()) { return false; }
     /* The floor (IMPORTANT 3b/6) has to sit ahead of the fine-pointer bypass, not just inside
        richAudioVerdict — richAudio() always calls that with isFinePointer hardcoded to false
        (below) and answers the fine-pointer case itself, right here, which is exactly the branch
