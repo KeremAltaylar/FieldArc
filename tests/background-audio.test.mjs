@@ -69,25 +69,49 @@ test("play() is guarded against a synchronous throw, not just a rejected promise
   assert.ok(fn.indexOf("catch (e)", playAt) !== -1, "and the try must actually be caught");
 });
 
-test("desktop is left alone — no backgrounding problem there, and arming it is a regression", () => {
-  /* Desktop has no screen to lock and no phone in a pocket — nothing here helps it. Arming it
-     anyway would be a live annoyance: a "Fieldscape" Now Playing entry, and desktop media keys
-     silently retargeting to the walk whenever Sound is on. Still gated on smallDevice() directly
-     (unlike makeWarp/buildFxChain/voiceBudget, which moved to richAudio() in task 8) because this
-     is not a cost question a render-time probe has anything to say about — see the comment above
-     mediaSessionStart in index.html. */
-  [src("mediaSessionStart"), src("mediaSessionStop")].forEach((fn) => {
-    const guardAt = fn.indexOf("if (!smallDevice()) { return; }");
-    assert.ok(guardAt !== -1, "missing the smallDevice() gate");
-    /* Both halves — the keepalive element AND the mediaSession wiring — must be gated, not just
-       one: a desktop-shaped environment must never touch either. */
-    ["el.play()", "el.pause()", "navigator.mediaSession"].forEach((needle) => {
-      const at = fn.indexOf(needle);
-      if (at !== -1) {
-        assert.ok(guardAt < at, needle + " runs before the smallDevice() gate — desktop would " +
-          "still arm this");
-      }
-    });
+/* Executed, not pattern-matched: mediaSessionStart/Stop run against stubs for each platform
+   shape. Two questions live in them (review CRITICAL 1, 2026-09-22): must #keepalive PLAY — yes
+   on a phone (Android backgrounding) and on ANY iOS Safari, where it is the walk's only path to
+   the speaker — and does this device get a lock-screen card, which stays smallDevice()-only. An
+   iPad (iosSafari true, smallDevice false) used to return before el.play(): total silence. */
+function runSession(small, ios) {
+  const log = [];
+  const el = { play: () => { log.push("play"); return Promise.resolve(); },
+               pause: () => { log.push("pause"); } };
+  const mediaSession = { setActionHandler: () => log.push("handler") };
+  Object.defineProperty(mediaSession, "metadata", { set: () => log.push("metadata") });
+  Object.defineProperty(mediaSession, "playbackState", { set: (v) => log.push("state:" + v) });
+  const fns = new Function("$", "smallDevice", "iosSafari", "keepaliveFallback", "navigator",
+    "MediaMetadata", "place", "bed", "wantSound", "bedStop",
+    src("mediaSessionStart") + src("mediaSessionStop") +
+    "; return { start: mediaSessionStart, stop: mediaSessionStop };")(
+    () => el, () => small, () => ios, () => log.push("fallback"), { mediaSession },
+    function () {}, null, null, false, () => {});
+  fns.start(); const started = log.slice(); log.length = 0;
+  fns.stop();
+  return { started, stopped: log.slice() };
+}
+
+test("desktop is left alone — no element, no Now Playing card, no media keys", () => {
+  const r = runSession(false, false);
+  assert.deepEqual(r.started, [], "a desktop must touch neither the element nor mediaSession");
+  assert.deepEqual(r.stopped, []);
+});
+
+test("an iPad plays the element — it is the only output path — but gets no lock-screen card", () => {
+  const r = runSession(false, true);
+  assert.deepEqual(r.started, ["play"],
+    "iosSafari() alone must reach el.play(), or the rerouted walk is silent");
+  assert.deepEqual(r.stopped, ["pause"], "and pause it again on Stop");
+});
+
+test("phones get the element and the lock-screen card, on iOS and Android alike", () => {
+  [[true, true], [true, false]].forEach(([small, ios]) => {
+    const r = runSession(small, ios);
+    assert.equal(r.started[0], "play", "element first, from inside the Sound gesture");
+    assert.ok(r.started.includes("metadata") && r.started.includes("state:playing") &&
+      r.started.includes("handler"), "the lock screen says what is playing and its buttons work");
+    assert.deepEqual(r.stopped, ["pause", "state:paused"]);
   });
 });
 
@@ -183,14 +207,6 @@ test("on iOS the stream exists before srcObject is assigned to it, and the limit
     "the stream must exist before something is assigned to play it");
   assert.match(start, /limiter\.connect\([a-zA-Z]*[Ss]tream/,
     "the limiter — the master's own output — must be what reaches the stream, not a bypass");
-});
-
-test("MediaSession metadata and action handlers stay on both paths — only the audio route changes", () => {
-  const fn = src("mediaSessionStart");
-  assert.ok(!/iosSafari/.test(fn),
-    "mediaSessionStart must not gate on the platform check — smallDevice() already covers iOS " +
-    "and Android alike, and the lock-screen card/headphone buttons matter on both");
-  assert.match(fn, /if \(!smallDevice\(\)\) \{ return; \}/);
 });
 
 test("the master chain, including the iOS stream, is a page-lifetime singleton — teardown leaves it alone", () => {

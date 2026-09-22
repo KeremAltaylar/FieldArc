@@ -307,7 +307,10 @@ pre {
      only the fallback richAudio() reaches for when a device cannot be measured (missing
      OfflineAudioContext, a throw, or a nonsense reading) — see richAudioVerdict below — and it
      still gates mediaSessionStart/Stop there directly, because backgrounding is not a cost
-     question: a capable phone needs the screen-off trick as much as a weak one does. */
+     question: a capable phone needs the screen-off trick as much as a weak one does. voiceBudget()
+     also reads it directly again, as of the 2026-09-22 review (CRITICAL 2): the number of
+     concurrent recording voices is a memory ceiling, not a render-cost one, so it is not part of
+     what richAudio() decides below. */
   function smallDevice() {
     var mem = navigator.deviceMemory;
     return (mem !== undefined && mem <= 4) ||
@@ -315,22 +318,37 @@ pre {
        Math.min(screen.width, screen.height) <= 500);
   }
 
+  /* Must match tinyMemory() in index.html — the one clause of smallDevice() that is a real
+     platform reading rather than a guess. Used below as richAudio()'s FLOOR (review finding
+     IMPORTANT 3b/6, 2026-09-22): a 4 GB laptop must not get the expensive path just because it
+     has a fine pointer or a fast core, but Kerem's own iPhone (no deviceMemory on iOS at all)
+     must still be decided by measurement, not by smallDevice()'s screen-size guess — see the
+     comment on AUDIOCAP_THRESHOLD below for why flooring on the whole of smallDevice() instead
+     would undo the entire reason this page's section 5 exists. */
+  function tinyMemory() {
+    var mem = navigator.deviceMemory;
+    return mem !== undefined && mem <= 4;
+  }
+
   /* Must match richAudio()/richAudioVerdict()/AUDIOCAP_THRESHOLD in index.html — that pair is
-     what actually decides makeRoom/makeWarp/buildFxChain/voiceBudget now, by measuring this
-     device's own render cost instead of guessing "phone" from screen size the way smallDevice()
-     alone used to (see task-8-brief.md — that guess is exactly what put Kerem's iPhone, at 9.7%
-     of one core, on the cheap path a device needing 80%+ was meant for).
+     what actually decides makeRoom/makeWarp/buildFxChain now, by measuring this device's own
+     render cost instead of guessing "phone" from screen size the way smallDevice() alone used to
+     (see task-8-brief.md — that guess is exactly what put Kerem's iPhone, at 9.7% of one core, on
+     the cheap path a device needing far more headroom was meant for). Lowered from 80 to 60 in
+     the 2026-09-22 review (IMPORTANT 3): 80 sat above both calibration readings (9.7% iPhone,
+     70.6% desktop) and so never actually excluded anything.
 
      AUDIOCAP_KEY is the same localStorage key index.html reads and writes, so a phone that has
      ever opened the real app shows its real cached reading here — the point of this section: the
      next person holding a strange phone should be able to see why it chose what it chose without
      being talked through the reasoning over a call. */
   var AUDIOCAP_KEY = "fieldarc.audiocap";
-  var AUDIOCAP_THRESHOLD = 80;
+  var AUDIOCAP_THRESHOLD = 60;
   function finePointer() {
     return !!(window.matchMedia && window.matchMedia("(pointer: fine)").matches);
   }
   function richAudioVerdict(isFinePointer, pct) {
+    if (tinyMemory()) { return false; }
     if (isFinePointer) { return true; }
     if (typeof pct === "number" && isFinite(pct) && pct > 0 && pct < 100000) {
       return pct <= AUDIOCAP_THRESHOLD;
@@ -347,7 +365,7 @@ pre {
                                                                : navigator.deviceMemory);
   audLine("screen", screen.width + " x " + screen.height +
           "  (min " + Math.min(screen.width, screen.height) + ")");
-  audLine("pointer", finePointer() ? "fine (a desktop — never probed, always full quality)"
+  audLine("pointer", finePointer() ? "fine (a desktop — never probed, full quality unless tinyMemory() floors it)"
                                    : "coarse");
   audLine("fieldarc.audiocap (cached on this device)",
           cachedCapPct === null ? "not yet measured — this device has not opened index.html, " +
@@ -358,7 +376,8 @@ pre {
             ? "FULL — convolution rooms, Chorus warp, delay lines"
             : "CHEAP — algorithmic rooms, Vibrato warp, no delays",
           richAudioVerdict(finePointer(), cachedCapPct));
-  audLine("smallDevice() (fallback only, used when unmeasured)", smallDevice());
+  audLine("smallDevice() (fallback only, used when unmeasured, and voiceBudget()'s own answer)", smallDevice());
+  audLine("tinyMemory() (a FLOOR over any measurement or fine pointer, deviceMemory<=4 only)", tinyMemory());
   audLine("AudioWorklet", typeof AudioWorklet !== "undefined", typeof AudioWorklet !== "undefined");
 
   function audLog(s) {

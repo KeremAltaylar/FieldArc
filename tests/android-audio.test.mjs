@@ -66,15 +66,17 @@ test("the context is tuned once, before any node is built", () => {
    survives only as richAudio()'s fallback for a device that cannot be measured, and as the gate
    on mediaSessionStart/Stop, which is not a cost question — see tests/audio-capability.test.mjs
    for the threshold and fallback themselves. */
-test("smallDevice still exists, but only as richAudio()'s fallback and the media-session gate", () => {
+test("smallDevice still exists: richAudio()'s fallback, the recording cap, and the media-session gate", () => {
   const small = src("smallDevice");
   assert.match(small, /navigator\.deviceMemory/);
   assert.match(small, /pointer: coarse/);
   assert.match(small, /Math\.min\(screen\.width, screen\.height\) <= 500/);
+  /* Review CRITICAL 2, 2026-09-22: the recording cap is a memory ceiling (each soundscape voice
+     holds its whole recording), which a render-cost probe knows nothing about. Asking richAudio()
+     here gave Kerem's 9.7% iPhone four resident recordings — the Koşuyolu tab-kill again. */
   const budget = src("voiceBudget");
-  assert.match(budget, /richAudio\(\)/,
-    "the budget must ask the measured question, not the guessed one");
-  assert.ok(!/smallDevice\(\)/.test(budget), "and not fall back to the guess directly");
+  assert.match(budget, /smallDevice\(\)/, "the recording cap asks the memory question");
+  assert.ok(!/richAudio\(\)/.test(budget), "not the render-cost one");
   /* mediaSessionStart/Stop are a real, deliberate exception: backgrounding is not a cost
      question, so they still gate on smallDevice() directly rather than richAudio(). */
   assert.match(src("mediaSessionStart"), /smallDevice\(\)/);

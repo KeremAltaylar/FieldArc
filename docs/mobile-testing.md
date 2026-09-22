@@ -38,3 +38,21 @@ Java. It is installed; point at it for the session:
 Recorded here because an agent working on the audio-capability probe lost the emulator as a
 measurement venue to exactly this, and reasonably declined to install a second JDK to get around
 it.
+
+## An iPhone (by ear — nothing here can drive one)
+
+There is no cable route to an iPhone from this Windows machine (Safari remote debugging needs a
+Mac), so the iPhone checks are done by hand on the deployed site.
+
+1. **Does it sound?** Open the app, press Sound. On iOS the walk is routed through the page's
+   `#keepalive` element (a MediaStream), not straight to the speaker, so iOS keeps it alive with
+   the screen locked. If a walk is silent while the level meter moves, the reroute is the
+   suspect: the meter taps the limiter, which sits before the reroute.
+2. **Rule the reroute out in one step:** add `?nostream` to the URL (e.g.
+   `.../Fieldscape/?nostream`). That forces the ordinary `limiter.toDestination()` route. If it
+   sounds with `?nostream` and not without, the reroute is broken on that iOS version.
+3. **Does it survive the lock screen?** Press Sound, wait for the fade-in, lock the phone for
+   two minutes, unlock. Sound should never stop. With `?nostream` it is expected to stop when
+   the screen locks; that is the baseline measured on 2026-09-22.
+4. `diag.html` section 5 shows the measured render cost, which audio path the device got, and
+   `tinyMemory()`/`smallDevice()`. Screenshot that section when reporting.

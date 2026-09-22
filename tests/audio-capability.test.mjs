@@ -40,31 +40,55 @@ function mm(pointer) {
 /* ---- richAudioVerdict: pure, no localStorage, no matchMedia, no probe ---- */
 
 function verdictFn() {
-  const fn = src("smallDevice") + varDecl("AUDIOCAP_THRESHOLD") + src("saneCapabilityPct") +
-    src("richAudioVerdict");
+  const fn = src("smallDevice") + src("tinyMemory") + varDecl("AUDIOCAP_THRESHOLD") +
+    src("saneCapabilityPct") + src("richAudioVerdict");
   return new Function("navigator", "window", "screen", fn + "; return richAudioVerdict;");
 }
 
-test("the threshold is exactly 80%, calibrated from the brief's two real measurements", () => {
-  assert.match(html, /var AUDIOCAP_THRESHOLD = 80;/,
-    "Kerem's iPhone measured 9.7% and the dev desktop 70.6% — both must keep full quality, and " +
-    "both are comfortably under this. It is calibration, not a knob to turn until a test passes.");
+test("the threshold is exactly 60%, lowered from 80 so it actually decides something", () => {
+  /* IMPORTANT 3, 2026-09-22 review: 80 sat above BOTH calibration readings (9.7% iPhone, 70.6%
+     desktop), so it never actually excluded anything — a coarse-pointer device measuring, say,
+     79% passed and then ran the full generative stack plus the two PaulX recording voices and
+     the map/GPS at 82%+ total, which diag.html's own scale calls "no headroom". 60 keeps Kerem's
+     own 9.7% iPhone (the whole point of task 8) while turning away a device with none of that
+     margin. */
+  assert.match(html, /var AUDIOCAP_THRESHOLD = 60;/,
+    "Kerem's iPhone measured 9.7% and stays comfortably under this either way — the number moved " +
+    "to make the middle of the range decide something, not to protect the calibration points, " +
+    "which were never close to 80 in the first place.");
 });
 
-test("a fine pointer is always true, unconditionally — never measured, never downgraded", () => {
+test("a fine pointer with no tinyMemory() floor is always true — never measured, never downgraded", () => {
   const verdict = verdictFn()({}, {}, {});
   assert.equal(verdict(true, 9999), true, "even a nonsense reading cannot downgrade a desktop");
   assert.equal(verdict(true, undefined), true, "and neither can no reading at all");
   assert.equal(verdict(true, 0.1), true, "nor a real, cheap, reading — desktop is unconditional");
 });
 
-test("a coarse pointer takes the cheap path only above 80% of realtime", () => {
+test("tinyMemory() is a FLOOR over a fine pointer too — a 4GB laptop never gets the expensive path", () => {
+  /* IMPORTANT 6, 2026-09-22 review: richAudio() returned true unconditionally for any fine
+     pointer, so a 4 GB laptop — a real, measured deviceMemory<=4, independent of pointer shape —
+     got full convolution, chorus, delays and four voices: the machine LEAST able to hold them.
+     tinyMemory()'s floor now applies ahead of the fine-pointer bypass and ahead of any successful
+     measurement (IMPORTANT 3b) — deliberately narrower than smallDevice() itself, so it never
+     re-triggers on Kerem's own iPhone, which only ever satisfies smallDevice()'s OTHER, guessed
+     clause (no deviceMemory at all on iOS) and must still be decided by measurement. */
+  const verdict = verdictFn()({ deviceMemory: 4 }, { matchMedia: mm("fine") },
+    { width: 1920, height: 1080 });
+  assert.equal(verdict(true, 0.1), false, "a fine pointer no longer overrides a real low-memory floor");
+  assert.equal(verdict(true, undefined), false);
+});
+
+test("a coarse pointer takes the cheap path only above 60% of realtime", () => {
   const verdict = verdictFn()({ deviceMemory: 16 }, { matchMedia: () => ({ matches: false }) },
     { width: 2560, height: 1440 });
   assert.equal(verdict(false, 9.7), true, "Kerem's iPhone — full quality, overwhelming headroom");
-  assert.equal(verdict(false, 70.6), true, "the dev desktop's own number — also kept full quality");
-  assert.equal(verdict(false, 80), true, "at the threshold itself, still full quality");
-  assert.equal(verdict(false, 80.1), false, "just over — genuinely cannot keep up in real time");
+  assert.equal(verdict(false, 60), true, "at the threshold itself, still full quality");
+  assert.equal(verdict(false, 60.1), false, "just over — genuinely cannot keep up in real time");
+  assert.equal(verdict(false, 70.6), false,
+    "the old dev-desktop reading, now above threshold on a coarse pointer — in practice a real " +
+    "desktop is a fine pointer and never reaches this numeric branch at all (see the fine-pointer " +
+    "test above); this exercises the number in isolation");
   assert.equal(verdict(false, 100), false);
 });
 
@@ -108,7 +132,7 @@ test("the cache key matches the existing lowercase fieldarc.* family and stores 
 
 function primeModule() {
   const fn = [
-    src("smallDevice"), varDecl("AUDIOCAP_KEY"), varDecl("AUDIOCAP_THRESHOLD"),
+    src("smallDevice"), src("tinyMemory"), varDecl("AUDIOCAP_KEY"), varDecl("AUDIOCAP_THRESHOLD"),
     varDecl("finePointerCached"), src("finePointer"), src("saneCapabilityPct"),
     src("richAudioVerdict"), varDecl("audioCapPct"), src("richAudio"),
     varDecl("audioCapPriming"), src("voiceBudget"), src("recomputeVoiceBudget"),
@@ -154,7 +178,7 @@ test("a coarse pointer with nothing cached probes once, then caches in memory an
 
 test("a value already cached from a previous session is used without ever probing", () => {
   let probeCalls = 0;
-  const store = { "fieldarc.audiocap": "70.6" };
+  const store = { "fieldarc.audiocap": "42" };
   const localStorage = {
     getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
     setItem: function () { throw new Error("must not re-write an existing cache"); }
@@ -163,7 +187,7 @@ test("a value already cached from a previous session is used without ever probin
     function () { probeCalls++; return Promise.resolve(9.7); });
   return mod.prime({}).then(() => {
     assert.equal(probeCalls, 0, "a cached reading must never be re-measured");
-    assert.equal(mod.rich(), true, "70.6% is under threshold");
+    assert.equal(mod.rich(), true, "42% is under threshold");
   });
 });
 
@@ -173,7 +197,7 @@ test("a failed probe falls back safely and is never written to the cache", () =>
     getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
     setItem: function (k, v) { store[k] = v; }
   };
-  const mod = primeModule()({ deviceMemory: 4 }, { matchMedia: mm("coarse") }, { width: 390, height: 844 },
+  const mod = primeModule()({}, { matchMedia: mm("coarse") }, { width: 390, height: 844 },
     localStorage, function () { return Promise.resolve(-1); });   /* what audioCapability() resolves on any failure */
   return mod.prime({}).then(() => {
     assert.equal(store["fieldarc.audiocap"], undefined, "nonsense must not poison the cache for next time");
@@ -198,7 +222,9 @@ test("an insane cached string is never adopted, and always triggers a fresh, ove
       getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
       setItem: function (k, v) { store[k] = v; }
     };
-    const mod = primeModule()({ deviceMemory: 4 }, { matchMedia: mm("coarse") }, { width: 390, height: 844 },
+    /* iPhone-shaped: no deviceMemory at all, so tinyMemory()'s floor stays out of it and the
+       cache-recovery path is what decides. */
+    const mod = primeModule()({}, { matchMedia: mm("coarse") }, { width: 390, height: 844 },
       localStorage, function () { probeCalls++; return Promise.resolve(9.7); });
     return mod.prime({}).then(() => {
       assert.equal(probeCalls, 1, JSON.stringify(bad) + " must not short-circuit the probe");
@@ -211,7 +237,7 @@ test("an insane cached string is never adopted, and always triggers a fresh, ove
 test("richAudio() itself never adopts a corrupt cached value either — same fallback, no throw", () => {
   function richAudioModule() {
     const fn = [
-      src("smallDevice"), varDecl("AUDIOCAP_KEY"), varDecl("AUDIOCAP_THRESHOLD"),
+      src("smallDevice"), src("tinyMemory"), varDecl("AUDIOCAP_KEY"), varDecl("AUDIOCAP_THRESHOLD"),
       varDecl("finePointerCached"), src("finePointer"), src("saneCapabilityPct"),
       varDecl("audioCapPct"), src("richAudioVerdict"), src("richAudio")
     ].join("\n");
@@ -239,11 +265,14 @@ test("BED.maxVoices is recomputed once the probe settles, against whatever patch
   /* pacerStart/worldStart already ran voiceBudget() against the pre-measurement fallback and set
      this — the exact stale value this recompute exists to correct. */
   const pacer = { patch: { bed: { voices: 4 } } };
-  const BED = { maxVoices: 2 };
+  const BED = { maxVoices: 0 };
   const mod = primeModule()({}, { matchMedia: mm("coarse") }, { width: 390, height: 844 }, localStorage,
     function () { return Promise.resolve(9.7); }, pacer, BED);
   return mod.prime({}).then(() => {
-    assert.equal(BED.maxVoices, 4, "corrected once richAudio() is actually known — 9.7% keeps full quality");
+    assert.equal(mod.rich(), true, "9.7% keeps full-quality rooms, warp and delays");
+    assert.equal(BED.maxVoices, 2,
+      "but the recording cap is a MEMORY ceiling (review CRITICAL 2): a phone-shaped device keeps " +
+      "two resident recordings however fast it renders — the Koşuyolu tab-kill");
   });
 });
 
@@ -263,9 +292,10 @@ test("a legitimate reselect that already ran with the final answer is not clobbe
   /* Stands in for worldSwap's take() or commitPatch having already run AFTER the probe settled,
      computing the right answer on its own. The recompute must reproduce it, not overwrite it
      with something else. */
+  /* A tablet: coarse pointer, big screen, plenty of RAM — smallDevice() does not cap it. */
   const pacer = { patch: { bed: { voices: 3 } } };
   const BED = { maxVoices: 3 };
-  const mod = primeModule()({}, { matchMedia: mm("coarse") }, { width: 390, height: 844 }, localStorage,
+  const mod = primeModule()({ deviceMemory: 16 }, { matchMedia: mm("coarse") }, { width: 900, height: 900 }, localStorage,
     function () { throw new Error("cached — must not probe"); }, pacer, BED);
   return mod.prime({}).then(() => {
     assert.equal(BED.maxVoices, 3, "recompute reproduces the same, already-correct answer — not a clobber");
@@ -307,7 +337,7 @@ test("primeAudioCapability's promise genuinely stays pending until the probe res
      faithful one would mean re-implementing large parts of Tone.js's API to avoid throwing. This
      test instead proves, by real execution, the one piece that was actually at risk. */
   const fn = [
-    src("smallDevice"), varDecl("AUDIOCAP_KEY"), varDecl("AUDIOCAP_THRESHOLD"),
+    src("smallDevice"), src("tinyMemory"), varDecl("AUDIOCAP_KEY"), varDecl("AUDIOCAP_THRESHOLD"),
     varDecl("finePointerCached"), src("finePointer"), src("saneCapabilityPct"),
     src("richAudioVerdict"), varDecl("audioCapPct"), src("richAudio"),
     varDecl("audioCapPriming"), src("voiceBudget"), src("recomputeVoiceBudget"),
@@ -474,7 +504,8 @@ test("the probe stack always builds the FULL route — asking richAudio() inside
 test("diag.html surfaces the measured number and which path it produced", () => {
   assert.match(diagHtml, /var AUDIOCAP_KEY = "fieldarc\.audiocap";/,
     "the same key index.html writes, so a phone that has opened the real app shows its real reading");
-  assert.match(diagHtml, /var AUDIOCAP_THRESHOLD = 80;/);
+  assert.match(diagHtml, /var AUDIOCAP_THRESHOLD = 60;/, "must match index.html");
+  assert.match(diagHtml, /function tinyMemory\(/, "and show the same floor index.html applies");
   assert.match(diagHtml, /function richAudioVerdict\(/);
   assert.match(diagHtml, /audLine\("fieldarc\.audiocap \(cached on this device\)"/);
   assert.match(diagHtml, /audLine\("audio path index\.html actually runs, right now"/);

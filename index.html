@@ -7757,12 +7757,32 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      was stripped of convolution reverb, the chorus warp and every delay line while rendering the
      full stack it was stripped of at 9.7% of one core — the phone had 94% of a core to spare.
      deviceMemory is absent on iOS, so a coarse pointer on a small screen still counts as "small"
-     here, which is exactly the shape of guess that produced that regression. */
+     here, which is exactly the shape of guess that produced that regression. voiceBudget() below
+     went back to asking this directly on 2026-09-22 (review finding CRITICAL 2) — it caps how
+     many full recordings can be resident in memory at once, which is what this function's OWN
+     comment two blocks above already explains, and is not the render-cost question richAudio()
+     answers for the other three call sites. */
   function smallDevice() {
     var mem = navigator.deviceMemory;
     return (mem !== undefined && mem <= 4) ||
       (window.matchMedia && window.matchMedia("(pointer: coarse)").matches &&
        Math.min(screen.width, screen.height) <= 500);
+  }
+
+  /* A real reading, not a guess: the one clause of smallDevice() that comes from the platform
+     actually reporting its RAM rather than this code inferring "phone" from a coarse pointer and
+     a small screen. Used below as richAudio()'s FLOOR (review finding IMPORTANT 3b/6,
+     2026-09-22) — deliberately narrower than smallDevice() itself, and that narrowness is the
+     point: smallDevice()'s screen-size clause is exactly the guess that called Kerem's own
+     iPhone "small" (no deviceMemory on iOS) while it measured 9.7% of one core, and flooring on
+     THAT clause too would undo the entire reason richAudio() exists — see the calibration
+     comment on AUDIOCAP_THRESHOLD below. A real deviceMemory<=4 reading is a different kind of
+     fact: it says this device is short on RAM regardless of how fast its CPU renders, which is
+     exactly the 4 GB laptop of IMPORTANT 6 — a fine pointer with a genuinely small memory
+     budget, still getting full convolution/chorus/delays/4 voices before this floor existed. */
+  function tinyMemory() {
+    var mem = navigator.deviceMemory;
+    return mem !== undefined && mem <= 4;
   }
 
   /* ---- Deciding by measuring, not by guessing ----
@@ -7773,16 +7793,24 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      that stack needs, and it does not depend on the output device or on what else the phone
      happens to be doing at the moment someone asks navigator.deviceMemory.
 
-     A fine pointer (a mouse) is never measured and never downgraded — a probe that happened to
-     land on a busy desktop must not be able to take away Kerem's own convolution and chorus, so
-     desktop returns true unconditionally, before any of the rest of this runs. */
+     A fine pointer (a mouse) is never measured — a probe that happened to land on a busy desktop
+     must not be able to take away Kerem's own convolution and chorus. It CAN still be downgraded
+     by tinyMemory()'s floor, though (IMPORTANT 6): a fast core says nothing about whether this
+     machine has the RAM to hold four rooms' worth of convolution buffers, delay lines and chorus
+     taps at once. */
   var AUDIOCAP_KEY = "fieldarc.audiocap";     /* the measured %, not just yes/no — see richAudio */
-  /* Calibrated from two real renders of the full stack (task-8-brief.md), not chosen to make a
-     number come out right: Kerem's iPhone 9.7% (kept full quality — overwhelming headroom, and
-     it sounded wrong without it), the dev desktop 70.6% (also full quality, which is what it
-     ships today). A device that renders above this cannot keep up in real time and earns the
-     cuts smallDevice() used to hand out by guesswork. */
-  var AUDIOCAP_THRESHOLD = 80;
+  /* Calibrated from two real renders of the full stack (task-8-brief.md): Kerem's iPhone 9.7%,
+     the dev desktop 70.6%. The threshold used to sit at 80 — comfortably above BOTH readings, so
+     it never actually excluded anything; a coarse-pointer device measuring, say, 79% passed and
+     then ran the full stack plus the two PaulX recording voices and the map/GPS at 82%+ total,
+     which diag.html's own scale calls "no headroom" (review finding IMPORTANT 3, 2026-09-22).
+     Lowered to 60: Kerem's own 9.7% iPhone is still nowhere near it (kept full quality —
+     overwhelming headroom, and it sounded wrong without it) and the dev desktop's 70.6% never
+     actually goes through this numeric branch at all (a mouse is a fine pointer, so it is
+     answered by the unconditional branch above, floor aside) — but a device that only measures
+     moderately fast, with none of the margin those two calibration points have, now correctly
+     earns the cuts smallDevice() used to hand out by guesswork. */
+  var AUDIOCAP_THRESHOLD = 60;
 
   var finePointerCached = null;
   function finePointer() {
@@ -7804,6 +7832,12 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      is the only caller; it supplies the two facts (is the pointer fine, what did the probe read
      back, if anything) that decide everything else. */
   function richAudioVerdict(isFinePointer, pct) {
+    /* tinyMemory()'s floor applies BEFORE the fine-pointer bypass and BEFORE a successful
+       measurement gets to answer — "over a successful measurement, not merely as the fallback
+       for an unmeasurable one" (IMPORTANT 3b). This is deliberately the narrow, measured-RAM
+       clause, not the whole of smallDevice() — see the comment on tinyMemory() for why the
+       screen-size guess must stay out of this floor or Kerem's own iPhone regresses. */
+    if (tinyMemory()) { return false; }
     if (isFinePointer) { return true; }
     if (saneCapabilityPct(pct)) { return pct <= AUDIOCAP_THRESHOLD; }
     /* Missing, thrown, or nonsense: a device that cannot even be measured is not a device to
@@ -7814,9 +7848,13 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   var audioCapPct;             /* undefined until primeAudioCapability resolves or finds a cache */
 
-  /* The four call sites (makeRoom, makeWarp, buildFxChain, voiceBudget) all ask this instead of
-     smallDevice() now. It never blocks: primeAudioCapability has already run, once, inside the
-     first bedStart(), before buildVoice() is reachable — see the ordering note there.
+  /* Three call sites now — makeRoom, makeWarp, buildFxChain — ask this instead of smallDevice().
+     voiceBudget() asked it too between 2026-09-22's task 8 and this same day's review fix
+     (CRITICAL 2): it caps concurrent RECORDING memory, a question richAudio()'s render-cost
+     probe has nothing to say about, and moving it here re-opened the exact tab-kill it was
+     written to close on Kerem's own iPhone. It reads smallDevice() again now. This function
+     never blocks: primeAudioCapability has already run, once, inside the first bedStart(),
+     before buildVoice() is reachable — see the ordering note there.
 
      A cached string that fails saneCapabilityPct (corrupted, or written by some future format
      change) must NOT become a sticky, permanent audioCapPct — that would strand a device on the
@@ -7825,6 +7863,11 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      left alone here (audioCapPct stays undefined) rather than adopted; primeAudioCapability is
      what actually owns recovery, by re-probing and overwriting the bad entry. */
   function richAudio() {
+    /* The floor (IMPORTANT 3b/6) has to sit ahead of the fine-pointer bypass, not just inside
+       richAudioVerdict — richAudio() always calls that with isFinePointer hardcoded to false
+       (below) and answers the fine-pointer case itself, right here, which is exactly the branch
+       IMPORTANT 6 found unconditional. */
+    if (tinyMemory()) { return false; }
     if (finePointer()) { return true; }
     if (audioCapPct === undefined) {
       try {
@@ -7935,23 +7978,34 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
 
   var audioCapPriming = null;   /* the in-flight probe, so two overlapping bedStarts share one */
 
+  /* The odd one out among the call sites that moved to richAudio() in task 8, and the fix for
+     review finding CRITICAL 2 (2026-09-22): a soundscape voice holds its whole recording in
+     memory for as long as it plays — see the comment two blocks above smallDevice() — so the
+     number of voices that can be live at once is a MEMORY ceiling, not a render-cost one, and
+     richAudio() measures render cost and knows nothing about RAM. The coordinator's original
+     ruling for task 8 said "replace smallDevice() at every call site"; that was right for
+     makeRoom/makeWarp/buildFxChain and wrong here — moving this one re-opened the exact tab-kill
+     smallDevice()'s cap exists to close, on Kerem's own iPhone (9.7% render cost, plenty of CPU
+     headroom, still only a phone's worth of RAM), the failure he actually reported in Koşuyolu on
+     2026-09-21. Back to smallDevice(), the memory guess, alone. */
   function voiceBudget(n) {
-    return richAudio() ? n : Math.min(n, 2);
+    return smallDevice() ? Math.min(n, 2) : n;
   }
 
   /* pacerStart, worldStart, worldSwap's take() and commitPatch all set BED.maxVoices from
-     voiceBudget() well before this probe can possibly have settled — pacerStart/worldStart in
-     particular can run on first load, before Sound is ever pressed. Each of those reads
-     richAudio() in that window and gets the OLD smallDevice() fallback, so a capable phone's
-     first walk could start with a stale, too-low voice cap even though makeRoom/makeWarp/
-     buildFxChain get it right (they build a fresh graph every time, so they simply see whatever
-     richAudio() answers when THEY next run). voiceBudget()'s answer, by contrast, was already
-     written into BED.maxVoices and nothing was watching it to correct it.
+     voiceBudget() before this function ever runs. That used to matter because voiceBudget() read
+     richAudio(), an async probe that might not have settled yet — a capable phone's first walk
+     could start with a stale, too-low voice cap. voiceBudget() reads smallDevice() now (see
+     above), which is synchronous and never changes mid-session, so every one of those call sites
+     already gets the right answer the first time and this recompute is a no-op reproduction of
+     it, not a correction. Left in place anyway: it costs nothing, and it keeps BED.maxVoices
+     honest without every future caller needing to know which of the two questions voiceBudget()
+     happens to be asking this month.
 
-     Recomputed here, against whichever patch is current AT THE MOMENT the probe settles — never
-     a patch captured earlier — so a route reselect that happened while the probe was in flight is
-     never clobbered: it is simply recomputed with the same, by-then-final, richAudio() answer,
-     which is a no-op. */
+     Recomputed here, against whichever patch is current AT THE MOMENT primeAudioCapability
+     resolves, never a patch captured earlier — so a route reselect that happened while the probe
+     was in flight is never clobbered: it is simply recomputed with the same, by-then-current,
+     smallDevice() answer, which is a no-op either way. */
   function recomputeVoiceBudget() {
     if (pacer && pacer.patch && pacer.patch.bed) {
       BED.maxVoices = voiceBudget(pacer.patch.bed.voices);
@@ -7962,10 +8016,9 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      fine-pointer device resolves immediately without ever touching OfflineAudioContext; a phone
      with a cached reading from a previous session resolves immediately too. Only a coarse-pointer
      device on its first-ever Sound press actually waits on the probe. Every path recomputes
-     BED.maxVoices before resolving — see recomputeVoiceBudget above — because voiceBudget() may
-     already have run against the pre-measurement fallback by the time any of these paths settle,
-     on any of them: a cached reading is just as capable of arriving after pacerStart/worldStart
-     as a fresh probe is. */
+     BED.maxVoices before resolving — see recomputeVoiceBudget above — because makeRoom/makeWarp/
+     buildFxChain still depend on richAudio() settling before buildVoice() is reachable (the
+     ordering note in bedStart), even though voiceBudget() itself no longer needs the probe. */
   function primeAudioCapability(Tone) {
     if (finePointer()) { recomputeVoiceBudget(); return Promise.resolve(); }
     if (audioCapPct !== undefined) { recomputeVoiceBudget(); return Promise.resolve(); }
@@ -8088,18 +8141,35 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      Both halves are fully guarded. Safari implements some of mediaSession and none of the
      background behaviour, so on iPhone this does nothing and must break nothing.
 
-     Gated to smallDevice() still, on purpose, even though makeWarp/buildFxChain/voiceBudget have
-     moved on to richAudio(): this is not a cost question — a capable phone still needs the
-     backgrounding trick as much as a weak one does — so the render-cost probe has nothing to say
-     here, and the old "does this look like a phone" guess is exactly the right question this
-     time. Desktop has no backgrounding problem this solves (no screen to lock, no phone in a
-     pocket), and arming it there is a regression, not a bonus: a "Fieldscape" Now Playing entry,
-     and desktop media keys silently retargeting to the walk whenever Sound is on, for an owner
-     who runs DAWs and media players for a living. */
+     TWO different questions live in this function, and CRITICAL 1 of the 2026-09-22 review is
+     what happens when they are answered by the same gate:
+       - must #keepalive be PLAYING at all? On iOS it is the ONLY path to the speaker once
+         bedStart's master chain reroutes the limiter into it (see iosSafari() below) — so this
+         must run whenever iosSafari() is true, full stop, regardless of what smallDevice() says.
+         Everywhere else it is the Android backgrounding trick, which stays a smallDevice()
+         question exactly as before.
+       - should this device get a lock-screen card and answer headphone/media-key buttons? That
+         is the desktop-annoyance question alone — a "Fieldscape" Now Playing entry, and desktop
+         media keys silently retargeting to the walk, for an owner who runs DAWs and media
+         players for a living — and it stays smallDevice()-only, on purpose: an iPad is not a
+         desktop, but it is not the machine this gate protects either, and richAudio()/
+         smallDevice() are both render/memory questions with nothing to say about the lock
+         screen either way.
+     Before this fix both lived behind one `if (!smallDevice()) return;` at the top, and an iPad
+     — iosSafari() true, smallDevice() false (no deviceMemory on Safari, and its screen sits
+     744-834px, over the 500px cutoff the guess uses) — returned before el.play() was ever
+     reached. bedStart had already routed the walk's only output into that element's srcObject;
+     nothing ever played it. Total silence: the meter still read signal (it taps the limiter,
+     upstream of the reroute), the button still said Stop, and keepaliveFallback() was
+     unreachable — it only fires from play()'s catch, which this already-returned function never
+     got to. */
   function mediaSessionStart() {
-    if (!smallDevice()) { return; }
     var el = $("#keepalive");
-    if (el) {
+    /* The element must play whenever it is the sole output path (iosSafari()) as well as
+       whenever smallDevice() wants the Android backgrounding trick — two independent reasons,
+       checked independently, not folded into one guess the way an iPad's failing smallDevice()
+       would wrongly answer for it. */
+    if (el && (smallDevice() || iosSafari())) {
       /* Started from inside the Sound click: play() outside a user gesture is refused. Wrapped
          all the way round, not just the promise: a rejection is normal (declined) and handled
          below, but a SYNCHRONOUS throw from play() itself would otherwise escape this function
@@ -8119,6 +8189,10 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
         if (p && p.catch) { p.catch(keepaliveFallback); }
       } catch (e) { keepaliveFallback(); }
     }
+    /* Metadata and action handlers stay smallDevice()-only, unconditionally — see the comment
+       above this function for why an iPad, which just earned an audible element above, does not
+       also earn a lock-screen card here. */
+    if (!smallDevice()) { return; }
     if (!("mediaSession" in navigator)) { return; }
     try {
       var where = (place && place.properties && place.properties.name) || "Open world";
@@ -8137,11 +8211,15 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
   function mediaSessionStop() {
-    /* Nothing was armed on desktop (mediaSessionStart returned before touching either half), so
-       there is nothing here to undo — same gate, kept cheap. */
-    if (!smallDevice()) { return; }
+    /* Mirrors mediaSessionStart's gate exactly: the element must be paused on every platform it
+       might have been started on — smallDevice() alone no longer covers that, an iPad pauses it
+       through iosSafari() alone — while the mediaSession half stays smallDevice()-only, matching
+       what mediaSessionStart actually armed. */
     var el = $("#keepalive");
-    if (el) { try { el.pause(); } catch (e) { /* never played */ } }
+    if (el && (smallDevice() || iosSafari())) {
+      try { el.pause(); } catch (e) { /* never played */ }
+    }
+    if (!smallDevice()) { return; }
     if (!("mediaSession" in navigator)) { return; }
     try { navigator.mediaSession.playbackState = "paused"; } catch (e) { /* ignore */ }
   }
@@ -8176,6 +8254,20 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
        zero), while the iPad underneath still reports its real hardware here. */
     var ipadAsMac = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
     return ua || ipadAsMac;
+  }
+
+  /* ---- Escape hatch: ?nostream ----
+     IMPORTANT 4 of the 2026-09-22 review: the MediaStream reroute above is UNPROVEN on iOS, and
+     its likeliest failure is worse than keepaliveFallback()'s case (a rejected or thrown
+     play()) — WebKit resolving play() while the stream itself carries no audio. Nothing rejects,
+     nothing throws, the meter still reads signal (it taps the limiter, upstream of the reroute),
+     the button still says Stop, and there is no way for a listener, or Kerem testing this by
+     ear, to tell a real success from that failure. `?nostream` in the URL forces the ordinary
+     `limiter.toDestination()` route used everywhere else, regardless of iosSafari() — a bad
+     outcome on the owner's own iPhone is then one URL away from being ruled out rather than
+     needing a redeploy. See docs/mobile-testing.md. */
+  function nostream() {
+    return location.search.indexOf("nostream") !== -1;
   }
 
   /* ---- When the iOS reroute itself fails ----
@@ -8223,7 +8315,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
                if/else, never two unconditional connects. */
             var iosStream = null;
             var keepaliveEl = $("#keepalive");
-            if (iosSafari() && keepaliveEl) {
+            if (iosSafari() && !nostream() && keepaliveEl) {
               /* #keepalive stops being a silent decoy on iOS: its srcObject becomes this stream,
                  so it carries the walk's real mix from here on rather than the 0.25s of silence
                  in its src attribute (srcObject takes priority over src by spec, so the silent
