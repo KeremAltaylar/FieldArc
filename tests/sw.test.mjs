@@ -31,10 +31,10 @@ test("the origin check sits after IS_TILE and IS_ASSET have already claimed thei
     "cross-origin CDN and tile hosts those checks deliberately allow");
 });
 
-test("the shell cache was renamed to v2, evicting any cache already holding a poisoned entry", () => {
-  assert.match(sw, /var SHELL\s*=\s*"fieldarc-shell-v2"/,
+test("the shell cache was renamed to v3, so an installed app picks up the new file list", () => {
+  assert.match(sw, /var SHELL\s*=\s*"fieldarc-shell-v3"/,
     "renaming SHELL is what makes activate's cache-name cleanup evict a cache that " +
-    "already holds a cached Supabase response from the unguarded catch-all");
+    "does not yet have the files Task 5 added to SHELL_FILES");
 });
 
 test("the tile cache is not renamed: tile entries are expensive, permanent, and unaffected", () => {

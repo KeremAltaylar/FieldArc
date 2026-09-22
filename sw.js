@@ -8,12 +8,19 @@
    once Task 1 gave the page something to call. Renaming evicts any cache that already
    holds one of those entries, since activate deletes every cache whose name is not
    current. TILES is untouched: those entries are expensive, permanent, and not implicated. */
-var SHELL = "fieldarc-shell-v2";
+/* v3: Task 5 adds the raster home-screen icons to SHELL_FILES — bumping the name is what makes
+   activate below actually replace the cached shell with one that has them, rather than an
+   installed app staying on the old file list until every open tab closes. TILES is untouched:
+   those entries are expensive, permanent, and not implicated. */
+var SHELL = "fieldarc-shell-v3";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [
   "./",
   "./index.html",
+  "./icon-180.png",
+  "./icon-192.png",
+  "./icon-512.png",
   "./places.geojson",
   "./src/pending.mjs",
   "./src/shrink.mjs",

@@ -6,6 +6,14 @@
 <title>Fieldscape — Belgrad Ormanı</title>
 
 <link rel="manifest" href="./manifest.webmanifest">
+<!-- iOS reads none of the manifest for the home screen: it wants its own icon and its own
+     standalone flag, and without them an installed Fieldscape launches in a Safari chrome with a
+     screenshot for an icon. Background audio still does not work there (Safari does not allow
+     it) — this is only about the app being recognisably itself once installed. -->
+<link rel="apple-touch-icon" href="./icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fieldscape">
 <meta name="theme-color" content="#0d1310">
 <link rel="icon" href="./icon.svg" type="image/svg+xml">
 
