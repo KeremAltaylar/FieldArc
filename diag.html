@@ -889,6 +889,11 @@ pre {
         pxLog("");
         pxLog("VERDICT: " + verdict);
         $("#pxlog").className = verdict.indexOf("OK") === 0 ? "ok" : "bad";
+        /* Printed on every run, not only on a bad one: a device that survives this test can
+           still drop buffers during a real walk, when the map and GPS are competing for the
+           same chip, and the first thing anyone will want then is to know whether a bigger
+           buffer is even available here. */
+        pxLatencyTable();
         btn.disabled = false;
       })
       .catch(function (e) {
