@@ -300,7 +300,7 @@ static const fs_param STRETCH_PARAMS[] = {
     { "window", "Window", "s", 0.02f, 2.0f, 0.34f },
     { "freeze", "Freeze", "", 0.0f, 1.0f, 0.0f },
     { "onset", "Onset sensitivity", "", 0.0f, 1.0f, 0.0f },
-    { "width", "Width", "", 0.0f, 1.0f, 0.0f },
+    { "width", "Width", "", 0.0f, 1.0f, 1.0f },
     { "shape", "Window shape", "", 0.0f, 1.0f, 0.0f },
     { "seed", "Seed", "", 0.0f, 16777216.0f, 1.0f },
 };
