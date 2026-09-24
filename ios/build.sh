@@ -13,4 +13,5 @@ done
 xcrun swiftc -O -target $T -sdk "$SDK" -import-objc-header core/fieldscape.h \
   ios/App.swift build/ios/obj/*.o -lc++ -parse-as-library -o "$OUT/Fieldscape"
 cp ios/Info.plist "$OUT/"
+[ -f build/ab/stretch.wav ] && cp build/ab/stretch.wav "$OUT/"
 codesign -s - "$OUT"
