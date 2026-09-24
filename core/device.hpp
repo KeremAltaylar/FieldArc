@@ -11,6 +11,8 @@ struct Device {
     virtual const fs_param *params(int &count) = 0;
     virtual void set_param(int index, float value) = 0;
     virtual void process(int frames) = 0;
+    virtual void set_source(int, int, const float *const *) {}
+    virtual void stats(fs_stats_t &) {}   /* device-specific fields; core fills timing */
 };
 
 /* One-pole smoother reaching ~63% of a jump in `ms`: the A-2 ramp every device parameter uses. */

@@ -35,6 +35,21 @@ void fs_set_param(fs_device *d, int index, float value);
 int fs_param_count(const fs_device *d);
 const fs_param *fs_param_info(const fs_device *d, int index);
 
+/* Source material for devices that play a recording (stretch). Host-owned memory, planar, valid
+   until replaced; channels 1 feeds both outputs, beyond FS_CHANNELS the rest is ignored. Must be
+   at the engine's sample rate. Call it from the audio thread or while stopped. Devices without a
+   source ignore it. frames = 0 or samples = NULL clears it (silence). */
+void fs_set_source(fs_device *d, int channels, int frames, const float *const *samples);
+
+typedef struct {
+    int late_frames;        /* frames not ready when their hop began (had to finish in that call) */
+    int underruns;          /* fs_process calls that took longer than the audio they produced */
+    float max_process_ms;   /* slowest fs_process call */
+    long long frames;       /* stretch: frames synthesised by the active window */
+    int wraps;              /* stretch: times the read position wrapped past the end of the source */
+} fs_stats_t;
+void fs_stats(fs_device *d, fs_stats_t *out);
+
 float *fs_in(fs_device *d, int channel);
 float *fs_out(fs_device *d, int channel);
 void fs_process(fs_device *d, int frames);

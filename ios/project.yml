@@ -11,7 +11,7 @@ targets:
     sources:
       - App.swift
       - path: ../core
-        excludes: [test.cpp]
+        excludes: [test.cpp, "tests/**", "devices/*.md", "devices/*.bundle"]
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: net.keremaltaylar.fieldscape
       SWIFT_OBJC_BRIDGING_HEADER: ../core/fieldscape.h
