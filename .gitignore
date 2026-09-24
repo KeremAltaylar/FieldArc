@@ -23,3 +23,4 @@ archive-export.geojson
 # Scratch mockups and SDD workspaces from Superpowers skills — not build output.
 .superpowers/
 build/
+ios/*.xcodeproj/

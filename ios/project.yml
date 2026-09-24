@@ -1,0 +1,22 @@
+# XcodeGen spec for the iOS host: `xcodegen` in ios/ writes Fieldscape.xcodeproj. The project is
+# generated, not committed; this file is the source of truth. build.sh stays the no-Xcode
+# simulator path.
+name: Fieldscape
+options:
+  deploymentTarget: { iOS: "16.0" }
+targets:
+  Fieldscape:
+    type: application
+    platform: iOS
+    sources:
+      - App.swift
+      - path: ../core
+        excludes: [test.cpp]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: net.keremaltaylar.fieldscape
+      SWIFT_OBJC_BRIDGING_HEADER: ../core/fieldscape.h
+      CLANG_CXX_LANGUAGE_STANDARD: c++17
+      CODE_SIGN_STYLE: Automatic
+      TARGETED_DEVICE_FAMILY: "1"
+      GENERATE_INFOPLIST_FILE: NO
+      INFOPLIST_FILE: Info.plist
