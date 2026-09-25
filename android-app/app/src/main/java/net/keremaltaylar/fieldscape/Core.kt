@@ -13,6 +13,7 @@ object Core {
     @JvmStatic external fun resume()
     @JvmStatic external fun gain(slot: Int, g: Float)
     @JvmStatic external fun lowpass(slot: Int, hz: Float)
+    @JvmStatic external fun grit(slot: Int, amount: Float)
     @JvmStatic external fun param(slot: Int, index: Int, value: Float)
     @JvmStatic external fun load(slot: Int, left: ShortArray, right: ShortArray)
     @JvmStatic external fun loadInterleaved(slot: Int, interleaved: java.nio.ByteBuffer, channels: Int, frames: Int, rate: Double)

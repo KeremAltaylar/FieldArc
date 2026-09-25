@@ -70,6 +70,8 @@ void fs_mix_set_gain(fs_mix *m, int slot, float gain);                    /* ram
 void fs_mix_set_ramp(fs_mix *m, int slot, float ms);                      /* slower ramps, e.g. GPS-driven fades */
 /* The web voice's proximity low-pass (Web Audio biquad, lowpass, Q 1); off until first set. */
 void fs_mix_set_lowpass(fs_mix *m, int slot, float hz, float ramp_ms);
+/* A point voice's grit, 0-1 (the web's sound.grit): bit crusher into a tanh drive, blended in. */
+void fs_mix_set_grit(fs_mix *m, int slot, float amount);
 void fs_mix_process(fs_mix *m, int frames);
 float *fs_mix_out(fs_mix *m, int channel);
 /* Deepest gain reduction since the last call (dB, 0 = none) and samples ever over the ceiling. */

@@ -9,7 +9,7 @@ import Foundation
 final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     struct Point {
         let id: String, name: String, lon: Double, lat: Double
-        let radius: Double, gain: Double, stretch: Float, windowSamples: Double
+        let radius: Double, gain: Double, stretch: Float, windowSamples: Double, grit: Float
         let brightest: Double          /* the low-pass ceiling: 2.2 x the recording's centroid, 600-14000 Hz */
         let path: String?, sounds: Bool
     }
@@ -66,6 +66,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                          lon: c[0], lat: c[1], radius: (q["radius"] as? Double) ?? 140, gain: (q["gain"] as? Double) ?? 0.9,
                          stretch: Float((q["stretch"] as? Double) ?? 0),
                          windowSamples: pow(2, (7 + 10 * max(0, min(1, fft))).rounded()),   /* pxBufsize */
+                         grit: Float((q["grit"] as? Double) ?? 0),
                          brightest: max(600, min(14000, (((p["audio"] as? [String: Any])?["centroid_hz"] as? Double) ?? 2000) * 2.2)),
                          path: p["storage_path"] as? String,
                          sounds: (p["has_audio"] as? Bool ?? false) && mode != "hits" && mode != "grains")
@@ -175,6 +176,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     private func begin(_ p: Point, slot: Int) {
         core.param(slot: slot, 0, p.stretch)
         core.param(slot: slot, 1, Float(p.windowSamples / core.sampleRate))
+        core.grit(slot: slot, p.grit)
         guard let path = p.path else { return }
         let sr = core.sampleRate
         Task { @MainActor [weak self] in

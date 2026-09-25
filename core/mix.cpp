@@ -30,7 +30,11 @@ struct Lowpass {
     }
 };
 
-struct Slot { fs_device *dev = nullptr; Smoothed gain; Lowpass lp; };
+/* A point voice's grit (index.html buildGrit/applyGrit): a bit crusher into tanh(4x), blended with
+   the dry signal by the amount; bits = max(2, round(16 - 13 x amount)). Both glide ~0.2 s. Off at 0. */
+struct Grit { Smoothed amount, bits; };
+
+struct Slot { fs_device *dev = nullptr; Smoothed gain; Lowpass lp; Grit grit; };
 
 struct fs_mix {
     std::vector<Slot> slots;
@@ -76,6 +80,7 @@ void fs_mix_prepare(fs_mix *m, float sr, int max_block, int max_slots) {
 int fs_mix_add(fs_mix *m, fs_device *d, float sr, float gain) {
     if ((int)m->slots.size() == (int)m->slots.capacity()) return -1;
     Slot s; s.dev = d; s.gain.setup(sr, 30, gain);
+    s.grit.amount.setup(sr, 70, 0); s.grit.bits.setup(sr, 70, 16);
     m->slots.push_back(s);
     return (int)m->slots.size() - 1;
 }
@@ -94,6 +99,13 @@ void fs_mix_set_lowpass(fs_mix *m, int slot, float hz, float ramp_ms) {
     f.coef = 1 - std::exp(-32.0 / (std::max(1.0f, ramp_ms) * 0.001 * m->sr / 3));   /* ~95% in ramp_ms */
     if (!f.on) { f.on = true; f.logf = lf; f.design(std::exp(lf), m->sr); }
     f.target = lf;
+}
+
+void fs_mix_set_grit(fs_mix *m, int slot, float amount) {
+    if (slot < 0 || slot >= (int)m->slots.size()) return;
+    float a = amount < 0 ? 0 : (amount > 1 ? 1 : amount);
+    m->slots[slot].grit.amount.target = a;
+    m->slots[slot].grit.bits.target = std::fmax(2.0f, std::round(16 - a * 13));
 }
 
 /* How long a slot's gain takes to follow a new target (~63% in `ms`); 30 ms by default. */
@@ -117,6 +129,12 @@ void fs_mix_process(fs_mix *m, int frames) {
         for (int i = 0; i < frames; i++) {
             float g = s.gain.next();
             float l = a[i], r = b[i];
+            float ga = s.grit.amount.next(), gb = s.grit.bits.next();
+            if (ga > 1e-5f) {
+                float step = std::pow(0.5f, gb - 1);
+                auto shape = [&](float x) { float c = step * std::floor(x / step + 0.5f); c = c > 1 ? 1 : (c < -1 ? -1 : c); return std::tanh(4 * c); };
+                l = l * (1 - ga) + shape(l) * ga; r = r * (1 - ga) + shape(r) * ga;
+            }
             if (f.on) {
                 if ((i & 31) == 0) { f.logf += (f.target - f.logf) * f.coef; f.design(std::exp(f.logf), m->sr); }
                 float in[2] = { l, r }, out[2];

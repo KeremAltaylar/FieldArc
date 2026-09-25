@@ -159,6 +159,7 @@ final class Core: ObservableObject {
 
     func gain(slot: Int, _ g: Float) { fs_mix_set_gain(mix, Int32(slot), g) }
     func lowpass(slot: Int, _ hz: Float) { fs_mix_set_lowpass(mix, Int32(slot), hz, 350) }   /* BED.fade */
+    func grit(slot: Int, _ a: Float) { fs_mix_set_grit(mix, Int32(slot), a) }
     func param(slot: Int, _ i: Int, _ v: Float) { fs_set_param(voices[slot], Int32(i), v) }
 
     /* Sound test: the sliders drive slot 0, which the walk leaves alone while the test is on. */

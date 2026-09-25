@@ -142,6 +142,35 @@ int main() {
         fs_destroy(a); fs_destroy(b);
     }
 
+    /* mix: grit 1 settles on tanh(4 x crush(x, 3 bits)), the web's buildGrit at full amount */
+    {
+        fs_device *p2 = fs_create("passthrough");
+        fs_prepare(p2, SR, B);
+        fs_mix *m = fs_mix_create();
+        fs_mix_prepare(m, SR, B, 1);
+        fs_mix_add(m, p2, SR, 1.0f);
+        fs_mix_set_grit(m, 0, 1.0f);
+        double err = 0; long n = 0; const int L = (int)(0.005f * SR);   /* the limiter's delay */
+        std::vector<float> hist;
+        for (int b = 0; b < 400; b++) {
+            for (int i = 0; i < B; i++) {
+                float v = 0.1f * std::sin(0.01f * (b * B + i));
+                fs_in(p2, 0)[i] = fs_in(p2, 1)[i] = v; hist.push_back(v);
+            }
+            fs_mix_process(m, B);
+            if (b < 200) continue;            /* after the 0.2 s glide */
+            for (int i = 0; i < B; i++) {
+                float x = hist[b * B + i - L], step = 0.25f;               /* 3 bits */
+                float want = std::tanh(4 * step * std::floor(x / step + 0.5f));
+                err = std::fmax(err, (double)std::fabs(fs_mix_out(m, 0)[i] - want));   /* peak tanh(1) < the ceiling */
+                n++;
+            }
+        }
+        std::printf("mix: grit 1 vs tanh(4 crush3(x)): max err %.2g over %ld samples\n", err, n);
+        assert(err < 1e-3);
+        fs_mix_destroy(m); fs_destroy(p2);
+    }
+
     std::printf("core ok\n");
     return 0;
 }
