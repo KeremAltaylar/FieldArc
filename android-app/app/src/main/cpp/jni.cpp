@@ -141,6 +141,29 @@ JNIEXPORT void JNICALL FN(load)(JNIEnv *env, jclass, jint slot, jshortArray l, j
     E->pending.push_back({ slot, a, b, n });
 }
 
+/* A decoded recording as the decoder gives it - interleaved 16-bit, any channel count and rate - split,
+   resampled to the engine rate when it differs, and handed to a slot. Native, because doing this a
+   sample at a time in Kotlin stalled a 38 M-sample recording on the emulator. */
+JNIEXPORT void JNICALL FN(loadInterleaved)(JNIEnv *env, jclass, jint slot, jobject inter, jint channels, jint frames, jdouble rate) {
+    const short *x = (const short *)env->GetDirectBufferAddress(inter);   /* a direct buffer: no copy, no Java heap */
+    if (!x) return;
+    std::vector<short> l(std::max(frames, 1)), r(std::max(frames, 1));
+    for (int i = 0; i < frames; i++) { l[i] = x[(long long)i * channels]; r[i] = x[(long long)i * channels + (channels > 1 ? 1 : 0)]; }
+    long long n = frames;
+    short *a, *b;
+    if (rate != E->sr) {
+        n = fs_resample_length(frames, rate, E->sr);
+        a = new short[std::max(n, 1LL)]; b = new short[std::max(n, 1LL)];
+        fs_resample_i16(l.data(), frames, rate, a, E->sr);
+        fs_resample_i16(r.data(), frames, rate, b, E->sr);
+    } else {
+        a = new short[std::max(n, 1LL)]; b = new short[std::max(n, 1LL)];
+        std::copy(l.begin(), l.begin() + n, a); std::copy(r.begin(), r.begin() + n, b);
+    }
+    std::lock_guard<std::mutex> g(E->lock);
+    E->pending.push_back({ slot, a, b, (int)n });
+}
+
 /* Frees what the audio thread let go of; call now and then from the app. */
 JNIEXPORT void JNICALL FN(collect)(JNIEnv *, jclass) {
     std::vector<short *> free;

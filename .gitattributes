@@ -1,3 +1,4 @@
 # Build scripts run on the Mac and in Git Bash: keep them LF whatever core.autocrlf says.
 *.sh text eol=lf
 *.yml text eol=lf
+gradlew text eol=lf
