@@ -10,6 +10,7 @@
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>MinimumOSVersion</key><string>16.4</string>
   <key>UILaunchScreen</key><dict/>
+  <key>UIAppFonts</key><array><string>CormorantGaramond.ttf</string><string>Newsreader.ttf</string><string>CourierPrime-Regular.ttf</string></array>
   <key>NSLocationWhenInUseUsageDescription</key><string>Fieldscape plays the recordings placed around you as you walk.</string>
   <key>UIDeviceFamily</key><array><integer>1</integer></array>
 </dict>
