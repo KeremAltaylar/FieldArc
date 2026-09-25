@@ -1,6 +1,6 @@
 // Times every fs_process call while the window moves the way a slider drag moves it, to find the
 // callback that took 164 ms on the iPhone 8 (2026-09-24). Build from the repo root:
-//   c++ -std=c++17 -O2 core/core.cpp core/mix.cpp core/devices/*.cpp core/tests/window_bench.cpp -o wb && ./wb
+//   c++ -std=c++17 -O2 core/core.cpp core/mix.cpp core/place.cpp core/devices/*.cpp core/tests/window_bench.cpp -o wb && ./wb
 #include "../fieldscape.h"
 #include <chrono>
 #include <cmath>

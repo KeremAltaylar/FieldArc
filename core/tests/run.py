@@ -38,8 +38,8 @@ def build():
         flags, ext = ["-std=c++17", "-O2", "-Wall", "-Wextra", "-sNODERAWFS=1", "-sALLOW_MEMORY_GROWTH=1"], ".js"
     devices = [os.path.join("core", "devices", f) for f in os.listdir(os.path.join(ROOT, "core", "devices")) if f.endswith(".cpp")]
     targets = {
-        "core_test": ["core/core.cpp", "core/mix.cpp", *devices, "core/test.cpp"],
-        "stretch_test": ["core/core.cpp", "core/mix.cpp", "core/devices/test_devices.cpp", "core/tests/stretch_test.cpp"],
+        "core_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", *devices, "core/test.cpp"],
+        "stretch_test": ["core/core.cpp", "core/mix.cpp", "core/place.cpp", "core/devices/test_devices.cpp", "core/tests/stretch_test.cpp"],
     }
     exe = {}
     for name, srcs in targets.items():

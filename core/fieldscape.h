@@ -68,6 +68,34 @@ float *fs_mix_out(fs_mix *m, int channel);
 /* Deepest gain reduction since the last call (dB, 0 = none) and samples ever over the ceiling. */
 void fs_mix_stats(fs_mix *m, float *min_gain_db, long long *over_ceiling);
 
+/* The place layer (core/place.cpp): position -> the numbers the mix and devices hear. Ported
+   from index.html; core/tests/place_test.cpp holds it to the JS. Coordinates are lon, lat. */
+#define FS_ZONE_MARGIN 1.3        /* leave a point at 130% of its radius (A-14) */
+#define FS_ZONE_COOLDOWN_MS 8000  /* before the same point can be entered again */
+#define FS_GPS_ACC_MAX 40         /* metres of reported accuracy a fix must beat */
+#define FS_GPS_FADE_FROM 60       /* metres off the route where the walk starts to fade */
+#define FS_GPS_LEASH 120          /* metres off the route where it is silent */
+#define FS_MAX_VOICES 4           /* recordings sounding at once (BED.maxVoices) */
+
+typedef struct fs_route fs_route;
+typedef struct { double dist, t, along, lon, lat; } fs_projection;   /* metres, 0-1, metres, point */
+typedef struct { int inside; double fired_at_ms; } fs_zone_state;
+
+double fs_geo_distance(double lon1, double lat1, double lon2, double lat2);   /* haversine, metres */
+fs_route *fs_route_create(const double *lonlat, int n);                       /* n points, lon/lat pairs */
+void fs_route_destroy(fs_route *r);
+double fs_route_length(const fs_route *r);
+fs_projection fs_route_project(const fs_route *r, double lon, double lat);
+void fs_route_point_along(const fs_route *r, double t, double *lon, double *lat);
+int fs_nearest_route(const fs_route *const *routes, int n, double lon, double lat, int current,
+                     double margin, fs_projection *out);
+double fs_walk_level(double dist, double from, double leash);
+double fs_point_proximity(double dist, double radius);
+double fs_point_gain(double dist, double radius, double gain);
+int fs_zone_step(fs_zone_state *z, double dist, double radius, double now_ms, double margin, double cooldown_ms);
+int fs_pick_voices(const double *dist, const double *radius, const unsigned char *eligible, int n,
+                   int max_voices, int radius_first, int *out);
+
 #ifdef __cplusplus
 }
 #endif
