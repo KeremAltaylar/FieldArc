@@ -18,6 +18,7 @@ struct Slot { fs_device *dev = nullptr; Smoothed gain; };
 struct fs_mix {
     std::vector<Slot> slots;
     int max_block = 0, L = 1;
+    float sr = 48000;
     float ceiling = 0.891251f;                 /* -1 dBFS, as the web app's Tone.Limiter(-1) */
     float release = 0;
     std::vector<float> sum[FS_CHANNELS], out[FS_CHANNELS], delay[FS_CHANNELS];
@@ -37,6 +38,7 @@ void fs_mix_destroy(fs_mix *m) { delete m; }
 
 void fs_mix_prepare(fs_mix *m, float sr, int max_block, int max_slots) {
     m->max_block = max_block;
+    m->sr = sr;
     m->L = (int)(0.005f * sr);
     m->release = 1.0f - std::exp(-1.0f / (0.1f * sr));
     m->slots.clear();
@@ -63,6 +65,15 @@ int fs_mix_add(fs_mix *m, fs_device *d, float sr, float gain) {
 
 void fs_mix_set_gain(fs_mix *m, int slot, float gain) {
     if (slot >= 0 && slot < (int)m->slots.size()) m->slots[slot].gain.target = gain < 0 ? 0 : gain;
+}
+
+/* How long a slot's gain takes to follow a new target (~63% in `ms`); 30 ms by default. */
+void fs_mix_set_ramp(fs_mix *m, int slot, float ms) {
+    if (slot < 0 || slot >= (int)m->slots.size() || ms <= 0) return;
+    Smoothed &g = m->slots[slot].gain;
+    float v = g.value, t = g.target;
+    g.setup(m->sr, ms, v);
+    g.target = t;
 }
 
 float *fs_mix_out(fs_mix *m, int c) { return m->out[c].data(); }

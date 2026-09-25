@@ -40,6 +40,7 @@ struct MapView: UIViewRepresentable {
         v.attributionButtonPosition = .bottomRight
         v.compassViewPosition = .topRight
         v.delegate = context.coordinator
+        v.showsUserLocation = true
         return v
     }
 

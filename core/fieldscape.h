@@ -65,6 +65,7 @@ void fs_mix_destroy(fs_mix *m);
 void fs_mix_prepare(fs_mix *m, float sample_rate, int max_block, int max_slots);
 int fs_mix_add(fs_mix *m, fs_device *d, float sample_rate, float gain);   /* slot, or -1 when full */
 void fs_mix_set_gain(fs_mix *m, int slot, float gain);                    /* ramped over ~30 ms */
+void fs_mix_set_ramp(fs_mix *m, int slot, float ms);                      /* slower ramps, e.g. GPS-driven fades */
 void fs_mix_process(fs_mix *m, int frames);
 float *fs_mix_out(fs_mix *m, int channel);
 /* Deepest gain reduction since the last call (dB, 0 = none) and samples ever over the ceiling. */
