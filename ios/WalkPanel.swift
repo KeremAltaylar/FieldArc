@@ -12,6 +12,15 @@ struct WalkPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: T.s3) {
             header
+            if let why = core.paused {
+                note(Text("Paused. ").foregroundColor(T.ink) + Text(why))
+                Button { core.resume() } label: {
+                    Text("Resume").font(T.body(T.sm, .medium)).foregroundStyle(T.ink)
+                        .frame(maxWidth: .infinity, minHeight: T.target)
+                        .background(T.raised, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
+                }
+            }
             switch walk.mode {
             case .denied: denied
             case .waiting: note(Text("Finding where you are…"))

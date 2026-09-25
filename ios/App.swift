@@ -21,6 +21,8 @@ final class Core: ObservableObject {
     @Published var values: [Int: Float] = [:]
     @Published var line = "starting"
     @Published var test = false { didSet { testChanged() } }
+    /* Why the sound is paused, when it is: shown in the walk panel with a Resume button. */
+    @Published var paused: String? = nil
     private var bufferMs = 0.0
 
     /* Recordings reach the audio thread through `pending`, taken with a try-lock inside the
@@ -100,7 +102,37 @@ final class Core: ObservableObject {
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
         try? engine.start()
+        observeSession()
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
+    }
+
+    /* Rulebook M-6. A call, Siri or an alarm interrupts: when it ends the walk comes back by itself.
+       Headphones pulled out: paused, as every iOS player does, rather than suddenly playing out loud
+       from the speaker in the street; the panel offers Resume. A hardware change (Bluetooth
+       headphones switching rate) stops the engine: it is started again. */
+    private func observeSession() {
+        let nc = NotificationCenter.default, session = AVAudioSession.sharedInstance()
+        nc.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] n in
+            guard let self, let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            if type == .ended && self.paused == nil { self.restart() }
+        }
+        nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] n in
+            guard let self, let raw = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
+            self.engine.pause()
+            self.paused = "Headphones were unplugged."
+        }
+        nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            if self?.paused == nil { self?.restart() }
+        }
+    }
+
+    func resume() { paused = nil; restart() }
+
+    private func restart() {
+        try? AVAudioSession.sharedInstance().setActive(true)
+        if !engine.isRunning { try? engine.start() }
     }
 
     /* A decoded recording for a slot. Copied into memory the audio thread will own. */
