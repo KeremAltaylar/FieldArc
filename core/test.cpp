@@ -1,5 +1,5 @@
 // The core's self-check. Build and run on any platform:
-//   c++ -std=c++17 -O2 core/core.cpp core/mix.cpp core/place.cpp core/webm.cpp core/devices/*.cpp core/test.cpp -o fs_test && ./fs_test
+//   c++ -std=c++17 -O2 core/core.cpp core/mix.cpp core/place.cpp core/sections.cpp core/webm.cpp core/devices/*.cpp core/test.cpp -o fs_test && ./fs_test
 #include "fieldscape.h"
 #include <cassert>
 #include <cmath>

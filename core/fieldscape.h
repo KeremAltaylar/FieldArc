@@ -99,6 +99,27 @@ int fs_zone_step(fs_zone_state *z, double dist, double radius, double now_ms, do
 int fs_pick_voices(const double *dist, const double *radius, const unsigned char *eligible, int n,
                    int max_voices, int radius_first, int *out);
 
+/* Sections (core/sections.cpp): a place cut into n equal-area parts, and which one the walker is
+   in, with the web's hold margin. Ported from index.html; core/tests/sections_test.cpp holds it to
+   the JS across places.geojson. Rings are lon/lat pairs. */
+typedef struct fs_sections fs_sections;
+double fs_ring_area(const double *ring, int n);                                   /* m^2, spherical */
+int fs_simplify(const double *pts, int n, double tol, double *out);               /* Douglas-Peucker */
+int fs_place_frame(const double *const *rings, const int *counts, int nrings, double area_km2, double *out, int *which);
+void fs_route_frame(const double *lonlat, int n, double *out8);                   /* no place: the route's padded box */
+fs_sections *fs_sections_create(const double *frame, int n_ring, int n);          /* NULL if too small for n */
+void fs_sections_destroy(fs_sections *s);
+int fs_sections_count(const fs_sections *s);
+double fs_sections_width(const fs_sections *s);
+double fs_sections_worst(const fs_sections *s);
+int fs_sections_iterations(const fs_sections *s);
+double fs_sections_weight(const fs_sections *s, int i);
+void fs_sections_seed(const fs_sections *s, int i, double *lon, double *lat);
+int fs_sections_cell(const fs_sections *s, int i, double *out, int max);
+int fs_sections_at(const fs_sections *s, double lon, double lat);
+int fs_sections_step(const fs_sections *s, int current, double lon, double lat);
+double fs_sections_hold(const fs_sections *s);                                    /* also open world's route margin */
+
 /* WebM/Opus demuxing (core/webm.cpp) for platforms that decode Opus but cannot open WebM (iOS).
    Returns the packet count (writing at most `max` offsets/sizes into the data; call once with
    max 0 to size the arrays), or -1 not WebM, -2 no Opus track, -3 laced blocks. Trim pre_skip

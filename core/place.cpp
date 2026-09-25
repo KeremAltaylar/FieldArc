@@ -5,6 +5,12 @@
    the same operations in the same order as the JS, so results agree to rounding. */
 #include "fieldscape.h"
 
+/* JavaScript rounds a*b+c twice; clang fuses it into one rounding on ARM by default. The ported
+   code must round as the JS does, or iterative results drift from the web app's. */
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <vector>
