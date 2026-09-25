@@ -25,3 +25,8 @@ archive-export.geojson
 build/
 ios/*.xcodeproj/
 worker/.wrangler/
+android-app/local.properties
+android-app/.gradle/
+android-app/app/build/
+android-app/app/.cxx/
+android-app/build/

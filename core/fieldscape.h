@@ -125,6 +125,10 @@ int fs_sections_at(const fs_sections *s, double lon, double lat);
 int fs_sections_step(const fs_sections *s, int current, double lon, double lat);
 double fs_sections_hold(const fs_sections *s);                                    /* also open world's route margin */
 
+/* Whole-recording resampling at load (core/resample.cpp): windowed sinc, 16-bit in and out. */
+long long fs_resample_length(long long frames, double from_rate, double to_rate);
+void fs_resample_i16(const short *in, long long frames, double from_rate, short *out, double to_rate);
+
 /* WebM/Opus demuxing (core/webm.cpp) for platforms that decode Opus but cannot open WebM (iOS).
    Returns the packet count (writing at most `max` offsets/sizes into the data; call once with
    max 0 to size the arrays), or -1 not WebM, -2 no Opus track, -3 laced blocks. Trim pre_skip
