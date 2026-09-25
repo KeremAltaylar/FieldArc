@@ -12,7 +12,9 @@
    activate below actually replace the cached shell with one that has them, rather than an
    installed app staying on the old file list until every open tab closes. TILES is untouched:
    those entries are expensive, permanent, and not implicated. */
-var SHELL = "fieldarc-shell-v3";
+/* v4: the shared core (web/core.wasm + web/core-worklet.js) joins the shell, so a ?core walk
+   plays offline like the Tone one; the bump replaces installed shells that lack them. */
+var SHELL = "fieldarc-shell-v4";
 var TILES = "fieldarc-tiles-v1";
 
 var SHELL_FILES = [
@@ -25,6 +27,8 @@ var SHELL_FILES = [
   "./src/pending.mjs",
   "./src/shrink.mjs",
   "./src/paulx-worklet.js",
+  "./web/core.wasm",
+  "./web/core-worklet.js",
   "https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js",
   "https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.css"
 ];

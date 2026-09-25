@@ -7,7 +7,7 @@
 <script type="module">
 const out = document.getElementById("out");
 try {
-  const wasm = await (await fetch("../build/web/core.wasm")).arrayBuffer();
+  const wasm = await (await fetch("core.wasm")).arrayBuffer();
   const ctx = new OfflineAudioContext(2, 48000, 48000);
   await ctx.audioWorklet.addModule("core-worklet.js");
   const node = new AudioWorkletNode(ctx, "fieldscape-core", {

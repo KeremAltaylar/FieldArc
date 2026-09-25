@@ -8245,7 +8245,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     var ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 0.05 });
     core = { ctx: ctx, on: true, pending: {} };
     return Promise.all([
-      fetch("build/web/core.wasm").then(function (r) { if (!r.ok) { throw new Error("core.wasm " + r.status); } return r.arrayBuffer(); }),
+      fetch("web/core.wasm").then(function (r) { if (!r.ok) { throw new Error("core.wasm " + r.status); } return r.arrayBuffer(); }),
       ctx.audioWorklet.addModule("web/core-worklet.js"),
       ctx.resume()
     ]).then(function (res) {

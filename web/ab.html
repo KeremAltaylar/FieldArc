@@ -140,7 +140,7 @@ async function start() {
   ctx = new AudioContext({ sampleRate: 48000, latencyHint: "playback" });
   status("Loading engines…");
   const [wasm] = await Promise.all([
-    fetch("../build/web/core.wasm").then((r) => { if (!r.ok) { throw new Error("build/web/core.wasm missing — run sh web/build.sh"); } return r.arrayBuffer(); }),
+    fetch("core.wasm").then((r) => { if (!r.ok) { throw new Error("web/core.wasm missing — run sh web/build.sh"); } return r.arrayBuffer(); }),
     ctx.audioWorklet.addModule("../src/paulx-worklet.js"), ctx.audioWorklet.addModule("core-worklet.js")]);
   oldNode = new AudioWorkletNode(ctx, "paulx-processor", { numberOfInputs: 0, outputChannelCount: [2] });
   newNode = new AudioWorkletNode(ctx, "fieldscape-core", { numberOfInputs: 0, outputChannelCount: [2],
