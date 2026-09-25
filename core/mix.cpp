@@ -13,7 +13,24 @@
 #include <cmath>
 #include <vector>
 
-struct Slot { fs_device *dev = nullptr; Smoothed gain; };
+/* A slot's low-pass: the web voice's Tone.Filter(lowpass), i.e. a Web Audio BiquadFilterNode, -12 dB
+   per octave, Q 1 - coefficients from the Web Audio spec (Q in dB for lowpass). The cutoff glides in
+   log frequency, as Tone's rampTo does for a frequency; coefficients are refreshed every 32 samples.
+   Off until a cutoff is first set, so a slot without one passes bit-exact. */
+struct Lowpass {
+    bool on = false;
+    double logf = 0, target = 0, coef = 0;
+    double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+    double x1[2] = {}, x2[2] = {}, y1[2] = {}, y2[2] = {};
+    void design(double f, double sr) {
+        const double PI = 3.141592653589793, Q = 1.0;
+        double w0 = 2 * PI * f / sr, alpha = std::sin(w0) / (2 * std::pow(10.0, Q / 20)), c = std::cos(w0);
+        double a0 = 1 + alpha;
+        b0 = (1 - c) / 2 / a0; b1 = (1 - c) / a0; b2 = b0; a1 = -2 * c / a0; a2 = (1 - alpha) / a0;
+    }
+};
+
+struct Slot { fs_device *dev = nullptr; Smoothed gain; Lowpass lp; };
 
 struct fs_mix {
     std::vector<Slot> slots;
@@ -67,6 +84,18 @@ void fs_mix_set_gain(fs_mix *m, int slot, float gain) {
     if (slot >= 0 && slot < (int)m->slots.size()) m->slots[slot].gain.target = gain < 0 ? 0 : gain;
 }
 
+/* A slot's low-pass cutoff in Hz, gliding over ~ramp_ms in log frequency. The first call switches the
+   filter on and starts at that cutoff. */
+void fs_mix_set_lowpass(fs_mix *m, int slot, float hz, float ramp_ms) {
+    if (slot < 0 || slot >= (int)m->slots.size() || hz <= 0) return;
+    Lowpass &f = m->slots[slot].lp;
+    const double nyq = m->sr * 0.49;
+    const double lf = std::log(std::min((double)hz, nyq));
+    f.coef = 1 - std::exp(-32.0 / (std::max(1.0f, ramp_ms) * 0.001 * m->sr / 3));   /* ~95% in ramp_ms */
+    if (!f.on) { f.on = true; f.logf = lf; f.design(std::exp(lf), m->sr); }
+    f.target = lf;
+}
+
 /* How long a slot's gain takes to follow a new target (~63% in `ms`); 30 ms by default. */
 void fs_mix_set_ramp(fs_mix *m, int slot, float ms) {
     if (slot < 0 || slot >= (int)m->slots.size() || ms <= 0) return;
@@ -84,10 +113,22 @@ void fs_mix_process(fs_mix *m, int frames) {
     for (Slot &s : m->slots) {
         fs_process(s.dev, frames);
         const float *a = fs_out(s.dev, 0), *b = fs_out(s.dev, 1);
+        Lowpass &f = s.lp;
         for (int i = 0; i < frames; i++) {
             float g = s.gain.next();
-            m->sum[0][i] += a[i] * g;
-            m->sum[1][i] += b[i] * g;
+            float l = a[i], r = b[i];
+            if (f.on) {
+                if ((i & 31) == 0) { f.logf += (f.target - f.logf) * f.coef; f.design(std::exp(f.logf), m->sr); }
+                float in[2] = { l, r }, out[2];
+                for (int c = 0; c < 2; c++) {
+                    double y = f.b0 * in[c] + f.b1 * f.x1[c] + f.b2 * f.x2[c] - f.a1 * f.y1[c] - f.a2 * f.y2[c];
+                    f.x2[c] = f.x1[c]; f.x1[c] = in[c]; f.y2[c] = f.y1[c]; f.y1[c] = y;
+                    out[c] = (float)y;
+                }
+                l = out[0]; r = out[1];
+            }
+            m->sum[0][i] += l * g;
+            m->sum[1][i] += r * g;
         }
     }
     const int L = m->L, W = L + 1;   /* min over L+1 samples: then every averaged min covers the sample leaving the delay */

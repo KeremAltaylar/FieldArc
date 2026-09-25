@@ -10,6 +10,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     struct Point {
         let id: String, name: String, lon: Double, lat: Double
         let radius: Double, gain: Double, stretch: Float, windowSamples: Double
+        let brightest: Double          /* the low-pass ceiling: 2.2 x the recording's centroid, 600-14000 Hz */
         let path: String?, sounds: Bool
     }
     enum Phase: Equatable { case playing, downloading(fraction: Double, bytes: Int64), decoding }
@@ -58,6 +59,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                          lon: c[0], lat: c[1], radius: (q["radius"] as? Double) ?? 140, gain: (q["gain"] as? Double) ?? 0.9,
                          stretch: Float((q["stretch"] as? Double) ?? 0),
                          windowSamples: pow(2, (7 + 10 * max(0, min(1, fft))).rounded()),   /* pxBufsize */
+                         brightest: max(600, min(14000, (((p["audio"] as? [String: Any])?["centroid_hz"] as? Double) ?? 2000) * 2.2)),
                          path: p["storage_path"] as? String,
                          sounds: (p["has_audio"] as? Bool ?? false) && mode != "hits" && mode != "grains")
         }
@@ -98,6 +100,8 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
             guard let slot = slotOf[p.id] else { continue }
             earned[p.id] = Float(fs_point_gain(dist[j], p.radius, p.gain))
             core.gain(slot: slot, loaded.contains(p.id) ? earned[p.id]! : 0)
+            /* ensureVoice: the filter opens with proximity, from 300 Hz to the recording's own ceiling */
+            core.lowpass(slot: slot, Float(300 + (p.brightest - 300) * fs_point_proximity(dist[j], p.radius)))
         }
         rows = chosen.map { j in
             let p = points[j]
