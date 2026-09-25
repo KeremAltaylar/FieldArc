@@ -20,6 +20,7 @@ enum Supa {
         let features: [[String: Any]] = rows.map { r in
             var p = (r["properties"] as? [String: Any]) ?? [:]
             p["id"] = r["id"]
+            p["kind"] = r["kind"]                  /* route / point: the walk tells them apart by it */
             return ["type": "Feature", "geometry": r["geometry"] ?? NSNull(), "properties": p]
         }
         return ["type": "FeatureCollection", "features": features]

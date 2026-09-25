@@ -8,11 +8,13 @@
 Device *make_passthrough();
 Device *make_sine();
 Device *make_stretch();
+Device *make_piece();
 
 static const struct { const char *id; Device *(*make)(); } REGISTRY[] = {
     { "passthrough", make_passthrough },
     { "sine", make_sine },
     { "stretch", make_stretch },
+    { "piece", make_piece },
 };
 
 struct fs_device {
@@ -21,6 +23,8 @@ struct fs_device {
     int underruns = 0;
     float max_ms = 0;
 };
+
+Device *fs_device_impl(fs_device *d) { return d->impl; }
 
 extern "C" {
 

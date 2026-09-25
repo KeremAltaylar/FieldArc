@@ -17,6 +17,9 @@ object Core {
     @JvmStatic external fun load(slot: Int, left: ShortArray, right: ShortArray)
     @JvmStatic external fun loadInterleaved(slot: Int, interleaved: java.nio.ByteBuffer, channels: Int, frames: Int, rate: Double)
     @JvmStatic external fun collect()
+    /** Native memory as a direct buffer (not the Java heap); free it with freeDirect. */
+    @JvmStatic external fun allocDirect(bytes: Long): java.nio.ByteBuffer?
+    @JvmStatic external fun freeDirect(buf: java.nio.ByteBuffer)
     @JvmStatic external fun outputDb(): Double
     @JvmStatic external fun worstMs(): Float
     @JvmStatic external fun bufferFrames(): Int
@@ -28,4 +31,14 @@ object Core {
     @JvmStatic external fun pickVoices(dist: DoubleArray, radius: DoubleArray, eligible: BooleanArray, max: Int, radiusFirst: Boolean): IntArray
     @JvmStatic external fun pointInRing(lon: Double, lat: Double, ring: DoubleArray): Boolean
     @JvmStatic external fun resample(input: ShortArray, from: Double, to: Double): ShortArray
+
+    /* The piece (core/piece.cpp) and its side of the walk (jni.cpp, as ios/RouteSound.swift). */
+    @JvmStatic external fun pieceStart(features: String)
+    @JvmStatic external fun pieceBedVoices(): Int
+    @JvmStatic external fun piecePlace(rings: Array<DoubleArray>?, area: Double)
+    /** One fix; returns the rhythm recordings to fetch, "handle slot id path" per line. */
+    @JvmStatic external fun pieceStep(lon: Double, lat: Double): String
+    @JvmStatic external fun pieceSource(handle: Int, slot: Int, id: String, interleaved: java.nio.ByteBuffer, channels: Int, frames: Int, rate: Double)
+    @JvmStatic external fun pieceRoute(): String
+    @JvmStatic external fun pieceRhythms(): String
 }

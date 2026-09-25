@@ -152,6 +152,14 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun Hearing() {
         val rows = walk.rows
+        /* the route's own sound and the rhythm points in reach (the piece) */
+        if (walk.route != null || walk.rhythms.isNotEmpty()) Text(buildAnnotatedString {
+            walk.route?.let { append("Route "); withStyle(SpanStyle(color = T.ink)) { append(it) } }
+            if (walk.rhythms.isNotEmpty()) {
+                append(if (walk.route == null) "Rhythm " else " · rhythm ")
+                withStyle(SpanStyle(color = T.ink)) { append(walk.rhythms) }
+            }
+        }, color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
         if (rows.isEmpty()) {
             val n = walk.nearest
             if (n != null) Text(buildAnnotatedString {

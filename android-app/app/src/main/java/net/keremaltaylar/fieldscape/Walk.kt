@@ -42,6 +42,9 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     var nearest by mutableStateOf<Nearest?>(null)
     var failure by mutableStateOf<String?>(null)
     var here by mutableStateOf<Pair<Double, Double>?>(null)
+    /** The route whose patch is playing, and the rhythm points sounding (the piece). */
+    var route by mutableStateOf<String?>(null)
+    var rhythms by mutableStateOf("")
 
     private val main = Handler(Looper.getMainLooper())
     private var points = listOf<Point>()
@@ -50,8 +53,9 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     private val loaded = HashSet<String>()
     private val released = HashMap<Int, Long>()
     private val earned = HashMap<String, Float>()          // the level each point last earned: applied when it loads
-    private val parks = ArrayList<Pair<String, List<DoubleArray>>>()
+    private val parks = ArrayList<Triple<String, List<DoubleArray>, Double>>()   // name, rings, area_km2
     private var placeCheckedAt: Pair<Double, Double>? = null
+    private var parkIndex = -1
 
     init { loadParks() }
 
@@ -75,6 +79,7 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                   path = p.optString("storage_path").ifEmpty { null },
                   sounds = p.optBoolean("has_audio") && mode != "hits" && mode != "grains")
         }
+        Core.pieceStart(features.toString())
     }
 
     @SuppressLint("MissingPermission")
@@ -99,7 +104,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         val dist = DoubleArray(n) { Core.geoDistance(lon, lat, points[it].lon, points[it].lat) }
         val radius = DoubleArray(n) { points[it].radius }
         val eligible = BooleanArray(n) { points[it].sounds }
-        val chosen = Core.pickVoices(dist, radius, eligible, Core.SLOTS, false).toList()
+        val voices = minOf(Core.SLOTS, Core.pieceBedVoices())             // the playing patch's bed: on, and how many
+        val chosen = Core.pickVoices(dist, radius, eligible, voices, false).toList()
         val want = chosen.map { points[it].id }.toSet()
         for ((id, slot) in slotOf.toMap()) if (id !in want) {                // left: fade, free after the ramp
             Core.gain(slot, 0f)
@@ -117,6 +123,9 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
         nearest = if (rows.isEmpty()) (0 until n).filter { points[it].sounds }.minByOrNull { dist[it] }?.let {
             Nearest(points[it].name, dist[it], direction(lon, lat, points[it].lon, points[it].lat)) } else null
         updatePlace(lon, lat)
+        Core.pieceStep(lon, lat).lines().filter { it.isNotBlank() }.forEach { loadRhythm(it) }
+        route = Core.pieceRoute().ifEmpty { null }
+        rhythms = Core.pieceRhythms()
         Core.collect()
     }
 
@@ -138,14 +147,26 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                 main.post { phase[p.id] = Phase.Decoding; refreshRows() }
                 val pcm = Decode.pcm(file)
                 main.post {
-                    if (slotOf[p.id] != slot) return@post
+                    if (slotOf[p.id] != slot) { Core.freeDirect(pcm.data); return@post }
                     Core.loadInterleaved(slot, pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble())
+                    Core.freeDirect(pcm.data)                          // copied into the engine
                     loaded += p.id; phase.remove(p.id)
                     Core.gain(slot, earned[p.id] ?: 0f)              // sounds now, even standing still
                     refreshRows()
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {                               // OutOfMemoryError included: report, never crash
                 main.post { failure = "Could not load ${p.name}: ${e.message}"; phase.remove(p.id); refreshRows() }
+            }
+        }.start()
+    }
+
+    /** A rhythm point's recording ("handle slot id path"): fetched and decoded as the soundscape's are. */
+    private fun loadRhythm(line: String) {
+        val (h, slot, id, path) = line.split(" ", limit = 4)
+        Thread {
+            runCatching {
+                val pcm = Decode.pcm(recording(path, "$id#$slot"))
+                main.post { Core.pieceSource(h.toInt(), slot.toInt(), id, pcm.data, pcm.channels, pcm.frames, pcm.rate.toDouble()); Core.freeDirect(pcm.data) }
             }
         }.start()
     }
@@ -176,7 +197,9 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     private fun updatePlace(lon: Double, lat: Double) {
         placeCheckedAt?.let { if (Core.geoDistance(it.first, it.second, lon, lat) < 5) return }
         placeCheckedAt = lon to lat
-        place = parks.firstOrNull { (_, rings) -> rings.any { Core.pointInRing(lon, lat, it) } }?.first
+        val i = parks.indexOfFirst { (_, rings) -> rings.any { Core.pointInRing(lon, lat, it) } }
+        place = parks.getOrNull(i)?.first
+        if (i != parkIndex) { parkIndex = i; Core.piecePlace(parks.getOrNull(i)?.second?.toTypedArray(), parks.getOrNull(i)?.third ?: 0.0) }
     }
 
     private fun loadParks() {
@@ -189,7 +212,8 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                 val ring = polys.getJSONArray(k).getJSONArray(0)
                 DoubleArray(ring.length() * 2) { m -> ring.getJSONArray(m / 2).getDouble(m % 2) }
             }
-            parks += f.getJSONObject("properties").optString("name") to rings
+            val p = f.getJSONObject("properties")
+            parks += Triple(p.optString("name"), rings, p.optDouble("area_km2", 0.0))
         }
     }
 
@@ -222,6 +246,7 @@ object Supa {
             val r = rows.getJSONObject(i)
             val p = r.optJSONObject("properties") ?: JSONObject()
             p.put("id", r.getString("id"))
+            p.put("kind", r.optString("kind"))                 // route / point: the walk tells them apart by it
             out.put(JSONObject().put("type", "Feature").put("geometry", r.get("geometry")).put("properties", p))
         }
         return JSONObject().put("type", "FeatureCollection").put("features", out)

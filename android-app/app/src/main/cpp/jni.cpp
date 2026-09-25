@@ -10,11 +10,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <map>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
 #include "fieldscape.h"
+#include "json.hpp"
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO, "fieldscape", __VA_ARGS__)
 
@@ -25,6 +28,7 @@ const int SLOTS = 4, MAX_BLOCK = 4096;
 struct Engine {
     fs_mix *mix = nullptr;
     fs_device *voice[SLOTS] = {};
+    fs_device *piece = nullptr;          /* the route's synths, zones and rhythm points (core/piece.cpp), slot SLOTS */
     AAudioStream *stream = nullptr;
     double sr = 48000;
     std::mutex lock;
@@ -115,7 +119,7 @@ JNIEXPORT jdouble JNICALL FN(start)(JNIEnv *, jclass) {
     E = new Engine();
     E->pending.reserve(16); E->retired.reserve(64);
     E->mix = fs_mix_create();
-    fs_mix_prepare(E->mix, (float)E->sr, MAX_BLOCK, SLOTS);
+    fs_mix_prepare(E->mix, (float)E->sr, MAX_BLOCK, SLOTS + 1);
     for (int i = 0; i < SLOTS; i++) {
         E->voice[i] = fs_create("stretch");
         fs_set_param(E->voice[i], 6, (float)(i + 1));   /* seed: each voice its own phases */
@@ -123,6 +127,9 @@ JNIEXPORT jdouble JNICALL FN(start)(JNIEnv *, jclass) {
         fs_mix_add(E->mix, E->voice[i], (float)E->sr, 0);
         fs_mix_set_ramp(E->mix, i, 350);                  /* the web's BED.fade */
     }
+    E->piece = fs_create("piece");
+    fs_prepare(E->piece, (float)E->sr, MAX_BLOCK);
+    fs_mix_add(E->mix, E->piece, (float)E->sr, 1);
     open_stream();
     return E->sr;
 }
@@ -176,6 +183,14 @@ JNIEXPORT void JNICALL FN(collect)(JNIEnv *, jclass) {
     for (short *p : free) delete[] p;
 }
 
+/* Decode buffers in native memory: a direct ByteBuffer from allocateDirect counts against the Java
+   heap here (~192 MB), and three recordings decoding at once ran out of it. Freed once handed over. */
+JNIEXPORT jobject JNICALL FN(allocDirect)(JNIEnv *env, jclass, jlong bytes) {
+    void *p = std::malloc((size_t)std::max<jlong>(bytes, 1));
+    return p ? env->NewDirectByteBuffer(p, bytes) : nullptr;
+}
+JNIEXPORT void JNICALL FN(freeDirect)(JNIEnv *env, jclass, jobject buf) { if (buf) std::free(env->GetDirectBufferAddress(buf)); }
+
 JNIEXPORT jdouble JNICALL FN(outputDb)(JNIEnv *, jclass) { return 10 * std::log10(std::max(E->power.load(), 1e-12)); }
 JNIEXPORT jfloat JNICALL FN(worstMs)(JNIEnv *, jclass) { return E->worst_ms.load(); }
 JNIEXPORT jint JNICALL FN(bufferFrames)(JNIEnv *, jclass) { return E->stream ? AAudioStream_getFramesPerBurst(E->stream) : 0; }
@@ -216,6 +231,178 @@ JNIEXPORT jshortArray JNICALL FN(resample)(JNIEnv *env, jclass, jshortArray in, 
     jshortArray res = env->NewShortArray((jsize)m);
     env->SetShortArrayRegion(res, 0, (jsize)m, b.data());
     return res;
+}
+
+
+/* ---- The piece's side of the walk, as ios/RouteSound.swift: which route and how far along it, the
+   section underfoot, the plain points' zones, the recordings' character, the rhythm points. Kotlin
+   hands over the features once and each fix; it fetches and decodes the rhythm recordings this asks
+   for (pieceStep's list) and passes them back through pieceSource. */
+namespace {
+struct Walker {
+    struct Spot { std::string icon; double lon, lat, radius, zoneR, centroid, onsets; bool audio, plain; fs_zone_state zone{}; };
+    struct Beat { std::string id, name; double lon, lat, radius, gain; bool grains; std::string json; std::vector<std::string> paths; };
+    std::vector<fs_route *> routes; std::vector<std::string> route_names;
+    std::vector<Spot> spots; std::vector<Beat> beats;
+    std::map<std::string, int> handle;
+    fs_sections *sections = nullptr;
+    std::vector<std::string> rhythm_names;
+    std::string route_name;
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+};
+Walker *W = nullptr;
+
+std::string dump(const Json *j) {   /* back to text for the piece's own parser */
+    if (!j) return "{}";
+    switch (j->kind) {
+    case Json::NUL: return "null";
+    case Json::BOOL: return j->b ? "true" : "false";
+    case Json::NUM: { char b[32]; snprintf(b, sizeof b, "%.17g", j->num); return b; }
+    case Json::STR: { std::string o = "\""; for (char c : j->str) { if (c == '"' || c == '\\') o += '\\'; o += c; } return o + "\""; }
+    case Json::ARR: { std::string o = "["; for (size_t i = 0; i < j->arr.size(); i++) { if (i) o += ","; o += dump(&j->arr[i]); } return o + "]"; }
+    default: {
+        std::string o = "{";
+        for (size_t i = 0; i < j->obj.size(); i++) { if (i) o += ","; Json k; k.kind = Json::STR; k.str = j->obj[i].first; o += dump(&k) + ":" + dump(&j->obj[i].second); }
+        return o + "}";
+    }
+    }
+}
+std::string jstr(JNIEnv *env, jstring s) { const char *c = env->GetStringUTFChars(s, nullptr); std::string o(c); env->ReleaseStringUTFChars(s, c); return o; }
+}
+
+JNIEXPORT void JNICALL FN(pieceStart)(JNIEnv *env, jclass, jstring features) {
+    if (!E || W) return;
+    W = new Walker();
+    Json fc = Json::parse(jstr(env, features).c_str());
+    const Json *fs = fc.get("features");
+    for (size_t i = 0; fs && i < fs->size(); i++) {
+        const Json *f = fs->at(i), *g = f->get("geometry"), *p = f->get("properties");
+        if (!g || !p) continue;
+        std::string type = g->s("type", "");
+        const Json *c = g->get("coordinates");
+        if (type == "LineString" && p->s("kind", "") == "route" && c && c->size()) {
+            std::vector<double> flat;
+            for (size_t k = 0; k < c->size(); k++) { flat.push_back(c->at(k)->at(0)->num); flat.push_back(c->at(k)->at(1)->num); }
+            fs_route *r = fs_route_create(flat.data(), (int)c->size());
+            if (!r || fs_route_length(r) <= 0) { if (r) fs_route_destroy(r); continue; }
+            W->routes.push_back(r); W->route_names.push_back(p->s("name", "Route"));
+            fs_piece_add_route(E->piece, dump(p->get("patch")).c_str());
+        } else if (type == "Point" && c && c->size() >= 2) {
+            const Json *q = p->get("sound"), *a = p->get("audio"), *hits = p->get("hits");
+            std::string mode = p->s("audio_mode", "");
+            std::vector<std::string> slots;
+            bool has_hits = false;
+            for (const char *k : { "low", "mid", "high", "rand" }) {
+                const Json *h = hits ? hits->get(k) : nullptr;
+                std::string path = h ? h->s("storage_path", "") : "";
+                has_hits |= !path.empty(); slots.push_back(path);
+            }
+            bool audio = p->flag("has_audio", false);
+            double lon = c->at(0)->num, lat = c->at(1)->num, radius = q ? q->n("radius", 140) : 140, gain = q ? q->n("gain", 0.9) : 0.9;
+            W->spots.push_back({ p->s("icon", ""), lon, lat, radius, q ? q->n("zoneR", 25) : 25, a ? a->n("centroid_hz", 0) : 0,
+                                 a ? a->n("onset_rate", -1) : -1, audio, !audio && !has_hits && mode != "hits" && mode != "grains" });
+            std::string id = p->s("id", ""), name = p->s("name", "Unnamed point");
+            if (mode == "hits" && has_hits) W->beats.push_back({ id, name, lon, lat, radius, gain, false, dump(p->get("rhythm")), slots });
+            else if (mode == "grains" && audio) W->beats.push_back({ id, name, lon, lat, radius, gain, true, dump(p->get("rhythm")), { p->s("storage_path", "") } });
+        }
+    }
+}
+
+JNIEXPORT jint JNICALL FN(pieceBedVoices)(JNIEnv *, jclass) { return E ? fs_piece_bed_voices(E->piece) : 4; }
+
+/* The park underfoot changed (null: none): its sections at the playing patch's count. */
+JNIEXPORT void JNICALL FN(piecePlace)(JNIEnv *env, jclass, jobjectArray rings, jdouble area) {
+    if (!W) return;
+    if (W->sections) { fs_sections_destroy(W->sections); W->sections = nullptr; }
+    if (rings) {
+        jsize n = env->GetArrayLength(rings);
+        std::vector<std::vector<double>> rs(n); std::vector<const double *> ptrs(n); std::vector<int> counts(n); size_t most = 0;
+        for (jsize i = 0; i < n; i++) {
+            auto a = (jdoubleArray)env->GetObjectArrayElement(rings, i);
+            rs[i].resize(env->GetArrayLength(a)); env->GetDoubleArrayRegion(a, 0, (jsize)rs[i].size(), rs[i].data());
+            ptrs[i] = rs[i].data(); counts[i] = (int)rs[i].size() / 2; most = std::max(most, rs[i].size());
+            env->DeleteLocalRef(a);
+        }
+        std::vector<double> out(most + 8); int which = 0;
+        int k = n ? fs_place_frame(ptrs.data(), counts.data(), n, area, out.data(), &which) : 0;
+        if (k >= 3) W->sections = fs_sections_create(out.data(), k, fs_piece_sect_n(E->piece));
+    }
+    fs_piece_sector(E->piece, -1);
+}
+
+/* One fix (worldMove). Returns the rhythm recordings to fetch: "handle slot id path" per line. */
+JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdouble lat) {
+    if (!W) return env->NewStringUTF("");
+    fs_projection proj{};
+    int r = fs_nearest_route(W->routes.data(), (int)W->routes.size(), lon, lat, fs_piece_route(E->piece), fs_sections_hold(W->sections), &proj);
+    fs_piece_walk(E->piece, r, proj.t, r >= 0 ? proj.dist : INFINITY);
+    int taken = fs_piece_route(E->piece);
+    W->route_name = taken >= 0 && taken < (int)W->route_names.size() ? W->route_names[taken] : "";
+    if (W->sections) {
+        int cur = fs_piece_sector_now(E->piece), next = fs_sections_step(W->sections, cur, lon, lat);
+        if (next != cur) fs_piece_sector(E->piece, next);
+    }
+    double now = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - W->t0).count();
+    std::vector<double> d, rad, cen, ons;
+    for (auto &s : W->spots) {
+        double dist = fs_geo_distance(lon, lat, s.lon, s.lat);
+        if (s.audio) { d.push_back(dist); rad.push_back(s.radius); cen.push_back(s.centroid); ons.push_back(s.onsets); }
+        if (dist > s.radius * FS_ZONE_MARGIN) { s.zone = fs_zone_state{}; continue; }
+        if (fs_zone_step(&s.zone, dist, s.zoneR, now, FS_ZONE_MARGIN, FS_ZONE_COOLDOWN_MS) == 1 && s.plain) fs_piece_zone(E->piece, s.icon.c_str());
+    }
+    fs_piece_character(E->piece, (int)d.size(), d.data(), rad.data(), cen.data(), ons.data());
+    size_t nb = W->beats.size();
+    std::vector<double> bd(nb), br(nb); std::vector<unsigned char> el(nb, 1); std::vector<int> picked(std::max<size_t>(nb, 1));
+    for (size_t i = 0; i < nb; i++) { bd[i] = fs_geo_distance(lon, lat, W->beats[i].lon, W->beats[i].lat); br[i] = W->beats[i].radius; }
+    int k = fs_pick_voices(bd.data(), br.data(), el.data(), (int)nb, std::min(FS_MAX_VOICES, std::max(fs_piece_bed_voices(E->piece), 1)), 1, picked.data());
+    std::map<std::string, bool> want;
+    for (int i = 0; i < k; i++) want[W->beats[picked[i]].id] = true;
+    for (auto it = W->handle.begin(); it != W->handle.end();) {
+        if (!want.count(it->first)) { fs_piece_rhythm_remove(E->piece, it->second); it = W->handle.erase(it); } else ++it;
+    }
+    std::string loads;
+    W->rhythm_names.clear();
+    for (int i = 0; i < k; i++) {
+        const auto &b = W->beats[picked[i]];
+        W->rhythm_names.push_back(b.name);
+        if (!W->handle.count(b.id)) {
+            int h = fs_piece_rhythm_add(E->piece, b.json.c_str(), b.grains);
+            if (h < 0) continue;
+            W->handle[b.id] = h;
+            for (size_t s = 0; s < b.paths.size(); s++)
+                if (!b.paths[s].empty()) loads += std::to_string(h) + " " + std::to_string(s) + " " + b.id + " " + b.paths[s] + "\n";
+        }
+        fs_piece_rhythm_gain(E->piece, W->handle[b.id], (float)fs_point_gain(bd[picked[i]], b.radius, b.gain));
+    }
+    return env->NewStringUTF(loads.c_str());
+}
+
+/* A rhythm recording, decoded (interleaved 16-bit, any rate): resampled to the engine's and handed to
+   the piece, which owns it - unless the point has left since it was asked for. */
+JNIEXPORT void JNICALL FN(pieceSource)(JNIEnv *env, jclass, jint h, jint slot, jstring id, jobject inter, jint channels, jint frames, jdouble rate) {
+    if (!W) return;
+    auto it = W->handle.find(jstr(env, id));
+    if (it == W->handle.end() || it->second != h) return;
+    const short *x = (const short *)env->GetDirectBufferAddress(inter);
+    if (!x || frames <= 0) return;
+    int c = channels > 1 ? 2 : 1;
+    std::vector<short> ch[2], rs[2];
+    long long n = rate != E->sr ? fs_resample_length(frames, rate, E->sr) : frames;
+    for (int k = 0; k < c; k++) {
+        ch[k].resize(frames);
+        for (int i = 0; i < frames; i++) ch[k][i] = x[(long long)i * channels + k];
+        if (rate != E->sr) { rs[k].resize(n); fs_resample_i16(ch[k].data(), frames, rate, rs[k].data(), E->sr); } else rs[k] = ch[k];
+    }
+    short *mem = fs_alloc_i16((size_t)n * c);
+    for (long long i = 0; i < n; i++) for (int k = 0; k < c; k++) mem[i * c + k] = rs[k][i];
+    fs_piece_rhythm_source(E->piece, h, slot, c, n, mem);
+}
+
+JNIEXPORT jstring JNICALL FN(pieceRoute)(JNIEnv *env, jclass) { return env->NewStringUTF(W ? W->route_name.c_str() : ""); }
+JNIEXPORT jstring JNICALL FN(pieceRhythms)(JNIEnv *env, jclass) {
+    std::string o;
+    if (W) for (auto &n : W->rhythm_names) o += (o.empty() ? "" : ", ") + n;
+    return env->NewStringUTF(o.c_str());
 }
 
 }

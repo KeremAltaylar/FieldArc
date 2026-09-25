@@ -22,8 +22,12 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var place: String? = nil
     @Published var nearest: (name: String, dist: Double, direction: String)? = nil
     @Published var failure: String? = nil
+    /* The route whose patch is playing, and the rhythm points sounding (the piece, RouteSound). */
+    @Published var route: String? = nil
+    @Published var rhythms: [String] = []
 
     private let core: Core
+    private let sound: RouteSound
     private let loc = CLLocationManager()
     private var points: [Point] = []
     private var slotOf: [String: Int] = [:]           /* point id -> slot */
@@ -34,13 +38,16 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
        is ready: standing still sends no fixes, and a point that finished loading must not wait for
        you to move before it sounds (rulebook A-15). */
     private var earned: [String: Float] = [:]
-    private var parks: [(name: String, rings: [[Double]])] = []
+    private var parks: [(name: String, rings: [[Double]], area: Double)] = []
     private var placeCheckedAt: (Double, Double)? = nil
+    private var parkIndex: Int? = nil
     private let log: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("walk.log")
 
     init(core: Core) {
         self.core = core
+        self.sound = RouteSound(core: core)
         super.init()
+        sound.walk = self
         loc.delegate = self
         loc.desiredAccuracy = kCLLocationAccuracyBest
         loc.distanceFilter = 2
@@ -63,6 +70,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                          path: p["storage_path"] as? String,
                          sounds: (p["has_audio"] as? Bool ?? false) && mode != "hits" && mode != "grains")
         }
+        sound.start(features: (features["features"] as? [[String: Any]]) ?? [])
         loc.requestWhenInUseAuthorization()
         loc.startUpdatingLocation()
     }
@@ -86,7 +94,9 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         var radius = points.map { $0.radius }
         var eligible = points.map { UInt8($0.sounds ? 1 : 0) }
         var picked = [Int32](repeating: 0, count: max(n, 1))
-        let k = Int(fs_pick_voices(&dist, &radius, &eligible, Int32(n), Int32(Core.slots - (core.test ? 1 : 0)), 0, &picked))
+        /* the playing patch's bed: bed.on and how many voices (BED.maxVoices) */
+        let voices = min(Core.slots - (core.test ? 1 : 0), sound.bedVoices)
+        let k = Int(fs_pick_voices(&dist, &radius, &eligible, Int32(n), Int32(voices), 0, &picked))
         let chosen = picked.prefix(k).map { Int($0) }
         let want = Set(chosen.map { points[$0].id })
 
@@ -112,6 +122,9 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
             nearest = (points[j].name, dist[j], Walk.direction(lon, lat, points[j].lon, points[j].lat))
         } else { nearest = nil }
         updatePlace(lon: lon, lat: lat)
+        sound.step(lon: lon, lat: lat)
+        route = sound.routeName
+        rhythms = sound.rhythmNames
         append(String(format: "%.6f %.6f %.0f out %.1f dBFS | %@", lon, lat, acc, core.outputDb,
                       rows.map { String(format: "%@ %.0f%%", $0.name, $0.level * 100) }.joined(separator: ", ")))
     }
@@ -126,7 +139,9 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     private func updatePlace(lon: Double, lat: Double) {
         if let c = placeCheckedAt, fs_geo_distance(c.0, c.1, lon, lat) < 5 { return }
         placeCheckedAt = (lon, lat)
-        place = parks.first { park in park.rings.contains { r in r.withUnsafeBufferPointer { fs_point_in_ring(lon, lat, $0.baseAddress, Int32(r.count / 2)) != 0 } } }?.name
+        let i = parks.firstIndex { park in park.rings.contains { r in r.withUnsafeBufferPointer { fs_point_in_ring(lon, lat, $0.baseAddress, Int32(r.count / 2)) != 0 } } }
+        place = i.map { parks[$0].name }
+        if i != parkIndex { parkIndex = i; sound.placeChanged(rings: i.map { parks[$0].rings }, area: i.map { parks[$0].area } ?? 0) }
     }
 
     private func loadParks() {
@@ -136,7 +151,8 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         for f in (fc["features"] as? [[String: Any]]) ?? [] {
             guard let g = f["geometry"] as? [String: Any], let polys = g["coordinates"] as? [[[[Double]]]] else { continue }
             let rings = polys.compactMap { $0.first?.flatMap { $0 } }
-            parks.append(((f["properties"] as? [String: Any])?["name"] as? String ?? "", rings))
+            let p = f["properties"] as? [String: Any]
+            parks.append((p?["name"] as? String ?? "", rings, (p?["area_km2"] as? Double) ?? 0))
         }
     }
 
@@ -187,7 +203,7 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     /* Downloaded once, kept in Caches (the web keeps them in IndexedDB the same way); progress
        is reported so the screen can say what is arriving. */
-    @MainActor private func recording(_ path: String, for id: String) async throws -> Data {
+    @MainActor func recording(_ path: String, for id: String) async throws -> Data {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("recordings")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let file = dir.appendingPathComponent(path.replacingOccurrences(of: "/", with: "__"))

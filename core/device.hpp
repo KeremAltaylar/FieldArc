@@ -15,7 +15,10 @@ struct Device {
     virtual void set_source(int, int, const float *const *) {}
     virtual void set_source_i16(int, int, const int16_t *const *) {}
     virtual void stats(fs_stats_t &) {}   /* device-specific fields; core fills timing */
+    virtual void *cast(const char *) { return nullptr; }   /* a device with its own C calls (the piece) */
 };
+
+Device *fs_device_impl(fs_device *d);
 
 /* One-pole smoother reaching ~63% of a jump in `ms`: the A-2 ramp every device parameter uses. */
 struct Smoothed {

@@ -16,8 +16,9 @@ import java.nio.ByteOrder
  * The decoded audio is cached next to the download: decoding is the slow step (a 6 min 40 s Opus
  * take took 107 s on the emulator), and a second visit then only reads a file.
  *
- * The samples live in a direct (native) buffer from the decoder to the audio thread: the Java heap
- * is capped (~192 MB on the emulator) and two 77 MB recordings plus a copy of one ran out of it.
+ * The samples live in native memory (Core.allocDirect) from the decoder to the core: the Java heap is
+ * capped (~192 MB on the emulator), and even allocateDirect counts against it - three recordings
+ * decoding at once ran out. The caller frees Pcm.data (Core.freeDirect) once it is handed over.
  */
 object Decode {
     class Pcm(val data: ByteBuffer, val channels: Int, val rate: Int, val frames: Int)   // data: direct, 16-bit native order, interleaved
@@ -78,7 +79,7 @@ object Decode {
                     val n = src.remaining() / 2
                     if ((total + n) * 2 > out.capacity()) {
                         val bigger = direct(maxOf(out.capacity() / 2 * 3 / 2, total + n))
-                        out.position(0).limit(total * 2); bigger.put(out); out = bigger
+                        out.position(0).limit(total * 2); bigger.put(out); Core.freeDirect(out); out = bigger
                     }
                     out.position(total * 2); out.put(src)
                     total += n
@@ -92,7 +93,8 @@ object Decode {
         return Pcm(out, channels, rate, minOf(total / channels, CAP_SECONDS * rate))
     }
 
-    private fun direct(samples: Int): ByteBuffer = ByteBuffer.allocateDirect(samples * 2).order(ByteOrder.nativeOrder())
+    private fun direct(samples: Int): ByteBuffer =
+        (Core.allocDirect(samples * 2L) ?: throw OutOfMemoryError("native buffer of $samples samples")).order(ByteOrder.nativeOrder())
 
     private fun write(p: Pcm, f: File) {
         val tmp = File(f.path + ".part")

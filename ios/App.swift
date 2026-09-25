@@ -1,4 +1,5 @@
-// iOS host: the core's mixer with four stretch voices, the walk's slots. The walk (Walk.swift)
+// iOS host: the core's mixer with four stretch voices, the walk's slots, and the piece (the route's
+// synths, the zones and the rhythm points, core/piece.cpp) on a fifth slot at gain 1. The walk (Walk.swift)
 // assigns the nearest points to slots and sets their gains; the Sound test puts the bundled
 // recording (stretch.wav) on slot 0 with the sliders, as before. Controls are generated from the
 // device's own parameter list.
@@ -12,6 +13,9 @@ final class Core: ObservableObject {
     private let engine = AVAudioEngine()
     private let voices = (0..<Core.slots).map { _ in fs_create("stretch")! }
     private let mix = fs_mix_create()!
+    /* The route's generative sound. Walk tells it where the walker is (fs_piece_*); it is never
+       re-created, so its Transport and chords run on through route changes, as the web's bed does. */
+    let piece = fs_create("piece")!
     private let worstMs = UnsafeMutablePointer<Double>.allocate(capacity: 1)
     private let outPower = UnsafeMutablePointer<Double>.allocate(capacity: 1)   /* mean square of the output, smoothed */
     /* What actually leaves the app, not what the gains say (rulebook A-17). */
@@ -48,13 +52,15 @@ final class Core: ObservableObject {
         bufferMs = session.ioBufferDuration * 1000
         let sr = session.sampleRate
         sampleRate = sr
-        fs_mix_prepare(mix, Float(sr), 4096, Int32(Core.slots))
+        fs_mix_prepare(mix, Float(sr), 4096, Int32(Core.slots + 1))
         for (i, v) in voices.enumerated() {
             fs_set_param(v, 6, Float(i + 1))            /* seed: each voice its own random phases */
             fs_prepare(v, Float(sr), 4096)
             fs_mix_add(mix, v, Float(sr), 0)
             fs_mix_set_ramp(mix, Int32(i), 350)         /* the web's BED.fade: GPS steps must not be heard */
         }
+        fs_prepare(piece, Float(sr), 4096)
+        fs_mix_add(mix, piece, Float(sr), 1)
         worstMs.pointee = 0
         outPower.pointee = 0
 

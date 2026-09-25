@@ -19,6 +19,7 @@ targets:
       - Walk.swift
       - Theme.swift
       - WalkPanel.swift
+      - RouteSound.swift
       - path: ../places.geojson
         buildPhase: resources
       - path: Fonts

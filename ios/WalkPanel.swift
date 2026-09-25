@@ -44,6 +44,11 @@ struct WalkPanel: View {
     }
 
     @ViewBuilder private var hearing: some View {
+        /* the route's own sound and the rhythm points in reach (the piece) */
+        if walk.route != nil || !walk.rhythms.isEmpty {
+            note((walk.route.map { Text("Route ") + Text($0).foregroundColor(T.ink) } ?? Text(""))
+                 + (walk.rhythms.isEmpty ? Text("") : Text(walk.route == nil ? "Rhythm " : " · rhythm ") + Text(walk.rhythms.joined(separator: ", ")).foregroundColor(T.ink)))
+        }
         if walk.rows.isEmpty {
             if let n = walk.nearest {
                 note(Text("Nothing in range here. ").foregroundColor(T.ink)

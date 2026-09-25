@@ -125,6 +125,37 @@ int fs_sections_at(const fs_sections *s, double lon, double lat);
 int fs_sections_step(const fs_sections *s, int current, double lon, double lat);
 double fs_sections_hold(const fs_sections *s);                                    /* also open world's route margin */
 
+/* The piece (core/piece.cpp): the web walk's generative sound - the Transport, the chord model, the
+   route's three voices and their effects, the zones' one-shots, the morphs and the rhythm points
+   (hits, grains) - as one device, fs_create("piece"), mixed into an fs_mix slot at gain 1. It applies
+   the route's own GPS leash inside. The hosts tell it where the walker is; they make no sound choices.
+   Call these from one thread (not the audio thread); they never block the audio thread. */
+int fs_piece_add_route(fs_device *d, const char *patch_json);          /* a route's properties.patch -> its index */
+void fs_piece_walk(fs_device *d, int route, double t, double dist);     /* nearest route (-1 none), 0-1 along it, metres off it */
+int fs_piece_route(fs_device *d);                                       /* the route whose patch is playing (pacer.routeId) */
+int fs_piece_sect_n(fs_device *d);                                      /* its patch's sector count */
+int fs_piece_bed_voices(fs_device *d);                                  /* its patch's soundscape voices (0: bed off) */
+void fs_piece_sector(fs_device *d, int sector);                         /* the section underfoot (-1 none) */
+int fs_piece_sector_now(fs_device *d);                                  /* ... as the piece holds it (reset on a route change) */
+/* localCharacter: the recordings in reach, by distance/radius, with their audio.centroid_hz and
+   audio.onset_rate (0 / -1 when unknown) */
+void fs_piece_character(fs_device *d, int n, const double *dist, const double *radius, const double *centroid_hz, const double *onset_rate);
+void fs_piece_zone(fs_device *d, const char *icon);                     /* a plain point's zone entered (zoneFire) */
+/* Rhythm points (hits, grains): add -> a handle (-1: all four in use), then its gain each fix
+   (fs_point_gain), its recordings as they arrive (hits: slots 0-3 low/mid/high/rand; grains: slot 0),
+   interleaved 16-bit at the engine's rate in memory from fs_alloc_i16, which the piece then owns.
+   remove fades it out; the handle comes back after ~0.4 s. */
+int fs_piece_rhythm_add(fs_device *d, const char *rhythm_json, int grains);
+void fs_piece_rhythm_gain(fs_device *d, int handle, float gain);
+void fs_piece_rhythm_source(fs_device *d, int handle, int slot, int channels, long long frames, short *interleaved);
+void fs_piece_rhythm_remove(fs_device *d, int handle);
+short *fs_alloc_i16(size_t n);
+/* tests: replace the random stream, and hear every note the steps choose (role 0 bass, 1 top,
+   2 sector, 3 third, 4 water zone, 5 zone) */
+void fs_piece_test_hooks(fs_device *d, double (*rnd)(void *), void *rnd_ctx,
+                         void (*on_note)(void *, int, double, double, double, double), void *note_ctx);
+void fs_piece_test_walk(fs_device *d, double seconds);                 /* tests: walk the route over this long */
+
 /* Whole-recording resampling at load (core/resample.cpp): windowed sinc, 16-bit in and out. */
 long long fs_resample_length(long long frames, double from_rate, double to_rate);
 void fs_resample_i16(const short *in, long long frames, double from_rate, short *out, double to_rate);
