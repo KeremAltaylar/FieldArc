@@ -322,6 +322,34 @@ def main():
     row(9, "signal after fft/phase/ifft/overlap-add/output", f"rms {s9['fft']}/{s9['phase']}/{s9['ifft']}/{s9['ola']}/{s9['output']}; first silent: {s9['first_silent']}",
         "none silent", s9["first_silent"] == "none")
 
+    # R: checks 1, 3 and 5 again on a real Fieldscape recording (the Stretch point, 20 s from its
+    # middle), when present. It is Kerem's recording, so it lives git-ignored in build/ab/ and these
+    # rows are skipped on machines without it.
+    real = os.path.join(ROOT, "build", "ab", "stretch.wav")
+    if os.path.exists(real):
+        _, q = scipy.io.wavfile.read(real)
+        q = (q[:, 0] if q.ndim > 1 else q)[20 * SR:40 * SR]
+        x = q.astype(np.float64) / 32768
+        scipy.io.wavfile.write(os.path.join(BUILD, "ref_in.wav"), SR, q)
+        subprocess.run([sys.executable, ref, "-s", "8", "-w", "0.25", os.path.join(BUILD, "ref_in.wav"),
+                        os.path.join(BUILD, "ref_out.wav")], cwd=BUILD, capture_output=True, check=True)
+        _, r = scipy.io.wavfile.read(os.path.join(BUILD, "ref_out.wav"))
+        r = r.astype(np.float64) / 32768
+        ours, _ = render(exe["stretch_test"], x, len(r) / SR, stretch=math.log(8) / math.log(1024), window=0.25, width=1, shape=0)
+        ours /= norm_gain(0.25)
+        a, b = third_octaves(ours[SR:-SR]), third_octaves(r[SR:-SR])
+        use = b > b.max() - 50
+        d = np.abs(a - b)[use]
+        row("R1", f"3rd-octave vs reference, real recording ({use.sum()} bands)", f"max |diff| {d.max():.2f} dB", "<= 1 dB", d.max() <= 1)
+        y, _ = render(exe["stretch_test"], x, 160, stretch=math.log(8) / math.log(1024), window=0.34)
+        lvl = db(rms(y[2 * SR:]) / rms(x))
+        row("R3", "RMS out/in, real recording, S=8 T=0.34", f"{lvl:+.2f} dB", "within +-1 dB", abs(lvl) <= 1)
+        y, _ = render(exe["stretch_test"], x, 62, freeze=1, window=0.34)
+        sec = [db(rms(y[i * SR:(i + 1) * SR])) for i in range(2, 62)]
+        row("R5", "freeze 60 s on the real recording: RMS of 1 s blocks", f"range {max(sec) - min(sec):.2f} dB", "< 1 dB", max(sec) - min(sec) < 1)
+    else:
+        print("R1/R3/R5 skipped: no build/ab/stretch.wav (a real recording; see web/ab.html)")
+
     w = [max(len(r[i]) for r in rows + [("#", "test", "measured", "limit", "result")]) for i in range(5)]
     for r in [("#", "test", "measured", "limit", "result")] + rows:
         print("  ".join(c.ljust(w[i]) for i, c in enumerate(r)))
