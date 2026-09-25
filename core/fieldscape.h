@@ -9,6 +9,8 @@
 #ifndef FIELDSCAPE_H
 #define FIELDSCAPE_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -95,6 +97,15 @@ double fs_point_gain(double dist, double radius, double gain);
 int fs_zone_step(fs_zone_state *z, double dist, double radius, double now_ms, double margin, double cooldown_ms);
 int fs_pick_voices(const double *dist, const double *radius, const unsigned char *eligible, int n,
                    int max_voices, int radius_first, int *out);
+
+/* WebM/Opus demuxing (core/webm.cpp) for platforms that decode Opus but cannot open WebM (iOS).
+   Returns the packet count (writing at most `max` offsets/sizes into the data; call once with
+   max 0 to size the arrays), or -1 not WebM, -2 no Opus track, -3 laced blocks. Trim pre_skip
+   samples from the start of the decoded audio, less whatever the decoder already dropped
+   (total_samples minus what it returned). */
+typedef struct { int channels, pre_skip, sample_rate; long long total_samples; } fs_webm_info;   /* samples: all packets, before pre-skip */
+int fs_webm_opus(const unsigned char *data, size_t n, fs_webm_info *info, unsigned *offsets, unsigned *sizes, int max);
+int fs_opus_packet_samples(const unsigned char *packet, size_t len);   /* 48 kHz samples, from the TOC byte */
 
 #ifdef __cplusplus
 }

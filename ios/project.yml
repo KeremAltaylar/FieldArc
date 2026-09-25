@@ -15,6 +15,7 @@ targets:
     sources:
       - App.swift
       - MapView.swift
+      - Decode.swift
       - path: ../core
         excludes: [test.cpp, "tests/**", "devices/*.md", "devices/*.bundle"]
       # test recording (git-ignored; made from the Stretch point, see web/ab.html)

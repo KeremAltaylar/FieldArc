@@ -11,7 +11,7 @@ OUT=build/android
 rm -rf "$OUT" && mkdir -p "$OUT/lib/arm64-v8a" "$OUT/lib/x86_64"
 for abi in arm64-v8a:aarch64 x86_64:x86_64; do
   "$CXX" --target=${abi#*:}-linux-android26 -std=c++17 -O2 -shared -fPIC -static-libstdc++ \
-    core/core.cpp core/mix.cpp core/place.cpp core/devices/*.cpp android/main.cpp -laaudio -llog -landroid \
+    core/core.cpp core/mix.cpp core/place.cpp core/webm.cpp core/devices/*.cpp android/main.cpp -laaudio -llog -landroid \
     -o "$OUT/lib/${abi%%:*}/libfieldscape.so"
 done
 "$BT/aapt2" link -o "$OUT/unsigned.apk" --manifest android/AndroidManifest.xml -I "$SDK/platforms/android-34/android.jar"
