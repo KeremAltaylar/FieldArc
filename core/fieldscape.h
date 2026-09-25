@@ -158,6 +158,22 @@ void fs_piece_test_hooks(fs_device *d, double (*rnd)(void *), void *rnd_ctx,
                          void (*on_note)(void *, int, double, double, double, double), void *note_ctx);
 void fs_piece_test_walk(fs_device *d, double seconds);                 /* tests: walk the route over this long */
 
+/* The whole walk in one object (core/engine.cpp): four stretch slots + the piece + the mix, and the
+   walk logic that drives them (updateBed, worldMove, zones, sections, rhythm points). Hand it the
+   published features and the places once, then positions; fetch what fs_engine_step lists
+   ("S slot id path" / "R handle slot id path" per line) and give it back decoded. All calls from one
+   thread (the web worklet's audio thread). fs_engine_state: JSON for the screen. */
+typedef struct fs_engine fs_engine;
+fs_engine *fs_engine_create(float sample_rate, int max_block);
+void fs_engine_destroy(fs_engine *e);
+void fs_engine_features(fs_engine *e, const char *geojson);
+void fs_engine_places(fs_engine *e, const char *geojson);
+const char *fs_engine_step(fs_engine *e, double lon, double lat);
+void fs_engine_source(fs_engine *e, int kind, int index, int sub, const char *id, int channels, long long frames, short *interleaved);
+void fs_engine_process(fs_engine *e, int frames);
+float *fs_engine_out(fs_engine *e, int channel);
+const char *fs_engine_state(fs_engine *e);
+
 /* Whole-recording resampling at load (core/resample.cpp): windowed sinc, 16-bit in and out. */
 long long fs_resample_length(long long frames, double from_rate, double to_rate);
 void fs_resample_i16(const short *in, long long frames, double from_rate, short *out, double to_rate);

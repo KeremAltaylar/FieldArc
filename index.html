@@ -7615,6 +7615,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
     sectorUpdate();
     updateBed();
     pacerReadout();
+    coreMove();
   }
 
   var WORLD_SWAP = 1.5;      /* seconds — a change of key is a transition, not a jump cut */
@@ -8098,6 +8099,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      carries the whole thing down. */
   function bedStop() {
     wantSound = false;
+    if (CORE) { coreStop(); return; }
     if (!bed) { return; }
     bed.on = false;
     mediaSessionStop();
@@ -8221,7 +8223,112 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   }
 
 
+  /* ---------- 5.3: the walk on the shared C++ core (?core) ----------
+     The same sound engine the iOS and Android apps run (core/engine.cpp: the stretch voices, the
+     route's piece, the rhythm points, the mix and its limiter), in an AudioWorklet. The page only
+     tells it where the walker is (worldMove) and fetches the recordings it asks for; every sound
+     choice is made inside it. Open world only for now; place-mode walks and the setter panels
+     still run on Tone. Opt in with ?core (remembered) and out with ?core=0. */
+  var CORE = (function () {
+    var m = /[?&]core(=([^&]*))?/.exec(location.search);
+    try {
+      if (m) { localStorage.setItem("fs.core", m[2] === "0" ? "0" : "1"); }
+      return localStorage.getItem("fs.core") === "1";
+    } catch (e) { return !!m && m[2] !== "0"; }
+  })();
+  var core = null;
+  function coreStart() {
+    if (core && core.node) {
+      core.on = true;
+      return core.ctx.resume().then(function () { coreRamp(1, SOUND_FADE_IN); coreButton(true); coreMove(); });
+    }
+    var ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 0.05 });
+    core = { ctx: ctx, on: true, pending: {} };
+    return Promise.all([
+      fetch("build/web/core.wasm").then(function (r) { if (!r.ok) { throw new Error("core.wasm " + r.status); } return r.arrayBuffer(); }),
+      ctx.audioWorklet.addModule("web/core-worklet.js"),
+      ctx.resume()
+    ]).then(function (res) {
+      if (!wantSound) { core.on = false; return; }
+      var node = new AudioWorkletNode(ctx, "fieldscape-engine",
+        { numberOfInputs: 0, outputChannelCount: [2], processorOptions: { wasm: res[0] } });
+      var gain = ctx.createGain();
+      gain.gain.value = 0;
+      node.connect(gain).connect(ctx.destination);
+      /* what actually leaves (rulebook A-17): the level readout and the tests read it */
+      var an = ctx.createAnalyser(); an.fftSize = 4096; gain.connect(an);
+      var buf = new Float32Array(an.fftSize);
+      window.__fa.coreLevel = function () { an.getFloatTimeDomainData(buf); var s = 0; for (var i = 0; i < buf.length; i++) { s += buf[i] * buf[i]; } return 10 * Math.log10(s / buf.length + 1e-12); };
+      core.node = node; core.gain = gain;
+      node.port.onmessage = coreMessage;
+      var enc = new TextEncoder();
+      node.port.postMessage({ type: "places", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: places })) });
+      node.port.postMessage({ type: "features", bytes: enc.encode(JSON.stringify({ type: "FeatureCollection", features: visible() })) });
+      keepAwake(true);
+      coreRamp(1, SOUND_FADE_IN);
+      coreButton(true);
+      coreMove();
+    });
+  }
+  function coreStop() {
+    if (!core) { return; }
+    core.on = false;
+    coreButton(false);
+    coreRamp(0, SOUND_FADE_OUT);
+    setTimeout(function () { if (core && !core.on) { core.ctx.suspend(); releaseAwakeIfUnneeded(); } }, SOUND_FADE_OUT * 1000 + 80);
+  }
+  function coreRamp(to, seconds) {
+    if (!core || !core.gain) { return; }
+    var g = core.gain.gain, t = core.ctx.currentTime;
+    g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.linearRampToValueAtTime(to, t + seconds);
+  }
+  function coreButton(on) {
+    $("#patch-play").textContent = on ? "Stop" : "Sound";
+    $("#patch-play").setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  /* worldMove's one line into the engine */
+  function coreMove() {
+    if (!core || !core.node || !core.on || !pacer || !pacer.world) { return; }
+    core.node.port.postMessage({ type: "walk", lon: pacer.pos[0], lat: pacer.pos[1] });
+  }
+  /* test hook: the walker, moved as a marker drag or a GPS fix would move it */
+  window.__fa.walkTo = function (lon, lat) { if (pacer && pacer.world) { worldMove([lon, lat]); } };
+  function coreMessage(ev) {
+    var m = ev.data, dec = new TextDecoder();
+    if (m.type === "need") {
+      dec.decode(m.bytes).split("\n").forEach(function (line) {
+        if (!line) { return; }
+        var w = line.split(" "), kind = w[0], index = +w[1];
+        var sub = kind === "R" ? +w[2] : 0, id = w[kind === "R" ? 3 : 2], path = w[kind === "R" ? 4 : 3];
+        var key = kind === "R" && !(feature(id) && feature(id).properties.audio_mode === "grains") ? id + "#" + HIT_SLOTS[sub] : id;
+        if (core.pending[line]) { return; }
+        core.pending[line] = true;
+        audioBlob(key, path).then(function (blob) {
+          if (!blob) { throw new Error("no audio for " + key); }
+          return blob.arrayBuffer();
+        }).then(function (ab) { return core.ctx.decodeAudioData(ab); }).then(function (buf) {
+          var c = Math.min(2, buf.numberOfChannels), n = buf.length, pcm = new Int16Array(n * c);
+          for (var k = 0; k < c; k++) {
+            var d = buf.getChannelData(k);
+            for (var i = 0; i < n; i++) { var s = d[i]; pcm[i * c + k] = s < -1 ? -32768 : (s > 1 ? 32767 : Math.round(s * 32767)); }
+          }
+          core.node.port.postMessage({ type: "source", kind: kind, index: index, sub: sub, id: id, channels: c, pcm: pcm }, [pcm.buffer]);
+        }).catch(function (e) { console.warn("core: " + (e && e.message)); })
+          .then(function () { delete core.pending[line]; });
+      });
+    } else if (m.type === "state") {
+      var st = JSON.parse(dec.decode(m.bytes));
+      core.state = st;
+      $("#patch-info").textContent = st.rows.length + " voice" + (st.rows.length === 1 ? "" : "s") +
+        (st.route ? " · " + st.route : "") + (st.rhythms.length ? " · " + st.rhythms.join(", ") : "");
+      window.__fa.core = st;     /* measurable, as __fa.bed is: core/tests/web_core.mjs reads it */
+    } else if (m.type === "error") {
+      console.error("core engine: " + m.message);
+    }
+  }
+
   function bedStart() {
+    if (CORE) { return coreStart(); }
     return loadTone().then(function (Tone) {
       return Tone.start().then(function () {
         return primeAudioCapability(Tone).then(function () {
@@ -13592,7 +13699,7 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
   var wantSound = false;
   $("#patch-play").addEventListener("click", function () {
     /* Sounding, or on its way to sounding — either way the click means stop. */
-    if ((bed && bed.on) || wantSound) { bedStop(); return; }
+    if ((bed && bed.on) || (core && core.on) || wantSound) { bedStop(); return; }
     wantSound = true;
     var btn = this;
     btn.textContent = "…";
