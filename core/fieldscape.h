@@ -54,6 +54,20 @@ float *fs_in(fs_device *d, int channel);
 float *fs_out(fs_device *d, int channel);
 void fs_process(fs_device *d, int frames);
 
+/* The master bus: devices summed with smoothed per-slot gains (the walk's fades), then a 5 ms
+   lookahead limiter at -1 dBFS, so the output never passes the ceiling (rulebook A-6). The mix
+   calls fs_process on its devices; it does not own them. */
+typedef struct fs_mix fs_mix;
+fs_mix *fs_mix_create(void);
+void fs_mix_destroy(fs_mix *m);
+void fs_mix_prepare(fs_mix *m, float sample_rate, int max_block, int max_slots);
+int fs_mix_add(fs_mix *m, fs_device *d, float sample_rate, float gain);   /* slot, or -1 when full */
+void fs_mix_set_gain(fs_mix *m, int slot, float gain);                    /* ramped over ~30 ms */
+void fs_mix_process(fs_mix *m, int frames);
+float *fs_mix_out(fs_mix *m, int channel);
+/* Deepest gain reduction since the last call (dB, 0 = none) and samples ever over the ceiling. */
+void fs_mix_stats(fs_mix *m, float *min_gain_db, long long *over_ceiling);
+
 #ifdef __cplusplus
 }
 #endif

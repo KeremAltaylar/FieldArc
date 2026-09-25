@@ -7,7 +7,7 @@ export SDKROOT="$SDK"
 T=arm64-apple-ios16.0-simulator
 OUT=build/ios/Fieldscape.app
 mkdir -p "$OUT" build/ios/obj
-for f in core/core.cpp core/devices/*.cpp; do
+for f in core/core.cpp core/mix.cpp core/devices/*.cpp; do
   xcrun --sdk iphonesimulator clang++ -std=c++17 -O2 -target $T -c "$f" -o "build/ios/obj/$(basename "$f" .cpp).o"
 done
 xcrun swiftc -O -target $T -sdk "$SDK" -import-objc-header core/fieldscape.h \
