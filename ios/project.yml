@@ -24,3 +24,7 @@ targets:
       TARGETED_DEVICE_FAMILY: "1"
       GENERATE_INFOPLIST_FILE: NO
       INFOPLIST_FILE: Info.plist
+      # Optimised even in Debug: ▶ Run is how phones get tested, and -O0 DSP ran ~10x slower
+      # (164 ms callbacks on the iPhone 8, 2026-09-24). Debugging steps less precisely; timing is real.
+      GCC_OPTIMIZATION_LEVEL: 3
+      SWIFT_OPTIMIZATION_LEVEL: -O
