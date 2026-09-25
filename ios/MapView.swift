@@ -1,0 +1,110 @@
+// The map: the web app's style (index.html, "Map") on MapLibre Native, so the two read the same.
+// Satellite base (the web's default), routes as a white line on a dark casing, points filled
+// "lamp" when they carry a recording and hollow when not. Published features come from the same
+// public view the web reads, with the anon key the web ships.
+import MapLibre
+import SwiftUI
+
+enum Supa {
+    static let url = "https://ujdygmcpqsbyeysggypc.supabase.co"
+    static let anon = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqZHlnbWNwcXNieWV5c2dneXBjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNDE4NDIsImV4cCI6MjEwNDYxNzg0Mn0.SJlrNKQftKxdM0G6f18e6PsRCvdhIH8fco5tW3CktwM"
+
+    /* Published features as a GeoJSON FeatureCollection, id and properties flattened the way the
+       web's `features` source has them. */
+    static func published() async throws -> [String: Any] {
+        var req = URLRequest(url: URL(string: url + "/rest/v1/public_features?select=id,kind,geometry,properties")!)
+        req.setValue(anon, forHTTPHeaderField: "apikey")
+        req.setValue("Bearer " + anon, forHTTPHeaderField: "Authorization")
+        let (data, _) = try await URLSession.shared.data(for: req)
+        let rows = (try JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        let features: [[String: Any]] = rows.map { r in
+            var p = (r["properties"] as? [String: Any]) ?? [:]
+            p["id"] = r["id"]
+            return ["type": "Feature", "geometry": r["geometry"] ?? NSNull(), "properties": p]
+        }
+        return ["type": "FeatureCollection", "features": features]
+    }
+}
+
+/* Studio tokens (Design System/Tokens.md), as the web resolves them from OKLCH. */
+enum Ink {
+    static let sunk = "#0d1310", ink = "#e3e7e4", lamp = "#bae6b1"
+}
+
+struct MapView: UIViewRepresentable {
+    let features: [String: Any]
+
+    func makeUIView(context: Context) -> MLNMapView {
+        let v = MLNMapView(frame: .zero, styleURL: styleURL())
+        v.logoView.isHidden = true                 /* the attribution stays: a condition of the tiles */
+        v.attributionButtonPosition = .bottomRight
+        v.compassViewPosition = .topRight
+        v.delegate = context.coordinator
+        return v
+    }
+
+    func updateUIView(_ v: MLNMapView, context: Context) {}
+
+    func makeCoordinator() -> Frame { Frame(bounds: bounds()) }
+
+    /* Framing needs the view's real size, which it only has once the style has loaded. */
+    final class Frame: NSObject, MLNMapViewDelegate {
+        let bounds: MLNCoordinateBounds?
+        init(bounds: MLNCoordinateBounds?) { self.bounds = bounds }
+        func mapView(_ v: MLNMapView, didFinishLoading style: MLNStyle) {
+            guard let b = bounds else { return }
+            v.setVisibleCoordinateBounds(b, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 140, right: 40), animated: false, completionHandler: nil)
+        }
+    }
+
+    /* The style, written once to a file: the web's sources and layers, features inline. */
+    private func styleURL() -> URL {
+        let style: [String: Any] = [
+            "version": 8,
+            "sources": [
+                "base-sat": ["type": "raster", "tileSize": 256, "maxzoom": 19, "attribution": "Imagery © Esri",
+                             "tiles": ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"]],
+                "features": ["type": "geojson", "data": features]
+            ],
+            "layers": [
+                ["id": "ground", "type": "background", "paint": ["background-color": Ink.sunk]],
+                ["id": "base-sat", "type": "raster", "source": "base-sat"],
+                ["id": "route-casing", "type": "line", "source": "features",
+                 "filter": ["==", ["geometry-type"], "LineString"],
+                 "paint": ["line-color": Ink.sunk, "line-opacity": 0.8, "line-width": 8],
+                 "layout": ["line-cap": "round", "line-join": "round"]],
+                ["id": "route-line", "type": "line", "source": "features",
+                 "filter": ["==", ["geometry-type"], "LineString"],
+                 "paint": ["line-color": "#ffffff", "line-width": 3],
+                 "layout": ["line-cap": "round", "line-join": "round"]],
+                ["id": "point-halo", "type": "circle", "source": "features",
+                 "filter": ["==", ["geometry-type"], "Point"],
+                 "paint": ["circle-radius": ["interpolate", ["linear"], ["zoom"],
+                                              10, ["case", ["has", "icon"], 8, 6], 13, ["case", ["has", "icon"], 17, 12]],
+                           "circle-color": Ink.sunk, "circle-opacity": 0.22, "circle-blur": 0.7]],
+                ["id": "point-dot", "type": "circle", "source": "features",
+                 "filter": ["==", ["geometry-type"], "Point"],
+                 "paint": ["circle-radius": ["interpolate", ["linear"], ["zoom"],
+                                              10, ["case", ["has", "icon"], 5.5, 3.5], 13, ["case", ["has", "icon"], 11.5, 6.5]],
+                           "circle-color": ["case", ["==", ["get", "has_audio"], true], Ink.lamp, Ink.sunk],
+                           "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 10, 1.2, 13, 2.2],
+                           "circle-stroke-color": ["case", ["==", ["get", "has_audio"], true], Ink.sunk, Ink.ink]]]
+            ]
+        ]
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("fieldscape-style.json")
+        try? JSONSerialization.data(withJSONObject: style).write(to: url)
+        return url
+    }
+
+    /* Everything published, framed. */
+    private func bounds() -> MLNCoordinateBounds? {
+        var lons: [Double] = [], lats: [Double] = []
+        func add(_ c: Any?) {
+            if let p = c as? [Double], p.count >= 2 { lons.append(p[0]); lats.append(p[1]) }
+            else if let a = c as? [Any] { a.forEach(add) }
+        }
+        for f in (features["features"] as? [[String: Any]]) ?? [] { add((f["geometry"] as? [String: Any])?["coordinates"]) }
+        guard let x0 = lons.min(), let x1 = lons.max(), let y0 = lats.min(), let y1 = lats.max() else { return nil }
+        return MLNCoordinateBounds(sw: CLLocationCoordinate2D(latitude: y0, longitude: x0), ne: CLLocationCoordinate2D(latitude: y1, longitude: x1))
+    }
+}

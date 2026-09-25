@@ -8,7 +8,7 @@
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>MinimumOSVersion</key><string>16.0</string>
+  <key>MinimumOSVersion</key><string>16.4</string>
   <key>UILaunchScreen</key><dict/>
   <key>UIDeviceFamily</key><array><integer>1</integer></array>
 </dict>

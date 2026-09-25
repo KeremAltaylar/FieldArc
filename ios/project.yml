@@ -3,19 +3,26 @@
 # simulator path.
 name: Fieldscape
 options:
-  deploymentTarget: { iOS: "16.0" }
+  deploymentTarget: { iOS: "16.4" }
+packages:
+  MapLibre:
+    url: https://github.com/maplibre/maplibre-gl-native-distribution
+    from: 6.0.0
 targets:
   Fieldscape:
     type: application
     platform: iOS
     sources:
       - App.swift
+      - MapView.swift
       - path: ../core
         excludes: [test.cpp, "tests/**", "devices/*.md", "devices/*.bundle"]
       # test recording (git-ignored; made from the Stretch point, see web/ab.html)
       - path: ../build/ab/stretch.wav
         buildPhase: resources
         optional: true
+    dependencies:
+      - package: MapLibre
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: net.keremaltaylar.fieldscape
       SWIFT_OBJC_BRIDGING_HEADER: ../core/fieldscape.h

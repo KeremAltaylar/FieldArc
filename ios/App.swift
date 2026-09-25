@@ -104,25 +104,51 @@ final class Core: ObservableObject {
     }
 }
 
+/* The map fills the screen; the sound test is a panel pulled up from the bottom (phase 5.4). */
 struct ContentView: View {
     @StateObject var core = Core()
+    @State var features: [String: Any]? = nil
+    @State var failed: String? = nil
+    @State var panel = true
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Fieldscape · stretch").font(.title2)
-            ForEach(core.params) { p in
-                let v = core.values[p.id] ?? p.min
-                if p.max == 1 && (p.key == "freeze" || p.key == "shape") {
-                    Toggle(p.key == "shape" ? "Hann window" : p.name, isOn: Binding(get: { v > 0.5 }, set: { core.set(p.id, $0 ? 1 : 0) }))
-                } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(label(p, v)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        Slider(value: Binding(get: { v }, set: { core.set(p.id, $0) }), in: p.min...p.max)
+        ZStack {
+            Color(red: 0.05, green: 0.075, blue: 0.063).ignoresSafeArea()
+            if let f = features { MapView(features: f).ignoresSafeArea() }
+            else { Text(failed ?? "Loading the map…").foregroundStyle(.secondary) }
+        }
+        .task {
+            do { features = try await Supa.published() } catch { failed = "Could not load: " + error.localizedDescription }
+        }
+        .sheet(isPresented: $panel) {
+            SoundPanel(core: core)
+                .presentationDetents([.height(90), .medium, .large])
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                .interactiveDismissDisabled()
+        }
+    }
+}
+
+struct SoundPanel: View {
+    @ObservedObject var core: Core
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Sound test").font(.title3)
+                Text(core.line).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                ForEach(core.params) { p in
+                    let v = core.values[p.id] ?? p.min
+                    if p.max == 1 && (p.key == "freeze" || p.key == "shape") {
+                        Toggle(p.key == "shape" ? "Hann window" : p.name, isOn: Binding(get: { v > 0.5 }, set: { core.set(p.id, $0 ? 1 : 0) }))
+                    } else {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(label(p, v)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            Slider(value: Binding(get: { v }, set: { core.set(p.id, $0) }), in: p.min...p.max)
+                        }
                     }
                 }
-            }
-            Toggle("Hear 3 voices", isOn: $core.three)
-            Text(core.line).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-        }.padding()
+                Toggle("Hear 3 voices", isOn: $core.three)
+            }.padding()
+        }
     }
     func label(_ p: Core.Param, _ v: Float) -> String {
         p.key == "stretch" ? String(format: "%@  %.1f×", p.name, pow(1024, v)) : String(format: "%@  %.2f %@", p.name, v, p.unit)
