@@ -1,0 +1,15 @@
+# Fieldscape media Worker (phase 1b). Not deployed; `npx wrangler dev` runs it locally.
+name = "fieldscape-media"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "fieldscape-media"
+
+# Public values (the anon key already ships in the web app). No secrets are needed.
+[vars]
+SUPABASE_URL = "https://ujdygmcpqsbyeysggypc.supabase.co"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqZHlnbWNwcXNieWV5c2dneXBjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNDE4NDIsImV4cCI6MjEwNDYxNzg0Mn0.SJlrNKQftKxdM0G6f18e6PsRCvdhIH8fco5tW3CktwM"
+ALLOW_ORIGIN = "*"   # access is decided by the token, not by cookies, so * opens nothing
