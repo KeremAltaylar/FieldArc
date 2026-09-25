@@ -51,6 +51,12 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
         loc.delegate = self
         loc.desiredAccuracy = kCLLocationAccuracyBest
         loc.distanceFilter = 2
+        /* 5.8: keep walking with the screen locked (UIBackgroundModes audio + location); the blue
+           status-bar pill tells the walker the app is still listening to where they are. */
+        loc.allowsBackgroundLocationUpdates = true
+        loc.pausesLocationUpdatesAutomatically = false
+        loc.showsBackgroundLocationIndicator = true
+        loc.activityType = .fitness
         loadParks()
     }
 

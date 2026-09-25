@@ -66,7 +66,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private val ask = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
-        if (r.values.any { it }) walk.listen() else walk.denied()
+        if (Manifest.permission.ACCESS_FINE_LOCATION !in r) return@registerForActivityResult     // only the notification was asked
+        if (r[Manifest.permission.ACCESS_FINE_LOCATION] == true || r[Manifest.permission.ACCESS_COARSE_LOCATION] == true) { walk.listen(); WalkService.start(this) }
+        else walk.denied()
     }
 
     override fun onCreate(saved: Bundle?) {
@@ -86,9 +88,16 @@ class MainActivity : ComponentActivity() {
         setContent { Screen() }
     }
 
+    override fun onDestroy() { WalkService.stop(this); super.onDestroy() }
+
     private fun locate() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) walk.listen()
-        else ask.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            walk.listen(); WalkService.start(this)                            // 5.8: on with the screen locked
+            if (android.os.Build.VERSION.SDK_INT >= 33) ask.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+        } else ask.launch(buildList {
+            add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (android.os.Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)          // the walk's notification
+        }.toTypedArray())
     }
 
     @Composable
