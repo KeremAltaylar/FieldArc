@@ -55,12 +55,20 @@ const [project, storageCfg, counts] = await Promise.all([
 ]);
 const fileLimit = storageCfg.fileSizeLimit;
 
-const [dl] = await logs(`select
+/* Supabase removed logs.all (410 Gone). Its replacement, /analytics/endpoints/logs (one `logs`
+   table, ClickHouse SQL, filter by source_name), answered "Backend error" to every query on
+   2026-09-24 and -25, so downloads are reported as unavailable rather than crashing the rest. */
+let dl = null, dlError = null;
+try {
+  [dl] = await logs(`select
     sum(safe_cast(h.content_length as int64)) total,
     sum(if(r.path like '/storage/%', safe_cast(h.content_length as int64), 0)) audio
   from edge_logs cross join unnest(metadata) m cross join unnest(m.request) r
   cross join unnest(m.response) s cross join unnest(s.headers) h
   where r.method = 'GET'`);
+} catch (e) {
+  dlError = e.message.includes("410") ? "unavailable (Supabase retired the logs API this used)" : "unavailable (" + e.message + ")";
+}
 
 const week = (counts.result || []).reduce((a, d) => ({
   rest: a.rest + (d.total_rest_requests || 0),
@@ -76,7 +84,8 @@ const out = [
   pad("database", 11) + pad(mb(s.db) + " / " + mb(LIMITS.db), 22) + pct(s.db, LIMITS.db),
   pad("files", 11) + pad(mb(s.files) + " / " + mb(LIMITS.files), 22) + pct(s.files, LIMITS.files) +
     "   " + s.n + " files, largest " + mb(s.largest) + " (per-file limit " + mb(fileLimit) + ")",
-  pad("downloads", 11) + pad(mb(day) + " last 24 h", 22) + "of which files " + mb(dayAudio) +
+  pad("downloads", 11) + (dlError ? dlError :
+    pad(mb(day) + " last 24 h", 22) + "of which files " + mb(dayAudio)) +
     " · a month allows " + mb(LIMITS.egress) + " (≈" + mb(LIMITS.egress / 30) + "/day)",
   "",
   "features   " + f.live + " live, " + f.published + " published",
