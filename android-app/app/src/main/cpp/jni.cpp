@@ -127,6 +127,11 @@ JNIEXPORT jdouble JNICALL FN(start)(JNIEnv *, jclass) {
     return E->sr;
 }
 
+/* Audio focus lost (a call, another player) or headphones unplugged: the stream pauses; it resumes
+   when focus comes back or the listener presses Resume. */
+JNIEXPORT void JNICALL FN(pause)(JNIEnv *, jclass) { if (E && E->stream) AAudioStream_requestPause(E->stream); }
+JNIEXPORT void JNICALL FN(resume)(JNIEnv *, jclass) { if (E && E->stream) AAudioStream_requestStart(E->stream); }
+
 JNIEXPORT void JNICALL FN(gain)(JNIEnv *, jclass, jint slot, jfloat g) { fs_mix_set_gain(E->mix, slot, g); }
 JNIEXPORT void JNICALL FN(lowpass)(JNIEnv *, jclass, jint slot, jfloat hz) { fs_mix_set_lowpass(E->mix, slot, hz, 350); }
 JNIEXPORT void JNICALL FN(param)(JNIEnv *, jclass, jint slot, jint i, jfloat v) { fs_set_param(E->voice[slot], i, v); }

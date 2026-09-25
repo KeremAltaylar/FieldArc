@@ -9,6 +9,8 @@ object Core {
     @JvmStatic external fun selfTestRms(): Double
     /** Starts the engine; returns its sample rate, the rate every recording is converted to. */
     @JvmStatic external fun start(): Double
+    @JvmStatic external fun pause()
+    @JvmStatic external fun resume()
     @JvmStatic external fun gain(slot: Int, g: Float)
     @JvmStatic external fun lowpass(slot: Int, hz: Float)
     @JvmStatic external fun param(slot: Int, index: Int, value: Float)

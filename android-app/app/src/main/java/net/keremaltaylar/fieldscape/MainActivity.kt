@@ -1,7 +1,13 @@
 package net.keremaltaylar.fieldscape
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
@@ -43,6 +49,21 @@ class MainActivity : ComponentActivity() {
     private lateinit var walk: Walk
     private var features by mutableStateOf<JSONObject?>(null)
     private var failed by mutableStateOf<String?>(null)
+    /** Why the sound is paused, when it is; the panel offers Resume (rulebook M-6). */
+    private var paused by mutableStateOf<String?>(null)
+    private lateinit var focus: AudioFocusRequest
+
+    /* A call or another player takes the audio: pause, and come back by ourselves when it ends.
+       Headphones pulled out: pause and wait for Resume, rather than playing out loud in the street. */
+    private val onFocus = AudioManager.OnAudioFocusChangeListener { change ->
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> { Core.pause(); if (paused == null) paused = "Another sound took over (a call or another app)." }
+            AudioManager.AUDIOFOCUS_GAIN -> if (paused?.startsWith("Another") == true) { paused = null; Core.resume() }
+        }
+    }
+    private val noisy = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) { Core.pause(); paused = "Headphones were unplugged." }
+    }
 
     private val ask = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
         if (r.values.any { it }) walk.listen() else walk.denied()
@@ -52,6 +73,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(saved)
         MapLibre.getInstance(this)
         walk = Walk(this, Core.start())
+        focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            .setOnAudioFocusChangeListener(onFocus).build()
+        getSystemService(AudioManager::class.java).requestAudioFocus(focus)
+        registerReceiver(noisy, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), RECEIVER_EXPORTED)
         Thread {
             runCatching { Supa.published() }
                 .onSuccess { f -> runOnUiThread { features = f; walk.start(f); locate() } }
@@ -76,6 +102,15 @@ class MainActivity : ComponentActivity() {
                 .navigationBarsPadding().padding(start = T.s4, end = T.s4, top = T.s2, bottom = T.s5),
                 verticalArrangement = Arrangement.spacedBy(T.s3)) {
                 Box(Modifier.align(Alignment.CenterHorizontally).size(38.dp_, 4.dp_).clip(CircleShape).background(T.hairline))
+                paused?.let { why ->
+                    Note("Paused. $why")
+                    Box(Modifier.fillMaxWidth().heightIn(min = T.target).clip(RoundedCornerShape(10.dp_)).background(T.raised)
+                        .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_))
+                        .clickable { paused = null; getSystemService(AudioManager::class.java).requestAudioFocus(focus); Core.resume() },
+                        contentAlignment = Alignment.Center) {
+                        Text("Resume", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+                    }
+                }
                 Panel(onLongPress = { developer = !developer })
                 if (developer) Text(String.format("engine: worst %.2f ms per burst of %d frames · xruns %d · out %.1f dBFS",
                     Core.worstMs(), Core.bufferFrames(), Core.xruns(), Core.outputDb()), color = T.faint,
