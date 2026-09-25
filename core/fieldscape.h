@@ -42,6 +42,8 @@ const fs_param *fs_param_info(const fs_device *d, int index);
    at the engine's sample rate. Call it from the audio thread or while stopped. Devices without a
    source ignore it. frames = 0 or samples = NULL clears it (silence). */
 void fs_set_source(fs_device *d, int channels, int frames, const float *const *samples);
+/* The same, 16-bit: half the memory, read as s / 32768 (identical to the float a 16-bit file gives). */
+void fs_set_source_i16(fs_device *d, int channels, int frames, const short *const *samples);
 
 typedef struct {
     int late_frames;        /* frames not ready when their hop began (had to finish in that call) */

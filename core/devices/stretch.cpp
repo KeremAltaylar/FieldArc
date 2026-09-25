@@ -40,7 +40,9 @@ static int window_size(int n0) {
     }
 }
 
-struct Source { const float *ch[2] = { nullptr, nullptr }; int len = 0; };
+/* A recording: float, or 16-bit (half the memory; read as s / 32768, exactly the float a 16-bit
+   file decodes to). */
+struct Source { const float *ch[2] = { nullptr, nullptr }; const int16_t *s16[2] = { nullptr, nullptr }; int len = 0; };
 
 /* What the device hands a voice at each frame. */
 struct Controls { double log_s; bool freeze; float onset, width; };
@@ -168,8 +170,17 @@ struct Voice {
                 std::fill(ai.begin() + a, ai.begin() + b, 0.0f);
                 break;
             }
-            const float *x0 = src->ch[0], *x1 = src->ch[1];
             long long idx = ((long long)pos + a) % len;
+            if (src->s16[0]) {
+                const int16_t *x0 = src->s16[0], *x1 = src->s16[1];
+                for (int k = a; k < b; k++) {
+                    ar[k] = (x0[idx] * (1.0f / 32768.0f)) * win[k];
+                    ai[k] = (x1[idx] * (1.0f / 32768.0f)) * win[k];
+                    if (++idx == len) idx = 0;
+                }
+                break;
+            }
+            const float *x0 = src->ch[0], *x1 = src->ch[1];
             for (int k = a; k < b; k++) {
                 ar[k] = x0[idx] * win[k];
                 ai[k] = x1[idx] * win[k];
@@ -349,7 +360,15 @@ struct Stretch : Device {
 
     void set_source(int channels, int frames, const float *const *s) override {
         if (channels < 1 || frames < 1 || !s) { src = Source(); return; }
+        src = Source();
         src.ch[0] = s[0]; src.ch[1] = channels > 1 ? s[1] : s[0]; src.len = frames;
+        for (auto &x : v) if (x.pos >= frames) x.pos = std::fmod(x.pos, (double)frames);
+    }
+
+    void set_source_i16(int channels, int frames, const int16_t *const *s) override {
+        if (channels < 1 || frames < 1 || !s) { src = Source(); return; }
+        src = Source();
+        src.s16[0] = s[0]; src.s16[1] = channels > 1 ? s[1] : s[0]; src.len = frames;
         for (auto &x : v) if (x.pos >= frames) x.pos = std::fmod(x.pos, (double)frames);
     }
 

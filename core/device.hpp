@@ -2,6 +2,7 @@
 #pragma once
 #include "fieldscape.h"
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 struct Device {
@@ -12,6 +13,7 @@ struct Device {
     virtual void set_param(int index, float value) = 0;
     virtual void process(int frames) = 0;
     virtual void set_source(int, int, const float *const *) {}
+    virtual void set_source_i16(int, int, const int16_t *const *) {}
     virtual void stats(fs_stats_t &) {}   /* device-specific fields; core fills timing */
 };
 

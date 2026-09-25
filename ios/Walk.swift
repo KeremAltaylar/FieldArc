@@ -29,6 +29,10 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var phase: [String: Phase] = [:] { didSet { refreshRows() } }   /* points still arriving */
     private var loaded: Set<String> = [] { didSet { refreshRows() } }
     private var releasedAt: [Int: Date] = [:]          /* slot -> when its point left (fade before reuse) */
+    /* The level each point's distance earned at the last fix. Applied again the moment its recording
+       is ready: standing still sends no fixes, and a point that finished loading must not wait for
+       you to move before it sounds (rulebook A-15). */
+    private var earned: [String: Float] = [:]
     private var parks: [(name: String, rings: [[Double]])] = []
     private var placeCheckedAt: (Double, Double)? = nil
     private let log: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("walk.log")
@@ -86,13 +90,14 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
 
         for (id, slot) in slotOf where !want.contains(id) {                /* left: fade, free after the ramp */
             core.gain(slot: slot, 0)
-            slotOf[id] = nil; loaded.remove(id); phase[id] = nil; releasedAt[slot] = Date()
+            slotOf[id] = nil; loaded.remove(id); phase[id] = nil; earned[id] = nil; releasedAt[slot] = Date()
         }
         for j in chosen {
             let p = points[j]
             if slotOf[p.id] == nil, let slot = freeSlot() { slotOf[p.id] = slot; begin(p, slot: slot) }
             guard let slot = slotOf[p.id] else { continue }
-            core.gain(slot: slot, loaded.contains(p.id) ? Float(fs_point_gain(dist[j], p.radius, p.gain)) : 0)
+            earned[p.id] = Float(fs_point_gain(dist[j], p.radius, p.gain))
+            core.gain(slot: slot, loaded.contains(p.id) ? earned[p.id]! : 0)
         }
         rows = chosen.map { j in
             let p = points[j]
@@ -158,15 +163,16 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
                 self?.phase[p.id] = .decoding
                 let decoded = try await Task.detached(priority: .userInitiated) { () -> [[Float]] in
                     var ch = try Decode.pcm(data, sampleRate: sr)
-                    /* ponytail: 3 minutes kept per voice (~69 MB stereo float) so four fit an iPhone 8;
-                       the full file needs a compact (int16) source format in the core. */
-                    let cap = Int(180 * sr)
+                    /* ponytail: 10 minutes kept per voice (~115 MB at 16-bit stereo), so four voices stay
+                       under ~460 MB on a 2 GB iPhone 8; the longest published take is 6 min 40 s. */
+                    let cap = Int(600 * sr)
                     if (ch.first?.count ?? 0) > cap { ch = ch.map { Array($0.prefix(cap)) } }
                     return ch
                 }.value
                 guard let self, self.slotOf[p.id] == slot else { return }
                 self.core.load(slot: slot, channels: decoded)
                 self.loaded.insert(p.id)
+                self.core.gain(slot: slot, self.earned[p.id] ?? 0)
                 self.phase[p.id] = nil
             } catch {
                 self?.failure = "Could not load \(p.name): \(error.localizedDescription)"

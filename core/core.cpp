@@ -72,6 +72,10 @@ void fs_process(fs_device *d, int frames) {
     if (ms > 1000.0f * frames / d->sr) d->underruns++;
 }
 
+void fs_set_source_i16(fs_device *d, int channels, int frames, const short *const *samples) {
+    d->impl->set_source_i16(channels, frames, reinterpret_cast<const int16_t *const *>(samples));
+}
+
 void fs_set_source(fs_device *d, int channels, int frames, const float *const *samples) {
     d->impl->set_source(channels, frames, samples);
 }

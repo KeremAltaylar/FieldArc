@@ -121,6 +121,27 @@ int main() {
         fs_mix_destroy(m); fs_destroy(p2);
     }
 
+    /* stretch: a 16-bit source plays bit-identically to the float source holding the same samples */
+    {
+        const int n = 48000 * 3;
+        std::vector<short> q(n); std::vector<float> fq(n);
+        unsigned r = 5;
+        for (int i = 0; i < n; i++) { r = r * 1664525u + 1013904223u; q[i] = (short)((int)(r >> 16) - 32768); fq[i] = q[i] * (1.0f / 32768.0f); }
+        const short *qs[1] = { q.data() }; const float *fs[1] = { fq.data() };
+        fs_device *a = fs_create("stretch"), *b = fs_create("stretch");
+        fs_prepare(a, SR, B); fs_prepare(b, SR, B);
+        fs_set_source_i16(a, 1, n, qs); fs_set_source(b, 1, n, fs);
+        fs_set_param(a, 0, 0.3f); fs_set_param(b, 0, 0.3f);
+        long diff = 0; double energy = 0;
+        for (int k = 0; k < 48000 * 4 / B; k++) {
+            fs_process(a, B); fs_process(b, B);
+            for (int c = 0; c < 2; c++) for (int i = 0; i < B; i++) { diff += fs_out(a, c)[i] != fs_out(b, c)[i]; energy += fs_out(a, c)[i] * fs_out(a, c)[i]; }
+        }
+        std::printf("stretch int16 vs float source: %ld differing samples (signal energy %.1f)\n", diff, energy);
+        assert(diff == 0 && energy > 1);
+        fs_destroy(a); fs_destroy(b);
+    }
+
     std::printf("core ok\n");
     return 0;
 }

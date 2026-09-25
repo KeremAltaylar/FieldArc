@@ -33,9 +33,9 @@ final class Core: ObservableObject {
         let lock: UnsafeMutablePointer<os_unfair_lock> = {
             let p = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1); p.initialize(to: os_unfair_lock()); return p
         }()
-        var pending: [(slot: Int, ptrs: [UnsafeMutablePointer<Float>], consts: [UnsafePointer<Float>?], frames: Int)] = []
-        var retired: [UnsafeMutablePointer<Float>] = []
-        var live: [[UnsafeMutablePointer<Float>]] = Array(repeating: [], count: Core.slots)
+        var pending: [(slot: Int, ptrs: [UnsafeMutablePointer<Int16>], consts: [UnsafePointer<Int16>?], frames: Int)] = []
+        var retired: [UnsafeMutablePointer<Int16>] = []
+        var live: [[UnsafeMutablePointer<Int16>]] = Array(repeating: [], count: Core.slots)
         init() { pending.reserveCapacity(16); retired.reserveCapacity(64) }
     }
     private let handoff = Handoff()
@@ -79,7 +79,7 @@ final class Core: ObservableObject {
             if os_unfair_lock_trylock(h.lock) {
                 for p in h.pending {
                     p.consts.withUnsafeBufferPointer {
-                        fs_set_source(vv[p.slot], Int32(p.consts.count), Int32(p.frames), $0.baseAddress)
+                        fs_set_source_i16(vv[p.slot], Int32(p.consts.count), Int32(p.frames), $0.baseAddress)
                     }
                     h.retired += h.live[p.slot]
                     h.live[p.slot] = p.ptrs
@@ -135,15 +135,17 @@ final class Core: ObservableObject {
         if !engine.isRunning { try? engine.start() }
     }
 
-    /* A decoded recording for a slot. Copied into memory the audio thread will own. */
+    /* A decoded recording for a slot, stored 16-bit for the audio thread: half the memory of float,
+       so a whole recording fits (a 6 min 40 s stereo take is 77 MB). The rounding sits near
+       -96 dBFS, below anything a field recording holds. */
     func load(slot: Int, channels: [[Float]]) {
         let n = channels.first?.count ?? 0
-        let ptrs: [UnsafeMutablePointer<Float>] = channels.prefix(2).map { ch in
-            let p = UnsafeMutablePointer<Float>.allocate(capacity: max(n, 1))
-            ch.withUnsafeBufferPointer { p.update(from: $0.baseAddress!, count: n) }
+        let ptrs: [UnsafeMutablePointer<Int16>] = channels.prefix(2).map { ch in
+            let p = UnsafeMutablePointer<Int16>.allocate(capacity: max(n, 1))
+            for i in 0..<n { p[i] = Int16(max(-32768, min(32767, (ch[i] * 32768).rounded()))) }
             return p
         }
-        let consts = ptrs.map { UnsafePointer($0) as UnsafePointer<Float>? }
+        let consts = ptrs.map { UnsafePointer($0) as UnsafePointer<Int16>? }
         os_unfair_lock_lock(handoff.lock)
         handoff.pending.append((slot, ptrs, consts, n))
         os_unfair_lock_unlock(handoff.lock)
@@ -178,6 +180,10 @@ final class Core: ObservableObject {
         var gr: Float = 0, over: Int64 = 0
         fs_mix_stats(mix, &gr, &over)
         let w = worstMs.pointee
+        /* The output level, twice a second, readable from outside the app (tests read it while the
+           walker stands still, when no fix - and so no walk log line - arrives). */
+        try? String(format: "%.1f", outputDb).write(to: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("level.txt"), atomically: true, encoding: .utf8)
         line = String(format: "4 voices + mix: worst %.2f ms of %.1f ms (%.0f%%) · late %d · underruns %d · limiter %.1f dB · over %lld",
                       w, bufferMs, w / bufferMs * 100, late, under, gr, over)
     }
