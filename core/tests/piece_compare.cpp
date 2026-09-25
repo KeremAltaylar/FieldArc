@@ -2,7 +2,7 @@
    (start to end of the route over the render, synth level 1) and the same zones, written out as a
    WAV and a notes list for core/tests/piece_compare.py to hold against the web's.
 
-     piece_compare <patch.json|-> <seconds> <draws> <out-prefix>        -> <out-prefix>.cpp.wav, .cpp-notes.txt */
+     piece_compare <patch.json|-> <seconds> <draws> <out-prefix> [rhythm.json source.wav hits|grains]        -> <out-prefix>.cpp.wav, .cpp-notes.txt */
 #include "../fieldscape.h"
 #include <cmath>
 #include <cstdio>
@@ -20,11 +20,29 @@ static std::string slurp(const char *path) {
     return s;
 }
 
+static short *read_wav(const char *path, int &ch, long long &frames) {   /* 16-bit PCM */
+    std::string s = slurp(path);
+    if (s.size() < 44 || s.compare(0, 4, "RIFF")) return nullptr;
+    size_t p = 12; ch = 1;
+    while (p + 8 <= s.size()) {
+        std::string id = s.substr(p, 4); unsigned len; std::memcpy(&len, &s[p + 4], 4);
+        if (id == "fmt ") { unsigned short c; std::memcpy(&c, &s[p + 10], 2); ch = c; }
+        if (id == "data") {
+            frames = len / (2 * ch);
+            short *out = fs_alloc_i16((size_t)frames * ch);
+            std::memcpy(out, &s[p + 8], (size_t)frames * ch * 2);
+            return out;
+        }
+        p += 8 + len + (len & 1);
+    }
+    return nullptr;
+}
+
 struct Draws { std::vector<double> v; size_t i = 0; };
 static double next_draw(void *p) { Draws *d = (Draws *)p; return d->i < d->v.size() ? d->v[d->i++] : 0.5; }
 static FILE *notes;
 static void on_note(void *, int role, double f, double dur, double t, double vel) {
-    if (role <= 3) std::fprintf(notes, "%d %.12g %.12g %.12g %.12g\n", role, f, dur, t, vel);
+    if (role <= 3 || role >= 10) std::fprintf(notes, "%d %.12g %.12g %.12g %.12g\n", role, f, dur, t, vel);
 }
 
 int main(int argc, char **argv) {
@@ -45,6 +63,17 @@ int main(int argc, char **argv) {
     fs_piece_test_walk(d, seconds);
     int r = fs_piece_add_route(d, patch.c_str());
     fs_piece_walk(d, r, 0, 0);
+    if (argc >= 8) {                  /* one rhythm point, as piece_ref.mjs sets it up */
+        std::string rj = slurp(argv[5]);
+        int grains = !std::strcmp(argv[7], "grains");
+        int h = fs_piece_rhythm_add(d, rj.c_str(), grains);
+        for (int slot = 0; slot < (grains ? 1 : 4); slot++) {
+            int ch = 0; long long frames = 0;
+            short *buf = read_wav(argv[6], ch, frames);
+            if (buf) fs_piece_rhythm_source(d, h, slot, ch, frames, buf);
+        }
+        fs_piece_rhythm_gain(d, h, 0.6f);
+    }
     long long total = (long long)(seconds * SR);
     std::vector<short> pcm(total * 2);
     double next_zone = 5.1; int zi = 0;

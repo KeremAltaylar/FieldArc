@@ -5,7 +5,11 @@
    of the route to the end, synth level 1, a zone every 20 s). Math.random is a fixed list of draws
    while the step functions run, the same list the C++ reads (core/tests/piece_compare.py).
 
-     node core/tests/piece_ref.mjs <patch.json|-> <seconds> <out-prefix>
+     node core/tests/piece_ref.mjs <patch.json|-> <seconds> <out-prefix> [rhythm.json source.wav hits|grains]
+
+   With a rhythm point: one point of that rhythm, every slot (hits) or the recording (grains) read
+   from source.wav, at gain 0.6 x its own; its hits and grains are listed with the notes (roles 10-13
+   one per slot: rate, volume dB, time; role 20 per grain: rate, offset, time).
 
    Writes <out-prefix>.web.wav (the synth bus, before the limiter), <out-prefix>.draws (the random
    list) and <out-prefix>.notes.txt (every note the steps played). The room is Freeverb, as in the
@@ -57,6 +61,11 @@ const code = [
   fn("midiToFreq"), v("harmony"), fn("chordIndexFor"), fn("chordRoot"), fn("chordQuality"), fn("chordTones"), fn("leadTo"),
   v("MAX_DELAY_S"), fn("delaySeconds"), fn("divSeconds"),
   fn("applyPatchToVoice"), fn("applySynths"), fn("applyDecayTo"), fn("applyRevDecay"), fn("applySectRhythm"),
+  v("HIT_SLOTS"), fn("euclid"), fn("rotated"), fn("metricWeight"), fn("defaultRhythm"), fn("defaultGrains"), fn("rhythmOf"),
+  fn("gcd"), v("RHYTHM_BAND"), v("SENTENCE_VARIATIONS"), fn("oneComboSet"), fn("buildSentenceSet"), fn("advanceSentence"),
+  fn("buildRhythmFx"), fn("applyRhythmFx"), fn("buildHitFx"), fn("applyHitFx"), v("MAX_STRETCH_HIT_S"), v("STRETCH_STOP_FADE_S"),
+  fn("applyHitStretch"), fn("stretchParams"), fn("applyStretch"), fn("ensureRhythm"), fn("variedGrains"), fn("grainEnvelope"),
+  fn("fireGrains"), fn("rhythmStep"),
 ].join("\n");
 
 /* the draws: a plain LCG, written out so the C++ reads the very same doubles */
@@ -68,6 +77,9 @@ mkdirSync(dirname(resolve(prefix)), { recursive: true });
 writeFileSync(prefix + ".draws", Buffer.from(draws.buffer));
 
 const patch = patchArg === "-" ? {} : JSON.parse(readFileSync(patchArg, "utf8"));
+const [rhythmArg, wavArg, modeArg] = process.argv.slice(5);
+const rhythm = rhythmArg ? JSON.parse(readFileSync(rhythmArg, "utf8")) : null;
+const wav64 = wavArg ? readFileSync(wavArg).toString("base64") : "";
 const tone = resolve("build/piece/Tone.js");
 if (!existsSync(tone)) throw new Error("build/piece/Tone.js missing (tone 15.5.42 build/Tone.js)");
 
@@ -93,8 +105,15 @@ const page = `<!doctype html><meta charset="utf-8"><pre id="out">running</pre>
       var richAudio = () => true, drawProgSegments = () => {}, markProgression = () => {}, save = () => {}, visible = () => [];
       var localCharacter = () => ({ centroid: 2000, flatness: 0.3, onsets: 1, n: 0 });
       var setInterval = (f, ms) => transport.scheduleRepeat(() => f(), ms / 1000);
+      var setTimeout0 = window.setTimeout.bind(window);
       var setTimeout = () => 0;           /* offline renders faster than the wall clock: keep the one-shots */
-      var clearInterval = () => {}, applyRhythmFx = () => {}, rhythmOf = () => ({}), feature = () => null, applyHitFx = () => {};
+      var clearInterval = () => {};
+      const RHYTHM = ${JSON.stringify(rhythm)}, MODE = ${JSON.stringify(modeArg || "")};
+      const FEATURE = RHYTHM && { properties: { id: "r", rhythm: RHYTHM, audio_mode: MODE, sound: { radius: 140, gain: 0.9 } } };
+      var feature = (id) => (id === "r" ? FEATURE : null);
+      var remotePath = () => "x", remoteHitPath = () => "x";
+      const WAV = "${wav64}";
+      var audioBlob = () => fetch("data:audio/wav;base64," + WAV).then((r) => r.blob());
       ${code}
       /* the port's room: Freeverb (see makeRoom's cheap branch) with the rich chain around it */
       makeRoom = function (Tone, decay) { return new Tone.Freeverb({ roomSize: roomSize(decay), dampening: 3000, wet: 0 }); };
@@ -107,6 +126,7 @@ const page = `<!doctype html><meta charset="utf-8"><pre id="out">running</pre>
       pacer = { patch: patchOf({ properties: {} }), t: 0, world: true, zones: [] };
       transport.bpm.value = pacer.patch.tempo;
       bed.voice = buildVoice(Tone, pacer.patch);
+      bed.rfx = buildRhythmFx(Tone, pacer.patch); applyRhythmFx(pacer.patch);
       /* the first route arrives at once (worldSwap with nothing running): take() */
       pacer.patch = P; applyPatchToVoice(P);
       harmony.idx = null; harmony.chord = null; harmony.tones = null; sect.idx = null;
@@ -124,11 +144,30 @@ const page = `<!doctype html><meta charset="utf-8"><pre id="out">running</pre>
       };
       wrap(bed.voice.synth.bass, "synth", 0); wrap(bed.voice.synth.top, "synth", 1);
       wrap(bed.voice.sect, "synth", 2); wrap(bed.voice.v3.holder, "synth", 3);
-      const det_ = (f) => (time) => { pacer.t = Math.min(1, transport.seconds / SECONDS); Math.random = det; try { f(time); } finally { Math.random = realRandom; } };
+      const det_ = (f) => (time) => { pacer.t = Math.min(1, time / SECONDS); Math.random = det; try { f(time); } finally { Math.random = realRandom; } };
       transport.scheduleRepeat(det_(voiceStep), "8n");
       transport.scheduleRepeat(det_(harmonyBar), "1m");
       transport.scheduleRepeat(det_(sectorStep), SECT_GRID);
-      transport.scheduleRepeat(() => {}, SECT_GRID);            /* rhythmStep: no rhythm points here */
+      if (FEATURE) {
+        const R = ensureRhythm({ id: "r", mode: MODE });
+        const want = MODE === "grains" ? 1 : 4;
+        for (let i = 0; i < 400 && R.ready < want; i++) await new Promise((r) => setTimeout0(r, 25));
+        if (R.ready < want) throw new Error("rhythm buffers did not load: " + R.ready);
+        R.gain.gain.value = 0.6 * (rhythmOf(FEATURE).gain);
+        HIT_SLOTS.forEach((slot, k) => {
+          const pl = R.players[slot]; if (!pl) return;
+          const f = pl.start.bind(pl);
+          pl.start = function (t) { NOTES.push([10 + k, pl.playbackRate, pl.volume.value, t, 0]); return f(t); };
+        });
+        if (MODE === "grains") {
+          const f = Tone.ToneBufferSource.prototype.start;
+          /* offline, Tone runs every timer before any audio renders, so fireGrains' onended dispose
+             would disconnect each grain before it sounds; live it runs after playback */
+          Tone.ToneBufferSource.prototype.dispose = function () { return this; };
+          Tone.ToneBufferSource.prototype.start = function (at, off, dur) { NOTES.push([20, this.playbackRate.value, off, at, 0]); return f.call(this, at, off, dur); };
+        }
+      }
+      transport.scheduleRepeat(det_(rhythmStep), SECT_GRID);
       transport.scheduleRepeat(det_(thirdStep), SECT_GRID);
       for (let t = 5.1; t < SECONDS; t += 20) {
         const icon = Math.floor(t / 20) % 2 ? "water" : "flower";

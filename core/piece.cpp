@@ -534,6 +534,7 @@ struct Piece : Device {
     int sector = -1;
     double centroid = 2000, onsets = 1;
     double bpm = 72, next_tick = 0; long long ticks = 0;
+    double tick_base_t = 0; long long tick_base_k = 0; double tick_bpm = 72;   /* ticks from an index, as Tone's tick->seconds: no drift */
     std::string sect_div = "4n.";
     struct { int idx = -1, chord = -1; bool held = false; bool have_bass = false, have_top = false; int bass = 0, top = 0, topDir = 0; int tones[8]; int ntones = -1; } H;
     struct { bool have_last = false, have_prev2 = false; int last = 0, prev2 = 0, restRun = 0, prevInt = 0, phrase = 0; long tick = 0; } C;
@@ -1016,6 +1017,7 @@ struct Piece : Device {
             if (!gv) continue;                  /* ponytail: 192 grains at once per point */
             double w = lvl * (1 - 0.35 * ((double)i / std::max(1, n)));
             *gv = GrainV{ true, off * sr, rate, at, aS, dS, hold, sus, w, grainSec };
+            if (on_note) on_note(note_ctx, 20, rate, off, at, 0);
         }
     }
     static double stretch_rate(double a) { a = a < 0 ? 0 : (a > 1 ? 1 : a); return 1 - a * 0.85; }
@@ -1055,6 +1057,7 @@ struct Piece : Device {
                 double accent = r.idiom * metric_weight((int)((R.tick - 1) % 16), 16) * 4;
                 double vol = 20 * std::log10(std::max(0.02, cfg.gain)) + (rnd() - 0.5) * 1.5 + accent;
                 h.vol = (float)db_to_gain(vol);
+                if (on_note) on_note(note_ctx, 10 + s, rate, vol, time, 0);
                 /* Player.start: the one playing stops with its 20 ms fade; all take the new rate */
                 for (auto &pv : h.pv) if (pv.on) { pv.rate = rate; if (pv.stop > time) pv.stop = time; }
                 PlayV *nv = &h.pv[0];
@@ -1318,7 +1321,11 @@ struct Piece : Device {
             double t0 = (double)frame / sr, te = (double)(frame + n) / sr;
             take_inbox(t0);
             if (pending >= 0 && t0 >= pending_at) take(t0);
-            while (next_tick < te) { tick(next_tick); next_tick += 60.0 / bpm / 4; }
+            while (next_tick < te) {
+                tick(next_tick);
+                if (bpm != tick_bpm) { tick_base_t = next_tick; tick_base_k = ticks - 1; tick_bpm = bpm; }
+                next_tick = tick_base_t + (double)(ticks - tick_base_k) * 60.0 / tick_bpm / 4;
+            }
             render(L + done, R + done, n, t0);
             frame += n; done += n;
         }
