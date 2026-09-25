@@ -37,8 +37,9 @@ struct MapView: UIViewRepresentable {
     func makeUIView(context: Context) -> MLNMapView {
         let v = MLNMapView(frame: .zero, styleURL: styleURL())
         v.logoView.isHidden = true                 /* the attribution stays: a condition of the tiles */
-        v.attributionButtonPosition = .bottomRight
+        v.attributionButtonPosition = .topLeft      /* above the walk panel, never under it */
         v.compassViewPosition = .topRight
+        v.attributionButton.tintColor = UIColor(T.faint)
         v.delegate = context.coordinator
         v.showsUserLocation = true
         return v
@@ -52,9 +53,17 @@ struct MapView: UIViewRepresentable {
     final class Frame: NSObject, MLNMapViewDelegate {
         let bounds: MLNCoordinateBounds?
         init(bounds: MLNCoordinateBounds?) { self.bounds = bounds }
+        private var centred = false
         func mapView(_ v: MLNMapView, didFinishLoading style: MLNStyle) {
-            guard let b = bounds else { return }
+            guard let b = bounds, !centred else { return }
             v.setVisibleCoordinateBounds(b, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 140, right: 40), animated: false, completionHandler: nil)
+        }
+        /* On a walk the map is about where you are: the first fix brings it to street level on you,
+           once; after that it is yours to pan. */
+        func mapView(_ v: MLNMapView, didUpdate u: MLNUserLocation?) {
+            guard !centred, let c = u?.location?.coordinate, CLLocationCoordinate2DIsValid(c) else { return }
+            centred = true
+            v.setCenter(c, zoomLevel: 15.5, animated: true)
         }
     }
 

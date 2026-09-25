@@ -151,65 +151,46 @@ final class Core: ObservableObject {
     }
 }
 
-/* The map fills the screen; the sound test is a panel pulled up from the bottom (phase 5.4). */
+/* The map fills the screen; the walk panel lies over its foot and hugs its content (C-10), so the
+   map keeps whatever height the panel gives back. A long-press on the place name opens Developer. */
 struct ContentView: View {
     @StateObject var core: Core
     @StateObject var walk: Walk
+    @State var features: [String: Any]? = nil
+    @State var failed: String? = nil
+    @State var developer = false
     init() {
         let c = Core()
         _core = StateObject(wrappedValue: c)
         _walk = StateObject(wrappedValue: Walk(core: c))
     }
-    @State var features: [String: Any]? = nil
-    @State var failed: String? = nil
-    @State var panel = true
     var body: some View {
-        ZStack {
-            Color(red: 0.05, green: 0.075, blue: 0.063).ignoresSafeArea()
+        ZStack(alignment: .bottom) {
+            T.ground.ignoresSafeArea()
             if let f = features { MapView(features: f).ignoresSafeArea() }
-            else { Text(failed ?? "Loading the map…").foregroundStyle(.secondary) }
+            else { Text(failed ?? "Loading the map…").font(T.body(T.sm)).foregroundStyle(T.dim).frame(maxHeight: .infinity) }
+            VStack(alignment: .leading, spacing: T.s5) {
+                Capsule().fill(T.hairline).frame(width: 38, height: 4).frame(maxWidth: .infinity)
+                WalkPanel(walk: walk, core: core)
+                    .contentShape(Rectangle())
+                    .onLongPressGesture { withAnimation(.easeOut(duration: 0.18)) { developer.toggle() } }
+                if developer {
+                    ScrollView { DeveloperPanel(core: core, open: true) }.frame(maxHeight: 360)
+                }
+            }
+            .padding(.horizontal, T.s4).padding(.top, T.s2).padding(.bottom, T.s5)
+            .background { UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20).fill(T.panel).ignoresSafeArea(edges: .bottom) }
+            .overlay(alignment: .top) { Rectangle().fill(T.hairline).frame(height: 1).padding(.horizontal, 20) }
+            .animation(.easeOut(duration: 0.18), value: walk.rows)
         }
+        .preferredColorScheme(.dark)
         .task {
             do {
                 let f = try await Supa.published()
                 features = f
                 walk.start(features: f)
-            } catch { failed = "Could not load: " + error.localizedDescription }
+            } catch { failed = "The map could not load: " + error.localizedDescription + ". Check the connection and reopen the app." }
         }
-        .sheet(isPresented: $panel) {
-            SoundPanel(core: core, walk: walk)
-                .presentationDetents([.height(90), .medium, .large])
-                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-                .interactiveDismissDisabled()
-        }
-    }
-}
-
-struct SoundPanel: View {
-    @ObservedObject var core: Core
-    @ObservedObject var walk: Walk
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Text(walk.status).font(.callout)
-                Toggle("Sound test (bundled recording)", isOn: $core.test)
-                Text(core.line).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                ForEach(core.params) { p in
-                    let v = core.values[p.id] ?? p.min
-                    if p.max == 1 && (p.key == "freeze" || p.key == "shape") {
-                        Toggle(p.key == "shape" ? "Hann window" : p.name, isOn: Binding(get: { v > 0.5 }, set: { core.set(p.id, $0 ? 1 : 0) }))
-                    } else {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(label(p, v)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            Slider(value: Binding(get: { v }, set: { core.set(p.id, $0) }), in: p.min...p.max)
-                        }
-                    }
-                }
-            }.padding()
-        }
-    }
-    func label(_ p: Core.Param, _ v: Float) -> String {
-        p.key == "stretch" ? String(format: "%@  %.1f×", p.name, pow(1024, v)) : String(format: "%@  %.2f %@", p.name, v, p.unit)
     }
 }
 

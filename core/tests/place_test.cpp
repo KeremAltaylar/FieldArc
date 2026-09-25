@@ -42,6 +42,7 @@ int main(int argc, char **argv) {
     std::vector<fs_zone_state> zones;
     std::vector<double> dist;
     double wlon = 0, wlat = 0, now = 0, margin = 0; int current = -1;
+    std::vector<std::vector<std::vector<double>>> places;   /* place -> outer rings -> lon/lat */
     std::string line;
     while (std::getline(in, line)) {
         std::istringstream s(line);
@@ -54,6 +55,15 @@ int main(int argc, char **argv) {
         } else if (k == "P") {
             Pt p; p.lon = num(s); p.lat = num(s); p.radius = num(s); p.zoneR = num(s); p.gain = num(s); p.bed = (unsigned char)num(s);
             pts.push_back(p); zones.push_back({ 0, -1e12 });
+        } else if (k == "L") {
+            int np = (int)num(s); std::vector<std::vector<double>> rings(np);
+            for (auto &r : rings) { int n = (int)num(s); r.resize(2 * n); for (auto &v : r) v = num(s); }
+            places.push_back(rings);
+        } else if (k == "A") {
+            double lon = num(s), lat = num(s); int want = (int)num(s), got = -1;
+            for (size_t i = 0; i < places.size() && got < 0; i++)
+                for (auto &r : places[i]) if (fs_point_in_ring(lon, lat, r.data(), (int)r.size() / 2)) { got = (int)i; break; }
+            same("place at", got, want);
         } else if (k == "W") {
             wlon = num(s); wlat = num(s); now = num(s); margin = num(s); current = (int)num(s);
             dist.assign(pts.size(), 0);

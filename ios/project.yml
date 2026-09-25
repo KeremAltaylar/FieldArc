@@ -18,6 +18,9 @@ targets:
       - Decode.swift
       - Walk.swift
       - Theme.swift
+      - WalkPanel.swift
+      - path: ../places.geojson
+        buildPhase: resources
       - path: Fonts
         buildPhase: resources
       - path: ../core

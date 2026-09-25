@@ -110,6 +110,21 @@ for (let walk = 0; walk < 6; walk++) {
     out.push(`E pick1 ${rhy.length} ${rhy.join(" ")}`.trim());
   }
 }
+/* placeAt over places.geojson: the park underfoot, first match in file order (index.html ~6946). */
+const places = JSON.parse(readFileSync("places.geojson", "utf8")).features;
+const placeAt = new Function("places", src("pointInRing") + src("placeAt") + "; return placeAt;")(places);
+places.forEach((p) => out.push(`L ${p.geometry.coordinates.length} ` + p.geometry.coordinates.map((poly) =>
+  poly[0].length + " " + poly[0].map((c) => f(c[0]) + " " + f(c[1])).join(" ")).join(" ")));
+let W = 180, E = -180, S = 90, N = -90;
+places.forEach((p) => p.geometry.coordinates.forEach((poly) => poly[0].forEach((c) => {
+  W = Math.min(W, c[0]); E = Math.max(E, c[0]); S = Math.min(S, c[1]); N = Math.max(N, c[1]); })));
+let placeHits = 0;
+for (let i = 0; i < 2000; i++) {
+  const pos = [W + (E - W) * rand(), S + (N - S) * rand()], hit = placeAt(pos);
+  if (hit) { placeHits++; }
+  out.push(`A ${f(pos[0])} ${f(pos[1])} ${hit ? places.indexOf(hit) : -1}`);
+}
+console.log(`placeAt: 2000 positions, ${placeHits} inside a park`);
 mkdirSync("build/place", { recursive: true });
 writeFileSync("build/place/cases.txt", out.join("\n") + "\n");
 console.log(`${routes.length} routes (${features.filter((x) => x.kind === "route").length} published), ${points.length} points (${features.filter((x) => x.kind === "point").length} published), ${steps} steps`);

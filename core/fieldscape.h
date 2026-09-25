@@ -95,6 +95,7 @@ int fs_nearest_route(const fs_route *const *routes, int n, double lon, double la
 double fs_walk_level(double dist, double from, double leash);
 double fs_point_proximity(double dist, double radius);
 double fs_point_gain(double dist, double radius, double gain);
+int fs_point_in_ring(double lon, double lat, const double *ring, int n);       /* pointInRing / placeAt */
 int fs_zone_step(fs_zone_state *z, double dist, double radius, double now_ms, double margin, double cooldown_ms);
 int fs_pick_voices(const double *dist, const double *radius, const unsigned char *eligible, int n,
                    int max_voices, int radius_first, int *out);

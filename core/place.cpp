@@ -117,6 +117,16 @@ int fs_zone_step(fs_zone_state *z, double dist, double radius, double now_ms, do
     return 0;
 }
 
+/* pointInRing: the even-odd ray cast placeAt uses to find the park underfoot. */
+int fs_point_in_ring(double lon, double lat, const double *ring, int n) {
+    int c = 0;
+    for (int k = 0, j = n - 1; k < n; j = k++) {
+        const double kx = ring[2 * k], ky = ring[2 * k + 1], jx = ring[2 * j], jy = ring[2 * j + 1];
+        if ((ky > lat) != (jy > lat) && lon < (jx - kx) * (lat - ky) / (jy - ky) + kx) c = !c;
+    }
+    return c;
+}
+
 /* Which points sound: eligible ones, nearest first, at most max_voices, within their radius.
    radius_first = 0 is the web bed's order (nearest max_voices, then drop those outside their
    radius); 1 is the rhythm order (drop first, then nearest max_voices). Writes indices into out,
