@@ -213,7 +213,7 @@ struct ContentView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             T.ground.ignoresSafeArea()
-            if let f = features { MapView(features: f).ignoresSafeArea() }
+            if let f = features { MapView(features: f, walk: walk).ignoresSafeArea() }
             else { Text(failed ?? "Loading the map…").font(T.body(T.sm)).foregroundStyle(T.dim).frame(maxHeight: .infinity) }
             VStack(alignment: .leading, spacing: T.s5) {
                 Capsule().fill(T.hairline).frame(width: 38, height: 4).frame(maxWidth: .infinity)

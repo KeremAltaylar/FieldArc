@@ -138,6 +138,7 @@ class MainActivity : ComponentActivity() {
             when (mode) {
                 is Walk.Mode.Live -> Chip(String.format("±%.0f m", mode.accuracy))
                 is Walk.Mode.Holding -> Chip(String.format("±%.0f m · HOLDING", mode.accuracy))
+                Walk.Mode.ByHand -> Chip("BY HAND")
                 else -> {}
             }
         }
@@ -152,7 +153,7 @@ class MainActivity : ComponentActivity() {
                 }
                 Note("Settings → Apps → Fieldscape → Permissions → Location → Allow only while using the app")
             }
-            Walk.Mode.Waiting -> Note("Finding where you are…")
+            Walk.Mode.Waiting -> Note("Finding where you are… Or tap the map to listen from there.")
             else -> Hearing()
         }
         walk.failure?.let { Note(it) }
@@ -176,7 +177,7 @@ class MainActivity : ComponentActivity() {
                 append("The nearest recording is ")
                 withStyle(SpanStyle(color = T.ink)) { append(n.name) }
                 append(", ")
-                withStyle(SpanStyle(fontFamily = T.mono)) { append(String.format("%.0f m", n.dist)) }
+                withStyle(SpanStyle(fontFamily = T.mono)) { append(if (n.dist < 1000) String.format("%.0f m", n.dist) else String.format("%.1f km", n.dist / 1000)) }
                 append(" ${n.direction}.")
             }, color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
             else Note("No recordings are published yet.")
@@ -188,6 +189,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (rows.any { it.phase is Walk.Phase.Downloading }) Note("First time here: each recording downloads once, then plays offline.")
+        }
+        if (walk.mode == Walk.Mode.ByHand) {
+            Note("Listening from where you tapped. Tap again to walk on.")
+            Box(Modifier.fillMaxWidth().heightIn(min = T.target).clip(RoundedCornerShape(10.dp_)).background(T.raised)
+                .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_)).clickable { walk.useLocation() },
+                contentAlignment = Alignment.Center) {
+                Text("Use my location", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+            }
         }
         if (walk.mode is Walk.Mode.Holding) Note("GPS is too rough here, so the sound holds where you last were until the fix is better than 40 m.")
     }
@@ -230,6 +239,8 @@ class MainActivity : ComponentActivity() {
                     map.uiSettings.isLogoEnabled = false
                     map.uiSettings.attributionGravity = android.view.Gravity.TOP or android.view.Gravity.START
                     map.uiSettings.setAttributionTintColor(android.graphics.Color.rgb(0x9c, 0xa4, 0x9d))   // T.faint
+                    /* walking by hand: a tap puts the walker there (tap again to walk on) */
+                    map.addOnMapClickListener { ll -> walk.walkBy(ll.longitude, ll.latitude); true }
                     map.setStyle(Style.Builder().fromJson(styleJson(fc))) { style ->
                         state.style = style
                         bounds(fc)?.let { map.moveCamera(CameraUpdateFactory.newLatLngBounds(it, 80)) }

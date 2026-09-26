@@ -280,7 +280,7 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
     }
     /* what the screen shows */
     int taken = fs_piece_route(e->piece);
-    e->route_name = taken >= 0 && taken < (int)e->route_names.size() ? e->route_names[taken] : "";
+    e->route_name = taken >= 0 && taken < (int)e->route_names.size() && r >= 0 && proj.dist <= FS_GPS_LEASH ? e->route_names[taken] : "";   /* only while audible */
     std::string rows;
     for (int i = 0; i < k; i++) {
         const Point &p = e->points[picked[i]];

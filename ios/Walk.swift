@@ -15,7 +15,9 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     enum Phase: Equatable { case playing, downloading(fraction: Double, bytes: Int64), decoding }
     struct Row: Identifiable, Equatable { let id: String, name: String; let level: Double, dist: Double; let phase: Phase }
-    enum Mode: Equatable { case waiting, denied, live(accuracy: Double), holding(accuracy: Double) }
+    /* byHand: the walker placed on the map by a tap or a drag (the web's draggable walker), for
+       listening to a place from anywhere; GPS fixes are ignored until "Use my location". */
+    enum Mode: Equatable { case waiting, denied, live(accuracy: Double), holding(accuracy: Double), byHand }
 
     @Published var mode = Mode.waiting
     @Published var rows: [Row] = []
@@ -25,6 +27,8 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     /* The route whose patch is playing, and the rhythm points sounding (the piece, RouteSound). */
     @Published var route: String? = nil
     @Published var rhythms: [String] = []
+    /* where the walker is, for the map's walker dot */
+    @Published var here: CLLocationCoordinate2D? = nil
 
     private let core: Core
     private let sound: RouteSound
@@ -89,14 +93,26 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
-        guard let l = locs.last, l.horizontalAccuracy >= 0 else { return }
+        guard let l = locs.last, l.horizontalAccuracy >= 0, mode != .byHand else { return }
         if l.horizontalAccuracy > Double(FS_GPS_ACC_MAX) { mode = .holding(accuracy: l.horizontalAccuracy); return }
         mode = .live(accuracy: l.horizontalAccuracy)
         step(lon: l.coordinate.longitude, lat: l.coordinate.latitude, acc: l.horizontalAccuracy)
     }
 
+    /* The walker put down on the map by hand. */
+    func walkBy(lon: Double, lat: Double) {
+        mode = .byHand
+        step(lon: lon, lat: lat, acc: 0)
+    }
+    /* Back to the phone's own position. */
+    func useLocation() {
+        mode = .waiting
+        loc.stopUpdatingLocation(); loc.startUpdatingLocation()
+    }
+
     /* One position through the place layer. */
     func step(lon: Double, lat: Double, acc: Double) {
+        here = CLLocationCoordinate2D(latitude: lat, longitude: lon)
         let n = points.count
         var dist = points.map { fs_geo_distance(lon, lat, $0.lon, $0.lat) }
         var radius = points.map { $0.radius }

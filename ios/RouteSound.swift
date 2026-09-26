@@ -81,7 +81,8 @@ final class RouteSound {
         let r = fs_nearest_route(routes, Int32(routes.count), lon, lat, fs_piece_route(piece), fs_sections_hold(sections), &proj)
         fs_piece_walk(piece, r, proj.t, r >= 0 ? proj.dist : .infinity)
         let taken = Int(fs_piece_route(piece))
-        routeName = taken >= 0 && taken < routeNames.count ? routeNames[taken] : nil
+        /* named only while it can be heard: within the leash */
+        routeName = taken >= 0 && taken < routeNames.count && r >= 0 && proj.dist <= Double(FS_GPS_LEASH) ? routeNames[taken] : nil
 
         /* the section underfoot (sectorUpdate) */
         if let s = sections {

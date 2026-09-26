@@ -23,8 +23,8 @@ struct WalkPanel: View {
             }
             switch walk.mode {
             case .denied: denied
-            case .waiting: note(Text("Finding where you are…"))
-            case .live, .holding: hearing
+            case .waiting: note(Text("Finding where you are… Or tap the map to listen from there."))
+            case .live, .holding, .byHand: hearing
             }
             if let f = walk.failure { note(Text(f)) }
         }
@@ -38,6 +38,7 @@ struct WalkPanel: View {
             switch walk.mode {
             case .live(let a): chip(String(format: "±%.0f m", a))
             case .holding(let a): chip(String(format: "±%.0f m · HOLDING", a))
+            case .byHand: chip("BY HAND")
             default: EmptyView()
             }
         }
@@ -53,7 +54,7 @@ struct WalkPanel: View {
             if let n = walk.nearest {
                 note(Text("Nothing in range here. ").foregroundColor(T.ink)
                      + Text("The nearest recording is ") + Text(n.name).foregroundColor(T.ink)
-                     + Text(", ") + Text(String(format: "%.0f m", n.dist)).font(T.mono()) + Text(" \(n.direction)."))
+                     + Text(", ") + Text(n.dist < 1000 ? String(format: "%.0f m", n.dist) : String(format: "%.1f km", n.dist / 1000)).font(T.mono()) + Text(" \(n.direction)."))
             } else {
                 note(Text("No recordings are published yet."))
             }
@@ -66,6 +67,15 @@ struct WalkPanel: View {
             }
             if walk.rows.contains(where: { if case .downloading = $0.phase { return true }; return false }) {
                 note(Text("First time here: each recording downloads once, then plays offline."))
+            }
+        }
+        if walk.mode == .byHand {
+            note(Text("Listening from where you tapped. Drag on the map to walk."))
+            Button { walk.useLocation() } label: {
+                Text("Use my location").font(T.body(T.sm, .medium)).foregroundStyle(T.ink)
+                    .frame(maxWidth: .infinity, minHeight: T.target)
+                    .background(T.raised, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
             }
         }
         if case .holding = walk.mode {

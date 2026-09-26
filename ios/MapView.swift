@@ -34,6 +34,7 @@ enum Ink {
 
 struct MapView: UIViewRepresentable {
     let features: [String: Any]
+    @ObservedObject var walk: Walk
 
     func makeUIView(context: Context) -> MLNMapView {
         let v = MLNMapView(frame: .zero, styleURL: styleURL())
@@ -43,18 +44,64 @@ struct MapView: UIViewRepresentable {
         v.attributionButton.tintColor = UIColor(T.faint)
         v.delegate = context.coordinator
         v.showsUserLocation = true
+        /* walking by hand: a tap puts the walker there, a press-and-drag walks it (the web's
+           draggable walker) - so a place can be heard from anywhere, and a point or the route
+           line is reached by tapping it */
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Frame.tapped(_:)))
+        v.gestureRecognizers?.filter { ($0 as? UITapGestureRecognizer)?.numberOfTapsRequired == 2 }.forEach { tap.require(toFail: $0) }
+        v.addGestureRecognizer(tap)
+        let drag = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Frame.dragged(_:)))
+        drag.minimumPressDuration = 0.25
+        v.addGestureRecognizer(drag)
         return v
     }
 
-    func updateUIView(_ v: MLNMapView, context: Context) {}
+    func updateUIView(_ v: MLNMapView, context: Context) {
+        context.coordinator.walk = walk
+        context.coordinator.show(walk.mode == .byHand ? walk.here : nil, on: v)
+    }
 
-    func makeCoordinator() -> Frame { Frame(bounds: bounds()) }
+    func makeCoordinator() -> Frame { let f = Frame(bounds: bounds()); f.walk = walk; return f }
 
     /* Framing needs the view's real size, which it only has once the style has loaded. */
     final class Frame: NSObject, MLNMapViewDelegate {
         let bounds: MLNCoordinateBounds?
+        weak var walk: Walk?
+        private var walker: MLNPointAnnotation?
+        private var lastDrag: CLLocationCoordinate2D?
         init(bounds: MLNCoordinateBounds?) { self.bounds = bounds }
         private var centred = false
+
+        @objc func tapped(_ g: UITapGestureRecognizer) {
+            guard let v = g.view as? MLNMapView else { return }
+            let c = v.convert(g.location(in: v), toCoordinateFrom: v)
+            walk?.walkBy(lon: c.longitude, lat: c.latitude)
+        }
+        @objc func dragged(_ g: UILongPressGestureRecognizer) {
+            guard let v = g.view as? MLNMapView else { return }
+            let c = v.convert(g.location(in: v), toCoordinateFrom: v)
+            if g.state == .began { lastDrag = nil }
+            /* a fix every couple of metres, as GPS would give (distanceFilter 2) */
+            if let l = lastDrag, fs_geo_distance(l.longitude, l.latitude, c.longitude, c.latitude) < 2, g.state == .changed { return }
+            lastDrag = c
+            walk?.walkBy(lon: c.longitude, lat: c.latitude)
+        }
+        /* the walker's dot while walking by hand */
+        func show(_ c: CLLocationCoordinate2D?, on v: MLNMapView) {
+            guard let c else { if let w = walker { v.removeAnnotation(w); walker = nil }; return }
+            if walker == nil { let a = MLNPointAnnotation(); walker = a; a.coordinate = c; v.addAnnotation(a) }
+            else { walker?.coordinate = c }
+        }
+        func mapView(_ v: MLNMapView, viewFor a: MLNAnnotation) -> MLNAnnotationView? {
+            guard a === walker else { return nil }
+            let view = MLNAnnotationView(reuseIdentifier: "walker")
+            view.frame = CGRect(x: 0, y: 0, width: 22, height: 22)
+            view.layer.cornerRadius = 11
+            view.backgroundColor = UIColor(T.lamp)
+            view.layer.borderColor = UIColor(T.sunk).cgColor
+            view.layer.borderWidth = 3
+            return view
+        }
         func mapView(_ v: MLNMapView, didFinishLoading style: MLNStyle) {
             guard let b = bounds, !centred else { return }
             v.setVisibleCoordinateBounds(b, edgePadding: UIEdgeInsets(top: 80, left: 40, bottom: 140, right: 40), animated: false, completionHandler: nil)

@@ -338,7 +338,7 @@ JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdoubl
     int r = fs_nearest_route(W->routes.data(), (int)W->routes.size(), lon, lat, fs_piece_route(E->piece), fs_sections_hold(W->sections), &proj);
     fs_piece_walk(E->piece, r, proj.t, r >= 0 ? proj.dist : INFINITY);
     int taken = fs_piece_route(E->piece);
-    W->route_name = taken >= 0 && taken < (int)W->route_names.size() ? W->route_names[taken] : "";
+    W->route_name = taken >= 0 && taken < (int)W->route_names.size() && r >= 0 && proj.dist <= FS_GPS_LEASH ? W->route_names[taken] : "";   /* only while audible */
     if (W->sections) {
         int cur = fs_piece_sector_now(E->piece), next = fs_sections_step(W->sections, cur, lon, lat);
         if (next != cur) fs_piece_sector(E->piece, next);

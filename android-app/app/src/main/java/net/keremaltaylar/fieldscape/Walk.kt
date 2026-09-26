@@ -33,7 +33,9 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
                      val stretch: Float, val windowSamples: Double, val grit: Float, val freeze: Float, val onset: Float, val brightest: Double, val path: String?, val sounds: Boolean)
     sealed interface Phase { data object Playing : Phase; data object Decoding : Phase; data class Downloading(val fraction: Double, val bytes: Long) : Phase }
     data class Row(val id: String, val name: String, val level: Double, val dist: Double, val phase: Phase)
-    sealed interface Mode { data object Waiting : Mode; data object Denied : Mode; data class Live(val accuracy: Double) : Mode; data class Holding(val accuracy: Double) : Mode }
+    sealed interface Mode { data object Waiting : Mode; data object Denied : Mode; data class Live(val accuracy: Double) : Mode; data class Holding(val accuracy: Double) : Mode
+        /** The walker placed on the map by a tap (the web's draggable walker); fixes ignored until useLocation. */
+        data object ByHand : Mode }
     data class Nearest(val name: String, val dist: Double, val direction: String)
 
     var mode by mutableStateOf<Mode>(Mode.Waiting)
@@ -93,7 +95,17 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
 
     fun denied() { mode = Mode.Denied }
 
+    /** The walker put down on the map by hand, to listen from anywhere. */
+    fun walkBy(lon: Double, lat: Double) {
+        mode = Mode.ByHand
+        here = lon to lat
+        step(lon, lat)
+    }
+    /** Back to the phone's own position. */
+    fun useLocation() { mode = Mode.Waiting }
+
     override fun onLocationChanged(l: Location) {
+        if (mode == Mode.ByHand) return
         val acc = l.accuracy.toDouble()
         here = l.longitude to l.latitude
         if (acc > Core.GPS_ACC_MAX) { mode = Mode.Holding(acc); return }
