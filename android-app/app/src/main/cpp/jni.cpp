@@ -39,6 +39,9 @@ struct Engine {
     std::atomic<double> power{ 0 };
     std::atomic<float> worst_ms{ 0 };
     std::atomic<int> reopens{ 0 };
+    /* the Sound / Stop fade: the whole output follows master_target at master_step per sample */
+    std::atomic<float> master_target{ 1 }, master_step{ 1 };
+    float master = 1;
 };
 Engine *E = nullptr;
 
@@ -60,7 +63,12 @@ aaudio_data_callback_result_t render(AAudioStream *, void *, void *data, int32_t
         int n = std::min(frames - done, MAX_BLOCK);
         fs_mix_process(E->mix, n);
         const float *l = fs_mix_out(E->mix, 0), *r = fs_mix_out(E->mix, 1);
-        for (int i = 0; i < n; i++) { out[2 * (done + i)] = l[i]; out[2 * (done + i) + 1] = r[i]; sq += (double)l[i] * l[i]; }
+        const float tgt = E->master_target.load(), st = E->master_step.load();
+        for (int i = 0; i < n; i++) {
+            E->master = E->master < tgt ? std::min(tgt, E->master + st) : std::max(tgt, E->master - st);
+            float g = E->master;
+            out[2 * (done + i)] = l[i] * g; out[2 * (done + i) + 1] = r[i] * g; sq += (double)l[i] * l[i] * g * g;
+        }
         done += n;
     }
     double p = E->power.load();
@@ -139,6 +147,12 @@ JNIEXPORT jdouble JNICALL FN(start)(JNIEnv *, jclass) {
 JNIEXPORT void JNICALL FN(pause)(JNIEnv *, jclass) { if (E && E->stream) AAudioStream_requestPause(E->stream); }
 JNIEXPORT void JNICALL FN(resume)(JNIEnv *, jclass) { if (E && E->stream) AAudioStream_requestStart(E->stream); }
 
+/* Sound / Stop: fade the whole output to `to` over `seconds` (linear) */
+JNIEXPORT void JNICALL FN(master)(JNIEnv *, jclass, jfloat to, jfloat seconds) {
+    if (!E) return;
+    E->master_step.store(1.0f / std::max(1.0f, seconds * (float)E->sr));
+    E->master_target.store(to);
+}
 JNIEXPORT void JNICALL FN(gain)(JNIEnv *, jclass, jint slot, jfloat g) { fs_mix_set_gain(E->mix, slot, g); }
 JNIEXPORT void JNICALL FN(lowpass)(JNIEnv *, jclass, jint slot, jfloat hz) { fs_mix_set_lowpass(E->mix, slot, hz, 350); }
 JNIEXPORT void JNICALL FN(grit)(JNIEnv *, jclass, jint slot, jfloat a) { fs_mix_set_grit(E->mix, slot, a); }
@@ -337,8 +351,8 @@ JNIEXPORT jstring JNICALL FN(pieceStep)(JNIEnv *env, jclass, jdouble lon, jdoubl
     fs_projection proj{};
     int r = fs_nearest_route(W->routes.data(), (int)W->routes.size(), lon, lat, fs_piece_route(E->piece), fs_sections_hold(W->sections), &proj);
     fs_piece_walk(E->piece, r, proj.t, r >= 0 ? proj.dist : INFINITY);
-    int taken = fs_piece_route(E->piece);
-    W->route_name = taken >= 0 && taken < (int)W->route_names.size() && r >= 0 && proj.dist <= FS_GPS_LEASH ? W->route_names[taken] : "";   /* only while audible */
+    /* the route underfoot (its sound crossfades in over 1.5 s), named only within the leash */
+    W->route_name = r >= 0 && r < (int)W->route_names.size() && proj.dist <= FS_GPS_LEASH ? W->route_names[r] : "";
     if (W->sections) {
         int cur = fs_piece_sector_now(E->piece), next = fs_sections_step(W->sections, cur, lon, lat);
         if (next != cur) fs_piece_sector(E->piece, next);
@@ -399,6 +413,16 @@ JNIEXPORT void JNICALL FN(pieceSource)(JNIEnv *env, jclass, jint h, jint slot, j
     fs_piece_rhythm_source(E->piece, h, slot, c, n, mem);
 }
 
+/* every route and where it starts, "name<TAB>lon<TAB>lat" per line: the Go to buttons */
+JNIEXPORT jstring JNICALL FN(pieceRouteStarts)(JNIEnv *env, jclass) {
+    std::string o;
+    if (W) for (size_t i = 0; i < W->routes.size(); i++) {
+        double lon, lat; fs_route_point_along(W->routes[i], 0, &lon, &lat);
+        char b[64]; snprintf(b, sizeof b, "\t%.7f\t%.7f\n", lon, lat);
+        o += W->route_names[i] + b;
+    }
+    return env->NewStringUTF(o.c_str());
+}
 JNIEXPORT jstring JNICALL FN(pieceRoute)(JNIEnv *env, jclass) { return env->NewStringUTF(W ? W->route_name.c_str() : ""); }
 JNIEXPORT jstring JNICALL FN(pieceRhythms)(JNIEnv *env, jclass) {
     std::string o;

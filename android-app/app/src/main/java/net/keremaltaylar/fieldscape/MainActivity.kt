@@ -51,6 +51,15 @@ class MainActivity : ComponentActivity() {
     private var failed by mutableStateOf<String?>(null)
     /** Why the sound is paused, when it is; the panel offers Resume (rulebook M-6). */
     private var paused by mutableStateOf<String?>(null)
+    /** The Sound / Stop button: fades the output (2 s in, 1.5 s out, as the web), then pauses the stream. */
+    private var soundOn by mutableStateOf(true)
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private fun setSound(on: Boolean) {
+        soundOn = on
+        main.removeCallbacksAndMessages(null)
+        if (on) { if (paused == null) Core.resume(); Core.master(1f, 2f) }
+        else { Core.master(0f, 1.5f); main.postDelayed({ if (!soundOn) Core.pause() }, 1600) }
+    }
     private lateinit var focus: AudioFocusRequest
 
     /* A call or another player takes the audio: pause, and come back by ourselves when it ends.
@@ -131,10 +140,16 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun Panel(onLongPress: () -> Unit) {
         val mode = walk.mode
-        Row(Modifier.fillMaxWidth().pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress() }) },
-            verticalAlignment = Alignment.CenterVertically) {
-            Text(if (mode == Walk.Mode.Denied) "Location is off" else walk.place ?: "Fieldscape", Modifier.weight(1f),
+        /* the developer long-press lives on the place name alone, clear of the buttons */
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(T.s2)) {
+            Text(if (mode == Walk.Mode.Denied) "Location is off" else walk.place ?: "Fieldscape",
+                 Modifier.weight(1f).pointerInput(Unit) { detectTapGestures(onLongPress = { onLongPress() }) },
                  color = T.ink, style = TextStyle(fontFamily = T.display, fontSize = T.md), maxLines = 1)
+            Box(Modifier.heightIn(min = T.target).widthIn(min = 64.dp_).clip(RoundedCornerShape(10.dp_)).background(T.raised)
+                .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_)).clickable { setSound(!soundOn) }.padding(horizontal = T.s3),
+                contentAlignment = Alignment.Center) {
+                Text(if (soundOn) "Stop" else "Sound", color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+            }
             when (mode) {
                 is Walk.Mode.Live -> Chip(String.format("±%.0f m", mode.accuracy))
                 is Walk.Mode.Holding -> Chip(String.format("±%.0f m · HOLDING", mode.accuracy))
@@ -170,6 +185,16 @@ class MainActivity : ComponentActivity() {
                 withStyle(SpanStyle(color = T.ink)) { append(walk.rhythms) }
             }
         }, color = T.dim, style = TextStyle(fontFamily = T.body, fontSize = T.sm))
+        /* away from every route: go to one (the map flies there, the walker stands at its start) */
+        if (walk.route == null && walk.routes.isNotEmpty()) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(T.s2)) {
+            walk.routes.forEachIndexed { i, r ->
+                Box(Modifier.weight(1f).heightIn(min = T.target).clip(RoundedCornerShape(10.dp_)).background(T.raised)
+                    .border(1.dp_, T.hairline, RoundedCornerShape(10.dp_)).clickable { walk.visit(i) }.padding(horizontal = T.s2),
+                    contentAlignment = Alignment.Center) {
+                    Text(r.first, color = T.ink, style = TextStyle(fontFamily = T.body, fontSize = T.sm), maxLines = 1)
+                }
+            }
+        }
         if (rows.isEmpty()) {
             val n = walk.nearest
             if (n != null) Text(buildAnnotatedString {
@@ -230,7 +255,8 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun Map(fc: JSONObject) {
         val here = walk.here
-        val state = remember { object { var style: Style? = null; var map: org.maplibre.android.maps.MapLibreMap? = null; var centredAt: Pair<Double, Double>? = null } }
+        val goTo = walk.goTo
+        val state = remember { object { var style: Style? = null; var map: org.maplibre.android.maps.MapLibreMap? = null; var centredAt: Pair<Double, Double>? = null; var wentTo: Pair<Double, Double>? = null } }
         AndroidView(factory = { ctx ->
             MapView(ctx).apply {
                 onCreate(null); onStart(); onResume()
@@ -249,6 +275,10 @@ class MainActivity : ComponentActivity() {
             }
         }, Modifier.fillMaxSize(), update = {
             val style = state.style ?: return@AndroidView
+            if (goTo != null && goTo != state.wentTo) {             // Go to: fly there, and keep the walker's re-centring quiet
+                state.wentTo = goTo; state.centredAt = goTo
+                state.map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(goTo.second, goTo.first), 16.5))
+            }
             here?.let { (lon, lat) ->
                 (style.getSource("me") as? GeoJsonSource)?.setGeoJson("""{"type":"Point","coordinates":[$lon,$lat]}""")
                 /* Street level on the walker; again if a fix lands far from there (a stale first fix,

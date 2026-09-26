@@ -279,8 +279,8 @@ const char *fs_engine_step(fs_engine *e, double lon, double lat) {
         fs_piece_rhythm_gain(e->piece, e->handle[b.id], (float)fs_point_gain(bd[bp[i]], b.radius, b.gain));
     }
     /* what the screen shows */
-    int taken = fs_piece_route(e->piece);
-    e->route_name = taken >= 0 && taken < (int)e->route_names.size() && r >= 0 && proj.dist <= FS_GPS_LEASH ? e->route_names[taken] : "";   /* only while audible */
+    /* the route underfoot (its sound crossfades in over 1.5 s), named only within the leash */
+    e->route_name = r >= 0 && r < (int)e->route_names.size() && proj.dist <= FS_GPS_LEASH ? e->route_names[r] : "";
     std::string rows;
     for (int i = 0; i < k; i++) {
         const Point &p = e->points[picked[i]];

@@ -47,6 +47,13 @@ class Walk(private val context: Context, private val engineRate: Double) : Locat
     /** The route whose patch is playing, and the rhythm points sounding (the piece). */
     var route by mutableStateOf<String?>(null)
     var rhythms by mutableStateOf("")
+    /** A place the map should show (Go to), and every route with where it starts. */
+    var goTo by mutableStateOf<Pair<Double, Double>?>(null)
+    val routes: List<Triple<String, Double, Double>> by lazy {
+        Core.pieceRouteStarts().lines().filter { it.isNotBlank() }.map { val p = it.split("\t"); Triple(p[0], p[1].toDouble(), p[2].toDouble()) }
+    }
+    /** Go to a route: the map flies there and the walker stands at its start, walking by hand. */
+    fun visit(i: Int) { val r = routes.getOrNull(i) ?: return; goTo = r.second to r.third; walkBy(r.second, r.third) }
 
     private val main = Handler(Looper.getMainLooper())
     private var points = listOf<Point>()

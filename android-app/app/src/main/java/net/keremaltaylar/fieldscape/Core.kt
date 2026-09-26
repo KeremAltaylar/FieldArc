@@ -41,5 +41,8 @@ object Core {
     @JvmStatic external fun pieceStep(lon: Double, lat: Double): String
     @JvmStatic external fun pieceSource(handle: Int, slot: Int, id: String, interleaved: java.nio.ByteBuffer, channels: Int, frames: Int, rate: Double)
     @JvmStatic external fun pieceRoute(): String
+    @JvmStatic external fun pieceRouteStarts(): String
+    /** Sound / Stop: fade the whole output to [to] over [seconds]. */
+    @JvmStatic external fun master(to: Float, seconds: Float)
     @JvmStatic external fun pieceRhythms(): String
 }
