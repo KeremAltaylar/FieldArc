@@ -136,17 +136,14 @@ final class RouteSound {
             Task { @MainActor [weak self] in
                 guard let walk = self?.walk, let data = try? await walk.recording(path, for: b.id + "#\(slot)") else { return }
                 /* interleaved 16-bit off the main thread; copied into the piece's own memory here */
-                let pcm = try? await Task.detached(priority: .userInitiated) { () -> ([Int16], Int) in
-                    let ch = try Decode.pcm(data, sampleRate: sr)
-                    let n = ch.first?.count ?? 0, c = min(max(ch.count, 1), 2)
-                    var out = [Int16](repeating: 0, count: n * c)
-                    for i in 0..<n { for k in 0..<c { out[i * c + k] = Int16(max(-32768, min(32767, (ch[k][i] * 32768).rounded()))) } }
-                    return (out, c)
-                }.value
-                guard let self, let pcm, !pcm.0.isEmpty, self.handle[b.id] == h else { return }
-                let mem = fs_alloc_i16(pcm.0.count)!
-                pcm.0.withUnsafeBufferPointer { mem.initialize(from: $0.baseAddress!, count: pcm.0.count) }
-                fs_piece_rhythm_source(self.piece, h, Int32(slot), Int32(pcm.1), Int64(pcm.0.count / pcm.1), mem)
+                guard let pcm = try? await Decode.pcm16(data, sampleRate: sr) else { return }
+                guard let self, pcm.frames > 0, self.handle[b.id] == h else { pcm.free(); return }
+                /* interleaved into the piece's own memory (it frees it), the planar copy let go at once */
+                let c = pcm.planar.count, n = pcm.frames
+                let mem = fs_alloc_i16(n * c)!
+                for k in 0..<c { let src = pcm.planar[k]; for i in 0..<n { mem[i * c + k] = src[i] } }
+                pcm.free()
+                fs_piece_rhythm_source(self.piece, h, Int32(slot), Int32(c), Int64(n), mem)
             }
         }
     }

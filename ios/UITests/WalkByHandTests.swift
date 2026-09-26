@@ -26,6 +26,8 @@ final class WalkByHandTests: XCTestCase {
         go.tap()
         let route = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH 'Route Koşuyolu'")).firstMatch
         XCTAssertTrue(route.waitForExistence(timeout: 8), "going to a route plays it")
+        /* stay while the recordings download and decode (memory is sampled from outside) */
+        if ProcessInfo.processInfo.environment["FS_HOLD"] != nil { sleep(60) }
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.lifetime = .keepAlways; add(shot)
         app.buttons["Stop the sound"].tap()
         XCTAssertTrue(app.buttons["Play the sound"].waitForExistence(timeout: 3), "Stop turns into Sound")

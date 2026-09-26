@@ -161,16 +161,10 @@ final class Core: ObservableObject {
     /* A decoded recording for a slot, stored 16-bit for the audio thread: half the memory of float,
        so a whole recording fits (a 6 min 40 s stereo take is 77 MB). The rounding sits near
        -96 dBFS, below anything a field recording holds. */
-    func load(slot: Int, channels: [[Float]]) {
-        let n = channels.first?.count ?? 0
-        let ptrs: [UnsafeMutablePointer<Int16>] = channels.prefix(2).map { ch in
-            let p = UnsafeMutablePointer<Int16>.allocate(capacity: max(n, 1))
-            for i in 0..<n { p[i] = Int16(max(-32768, min(32767, (ch[i] * 32768).rounded()))) }
-            return p
-        }
-        let consts = ptrs.map { UnsafePointer($0) as UnsafePointer<Int16>? }
+    func load(slot: Int, pcm: Decode.Pcm) {          /* takes ownership of pcm's buffers */
+        let consts = pcm.planar.map { UnsafePointer($0) as UnsafePointer<Int16>? }
         os_unfair_lock_lock(handoff.lock)
-        handoff.pending.append((slot, ptrs, consts, n))
+        handoff.pending.append((slot, pcm.planar, consts, pcm.frames))
         os_unfair_lock_unlock(handoff.lock)
     }
 
@@ -183,11 +177,14 @@ final class Core: ObservableObject {
     func set(_ i: Int, _ v: Float) { values[i] = v; param(slot: 0, i, v) }
 
     private func testChanged() {
-        if test, let url = Bundle.main.url(forResource: "stretch", withExtension: "wav"),
-           let data = try? Data(contentsOf: url), let ch = try? Decode.pcm(data, sampleRate: sampleRate) {
+        if test, let url = Bundle.main.url(forResource: "stretch", withExtension: "wav"), let data = try? Data(contentsOf: url) {
             for (i, v) in values { param(slot: 0, i, v) }
-            load(slot: 0, channels: ch)
-            gain(slot: 0, 1)
+            let sr = sampleRate
+            Task { @MainActor [weak self] in
+                guard let pcm = try? await Decode.pcm16(data, sampleRate: sr) else { return }
+                self?.load(slot: 0, pcm: pcm)
+                self?.gain(slot: 0, 1)
+            }
         } else {
             gain(slot: 0, 0)
         }

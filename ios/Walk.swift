@@ -217,16 +217,11 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
             do {
                 guard let data = try await self?.recording(path, for: p.id) else { return }
                 self?.phase[p.id] = .decoding
-                let decoded = try await Task.detached(priority: .userInitiated) { () -> [[Float]] in
-                    var ch = try Decode.pcm(data, sampleRate: sr)
-                    /* ponytail: 10 minutes kept per voice (~115 MB at 16-bit stereo), so four voices stay
-                       under ~460 MB on a 2 GB iPhone 8; the longest published take is 6 min 40 s. */
-                    let cap = Int(600 * sr)
-                    if (ch.first?.count ?? 0) > cap { ch = ch.map { Array($0.prefix(cap)) } }
-                    return ch
-                }.value
-                guard let self, self.slotOf[p.id] == slot else { return }
-                self.core.load(slot: slot, channels: decoded)
+                /* 16-bit, one decode at a time, at most 10 minutes (Decode.capSeconds): four voices
+                   stay under ~460 MB on a 2 GB iPhone 8 */
+                let decoded = try await Decode.pcm16(data, sampleRate: sr)
+                guard let self, self.slotOf[p.id] == slot else { decoded.free(); return }
+                self.core.load(slot: slot, pcm: decoded)
                 self.loaded.insert(p.id)
                 self.core.gain(slot: slot, self.earned[p.id] ?? 0)
                 self.phase[p.id] = nil
