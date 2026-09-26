@@ -77,6 +77,19 @@ float *fs_mix_out(fs_mix *m, int channel);
 /* Deepest gain reduction since the last call (dB, 0 = none) and samples ever over the ceiling. */
 void fs_mix_stats(fs_mix *m, float *min_gain_db, long long *over_ceiling);
 
+/* The mix rendered ahead (core/player.cpp): a thread keeps ~`seconds` of output in a ring and the
+   platform's audio callback only copies from it (fs_player_read), so a stall on the phone drains the
+   ring instead of the speaker. The hook runs on that thread before each block: the host's source
+   handoffs belong there, since it is now the thread that calls the devices. */
+typedef struct fs_player fs_player;
+fs_player *fs_player_create(fs_mix *m, float sample_rate, float seconds);
+void fs_player_on_block(fs_player *p, void (*fn)(void *), void *ctx);
+void fs_player_start(fs_player *p);
+void fs_player_stop(fs_player *p);
+void fs_player_destroy(fs_player *p);
+int fs_player_read(fs_player *p, float *left, float *right, int frames);
+void fs_player_stats(fs_player *p, long long *underruns, float *worst_block_ms, float *ahead_ms);
+
 /* The place layer (core/place.cpp): position -> the numbers the mix and devices hear. Ported
    from index.html; core/tests/place_test.cpp holds it to the JS. Coordinates are lon, lat. */
 #define FS_ZONE_MARGIN 1.3        /* leave a point at 130% of its radius (A-14) */

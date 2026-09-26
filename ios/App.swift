@@ -7,6 +7,10 @@ import AVFoundation
 import SwiftUI
 import os
 
+/* The test number of this build (docs/TESTS.md): shown first in the developer line, so Kerem can
+   see which build he is testing. Bump it with every build handed over. */
+let TEST_BUILD = 3
+
 final class Core: ObservableObject {
     struct Param: Identifiable { let id: Int; let key, name, unit: String; let min, max: Float }
     static let slots = 4
@@ -61,6 +65,22 @@ final class Core: ObservableObject {
         init() { pending.reserveCapacity(16); retired.reserveCapacity(64) }
     }
     private let handoff = Handoff()
+    private var player: OpaquePointer? = nil
+
+    /* On the render thread before each block: recordings waiting in the handoff go to their voices
+       (try-lock: the render thread never waits); what they replace is freed later on the main thread. */
+    fileprivate func takeHandoff() {
+        let h = handoff
+        guard os_unfair_lock_trylock(h.lock) else { return }
+        for p in h.pending {
+            p.consts.withUnsafeBufferPointer { fs_set_source_i16(voices[p.slot], Int32(p.consts.count), Int32(p.frames), $0.baseAddress) }
+            h.retired += h.live[p.slot]
+            h.live[p.slot] = p.ptrs
+            h.liveFrames[p.slot] = p.frames
+        }
+        h.pending.removeAll(keepingCapacity: true)
+        os_unfair_lock_unlock(h.lock)
+    }
 
     init() {
         let session = AVAudioSession.sharedInstance()
@@ -95,30 +115,23 @@ final class Core: ObservableObject {
         values = vs
 
         let format = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 2)!
-        let m = mix, worst = worstMs, h = handoff, vv = voices, pw = outPower
+        let worst = worstMs, pw = outPower
+        /* The mix is rendered ~350 ms ahead on its own real-time thread (core/player.cpp); the
+           callback below only copies. Test 2 on the iPhone 8: one callback took 188-243 ms on the
+           first screen lock and on a screenshot, every time - 3 underruns, a half-second glitch. */
+        player = fs_player_create(mix, Float(sr), 0.35)
+        fs_player_on_block(player, { ctx in Unmanaged<Core>.fromOpaque(ctx!).takeUnretainedValue().takeHandoff() },
+                           Unmanaged.passUnretained(self).toOpaque())
+        fs_player_start(player)
+        let pl = player!
         let node = AVAudioSourceNode(format: format) { _, _, frames, abl -> OSStatus in
             let t0 = DispatchTime.now().uptimeNanoseconds
-            /* ponytail: handing a recording over appends to two small reserved arrays here; it happens a
-               few times per walk, not per callback. A lock-free ring if it ever shows in the stats. */
-            if os_unfair_lock_trylock(h.lock) {
-                for p in h.pending {
-                    p.consts.withUnsafeBufferPointer {
-                        fs_set_source_i16(vv[p.slot], Int32(p.consts.count), Int32(p.frames), $0.baseAddress)
-                    }
-                    h.retired += h.live[p.slot]
-                    h.live[p.slot] = p.ptrs
-                    h.liveFrames[p.slot] = p.frames
-                }
-                h.pending.removeAll(keepingCapacity: true)
-                os_unfair_lock_unlock(h.lock)
-            }
-            fs_mix_process(m, Int32(frames))
-            for (c, b) in UnsafeMutableAudioBufferListPointer(abl).enumerated() {
-                b.mData!.copyMemory(from: fs_mix_out(m, Int32(min(c, 1)))!, byteCount: Int(frames) * 4)
-            }
-            let o = fs_mix_out(m, 0)!
+            let bufs = UnsafeMutableAudioBufferListPointer(abl)
+            let l = bufs[0].mData!.assumingMemoryBound(to: Float.self)
+            let r = bufs[min(1, bufs.count - 1)].mData!.assumingMemoryBound(to: Float.self)
+            fs_player_read(pl, l, r, Int32(frames))
             var sq = 0.0
-            for i in 0..<Int(frames) { sq += Double(o[i] * o[i]) }
+            for i in 0..<Int(frames) { sq += Double(l[i] * l[i]) }
             pw.pointee += (sq / Double(max(frames, 1)) - pw.pointee) * 0.05
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             if ms > worst.pointee { worst.pointee = ms }
@@ -232,8 +245,11 @@ final class Core: ObservableObject {
            walker stands still, when no fix - and so no walk log line - arrives). */
         try? String(format: "%.1f", outputDb).write(to: FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("level.txt"), atomically: true, encoding: .utf8)
-        line = String(format: "4 voices + mix: worst %.2f ms of %.1f ms (%.0f%%) · late %d · underruns %d · limiter %.1f dB · over %lld",
-                      w, bufferMs, w / bufferMs * 100, late, under, gr, over)
+        var pu: Int64 = 0, pw: Float = 0, ahead: Float = 0
+        if let p = player { fs_player_stats(p, &pu, &pw, &ahead) }
+        line = String(format: "Fieldscape · Test %d\nahead %.0f ms · dropouts %lld · render worst %.1f ms · callback worst %.2f ms of %.1f · late %d · limiter %.1f dB · over %lld",
+                      TEST_BUILD, ahead, pu, pw, w, bufferMs, late, gr, over)
+        _ = under
     }
 }
 

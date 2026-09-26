@@ -5,7 +5,7 @@
   <key>CFBundleIdentifier</key><string>net.keremaltaylar.fieldscape</string>
   <key>CFBundleExecutable</key><string>Fieldscape</string>
   <key>CFBundleName</key><string>Fieldscape</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleVersion</key><string>3</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>MinimumOSVersion</key><string>16.4</string>
