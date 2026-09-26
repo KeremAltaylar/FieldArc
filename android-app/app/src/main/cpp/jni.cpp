@@ -36,6 +36,7 @@ struct Engine {
     std::vector<Pending> pending;
     std::vector<short *> retired;
     short *live[SLOTS][2] = {};
+    int live_frames[SLOTS] = {};
     std::atomic<double> power{ 0 };
     std::atomic<float> worst_ms{ 0 };
     std::atomic<int> reopens{ 0 };
@@ -53,6 +54,7 @@ aaudio_data_callback_result_t render(AAudioStream *, void *, void *data, int32_t
             fs_set_source_i16(E->voice[p.slot], 2, p.frames, ch);
             for (short *old : E->live[p.slot]) if (old) E->retired.push_back(old);
             E->live[p.slot][0] = p.l; E->live[p.slot][1] = p.r;
+            E->live_frames[p.slot] = p.frames;
         }
         E->pending.clear();
         E->lock.unlock();
@@ -95,12 +97,19 @@ bool open_stream() {
     AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_FLOAT);
     AAudioStreamBuilder_setChannelCount(b, 2);
     AAudioStreamBuilder_setSampleRate(b, (int)E->sr);
-    AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_NONE);   /* a walk wants stability, not latency */
+    /* low-latency mode for its real-time callback thread, which Android does not throttle when the app
+       leaves the foreground; the big buffer below is what gives the walk its stability */
+    AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    /* ~350 ms of headroom: going to the Home screen (or the screen going off) stalls the callback for
+       100-250 ms while Android demotes the app; a 90 ms buffer ran dry every time (emulator: 14
+       dropouts in 5 Home round trips). Nothing in a walk needs low latency; Stop fades anyway. */
+    AAudioStreamBuilder_setBufferCapacityInFrames(b, (int)(E->sr * 0.35));
     AAudioStreamBuilder_setDataCallback(b, render, nullptr);
     AAudioStreamBuilder_setErrorCallback(b, on_error, nullptr);
     aaudio_result_t r = AAudioStreamBuilder_openStream(b, &E->stream);
     AAudioStreamBuilder_delete(b);
     if (r != AAUDIO_OK) { LOG("openStream failed: %s", AAudio_convertResultToText(r)); return false; }
+    AAudioStream_setBufferSizeInFrames(E->stream, AAudioStream_getBufferCapacityInFrames(E->stream));   /* use all of it */
     AAudioStream_requestStart(E->stream);
     return true;
 }
@@ -139,6 +148,27 @@ JNIEXPORT jdouble JNICALL FN(start)(JNIEnv *, jclass) {
     fs_prepare(E->piece, (float)E->sr, MAX_BLOCK);
     fs_mix_add(E->mix, E->piece, (float)E->sr, 1);
     open_stream();
+    /* The loaded recordings, read a page at a time every 2 s off the audio thread, as on iOS: when the
+       app leaves the foreground Android reclaims memory it has not touched lately, and the callback
+       stalled reading those pages back. */
+    std::thread([] {
+        volatile short sink = 0;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            std::lock_guard<std::mutex> g(E->lock);
+            for (int s = 0; s < SLOTS; s++)
+                for (short *p : E->live[s]) if (p) for (int i = 0; i < E->live_frames[s]; i += 2048) sink = sink + p[i];
+        }
+    }).detach();
+    /* the stream's health in logcat every 2 s (adb logcat -s fieldscape): dropouts are measured, not guessed */
+    std::thread([] {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            AAudioStream *s = E->stream;
+            if (s) LOG("engine xruns %d worst %.2f ms buffer %d of %d frames burst %d", AAudioStream_getXRunCount(s), E->worst_ms.load(),
+                       AAudioStream_getBufferSizeInFrames(s), AAudioStream_getBufferCapacityInFrames(s), AAudioStream_getFramesPerBurst(s));
+        }
+    }).detach();
     return E->sr;
 }
 
