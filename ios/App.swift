@@ -57,6 +57,7 @@ final class Core: ObservableObject {
         var pending: [(slot: Int, ptrs: [UnsafeMutablePointer<Int16>], consts: [UnsafePointer<Int16>?], frames: Int)] = []
         var retired: [UnsafeMutablePointer<Int16>] = []
         var live: [[UnsafeMutablePointer<Int16>]] = Array(repeating: [], count: Core.slots)
+        var liveFrames: [Int] = Array(repeating: 0, count: Core.slots)
         init() { pending.reserveCapacity(16); retired.reserveCapacity(64) }
     }
     private let handoff = Handoff()
@@ -106,6 +107,7 @@ final class Core: ObservableObject {
                     }
                     h.retired += h.live[p.slot]
                     h.live[p.slot] = p.ptrs
+                    h.liveFrames[p.slot] = p.frames
                 }
                 h.pending.removeAll(keepingCapacity: true)
                 os_unfair_lock_unlock(h.lock)
@@ -127,6 +129,30 @@ final class Core: ObservableObject {
         try? engine.start()
         observeSession()
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
+        keepWarm()
+    }
+
+    /* The loaded recordings, read a page at a time every 2 s off the audio thread. On the first screen
+       lock (and on a screenshot) iOS compresses memory the app has not touched lately; the audio
+       thread then stalled unpacking a recording's pages - Kerem's iPhone 8, 2026-09-26: one callback
+       243 ms of a 21 ms budget, 3 underruns, a half-second glitch, only the first time. Touched
+       pages count as in use and are left alone. ponytail: the piece's rhythm recordings are not
+       touched (smaller, read as they play); add them if a glitch remains. */
+    private func keepWarm() {
+        let h = handoff
+        DispatchQueue.global(qos: .utility).async {
+            var sink: Int16 = 0
+            while true {
+                os_unfair_lock_lock(h.lock)
+                for (slot, chans) in h.live.enumerated() {
+                    let n = h.liveFrames[slot]
+                    for p in chans { var i = 0; while i < n { sink &+= p[i]; i += 4096 } }   /* 8 KB apart: every 16 KB page, twice */
+                }
+                os_unfair_lock_unlock(h.lock)
+                if sink == 12345 { print("") }             /* keeps the reads from being optimised away */
+                Thread.sleep(forTimeInterval: 2)
+            }
+        }
     }
 
     /* Rulebook M-6. A call, Siri or an alarm interrupts: when it ends the walk comes back by itself.
