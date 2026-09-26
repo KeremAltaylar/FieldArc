@@ -44,3 +44,22 @@ targets:
       # (164 ms callbacks on the iPhone 8, 2026-09-24). Debugging steps less precisely; timing is real.
       GCC_OPTIMIZATION_LEVEL: 3
       SWIFT_OPTIMIZATION_LEVEL: -O
+  FieldscapeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: Fieldscape
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: net.keremaltaylar.fieldscape.uitests
+      TEST_TARGET_NAME: Fieldscape
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGN_STYLE: Automatic
+schemes:
+  Fieldscape:
+    build:
+      targets:
+        Fieldscape: all
+        FieldscapeUITests: [test]
+    test:
+      targets: [FieldscapeUITests]

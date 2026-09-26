@@ -23,6 +23,8 @@ final class RouteSound {
     private let t0 = Date()
     /* what the walk panel shows */
     private(set) var routeName: String? = nil
+    /* every route and where it starts: the panel's Go to buttons */
+    private(set) var routeStarts: [(name: String, lon: Double, lat: Double)] = []
     private(set) var rhythmNames: [String] = []
 
     init(core: Core) { self.core = core }
@@ -37,6 +39,7 @@ final class RouteSound {
                 guard let r = fs_route_create(&flat, Int32(c.count)), fs_route_length(r) > 0 else { continue }
                 routes.append(r)
                 routeNames.append(p["name"] as? String ?? "Route")
+                routeStarts.append((p["name"] as? String ?? "Route", c[0][0], c[0][1]))
                 _ = fs_piece_add_route(piece, RouteSound.json(p["patch"]))
             } else if g["type"] as? String == "Point", let c = g["coordinates"] as? [Double], c.count >= 2 {
                 let q = p["sound"] as? [String: Any] ?? [:], a = p["audio"] as? [String: Any] ?? [:]

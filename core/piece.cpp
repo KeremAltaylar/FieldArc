@@ -630,7 +630,7 @@ struct Piece : Device {
         rdrive.init(sr, 3, 0.6, 1, 0, 0, p.rfx.cutoff, 1, 1);
         rdrive.q = 1.1;
         apply_rhythm_fx(p, 0);
-        synth_level.init(1);
+        synth_level.init(0);          /* silent until a walk says a route is near (world mode starts with none) */
         bpm = p.tempo;
         for (auto &r : rh) { r.gain.init(0); init_hits(r, true); }
     }

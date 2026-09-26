@@ -47,11 +47,15 @@ struct MapView: UIViewRepresentable {
         /* walking by hand: a tap puts the walker there, a press-and-drag walks it (the web's
            draggable walker) - so a place can be heard from anywhere, and a point or the route
            line is reached by tapping it */
+        /* MapLibre has its own tap and press recognisers on the view, which won over these (Kerem's
+           iPhone: taps did nothing): the delegate lets ours recognise alongside them. */
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Frame.tapped(_:)))
+        tap.delegate = context.coordinator
         v.gestureRecognizers?.filter { ($0 as? UITapGestureRecognizer)?.numberOfTapsRequired == 2 }.forEach { tap.require(toFail: $0) }
         v.addGestureRecognizer(tap)
         let drag = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Frame.dragged(_:)))
         drag.minimumPressDuration = 0.25
+        drag.delegate = context.coordinator
         v.addGestureRecognizer(drag)
         return v
     }
@@ -59,14 +63,20 @@ struct MapView: UIViewRepresentable {
     func updateUIView(_ v: MLNMapView, context: Context) {
         context.coordinator.walk = walk
         context.coordinator.show(walk.mode == .byHand ? walk.here : nil, on: v)
+        if let g = walk.goTo, context.coordinator.wentTo.map({ $0.latitude != g.latitude || $0.longitude != g.longitude }) ?? true {
+            context.coordinator.wentTo = g
+            v.setCenter(g, zoomLevel: 16.5, animated: true)
+        }
     }
 
     func makeCoordinator() -> Frame { let f = Frame(bounds: bounds()); f.walk = walk; return f }
 
     /* Framing needs the view's real size, which it only has once the style has loaded. */
-    final class Frame: NSObject, MLNMapViewDelegate {
+    final class Frame: NSObject, MLNMapViewDelegate, UIGestureRecognizerDelegate {
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith o: UIGestureRecognizer) -> Bool { true }
         let bounds: MLNCoordinateBounds?
         weak var walk: Walk?
+        var wentTo: CLLocationCoordinate2D?
         private var walker: MLNPointAnnotation?
         private var lastDrag: CLLocationCoordinate2D?
         init(bounds: MLNCoordinateBounds?) { self.bounds = bounds }
@@ -80,7 +90,9 @@ struct MapView: UIViewRepresentable {
         @objc func dragged(_ g: UILongPressGestureRecognizer) {
             guard let v = g.view as? MLNMapView else { return }
             let c = v.convert(g.location(in: v), toCoordinateFrom: v)
-            if g.state == .began { lastDrag = nil }
+            /* while the walker is dragged the map holds still */
+            if g.state == .began { lastDrag = nil; v.isScrollEnabled = false }
+            if g.state == .ended || g.state == .cancelled || g.state == .failed { v.isScrollEnabled = true }
             /* a fix every couple of metres, as GPS would give (distanceFilter 2) */
             if let l = lastDrag, fs_geo_distance(l.longitude, l.latitude, c.longitude, c.latitude) < 2, g.state == .changed { return }
             lastDrag = c

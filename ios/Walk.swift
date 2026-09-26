@@ -29,6 +29,16 @@ final class Walk: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var rhythms: [String] = []
     /* where the walker is, for the map's walker dot */
     @Published var here: CLLocationCoordinate2D? = nil
+    /* a place the map should show (Go to), and the routes it can go to */
+    @Published var goTo: CLLocationCoordinate2D? = nil
+    var routes: [(name: String, lon: Double, lat: Double)] { sound.routeStarts }
+    /* Go to a route: the map flies there and the walker stands at its start, walking by hand. */
+    func visit(route i: Int) {
+        guard i < routes.count else { return }
+        let r = routes[i]
+        goTo = CLLocationCoordinate2D(latitude: r.lat, longitude: r.lon)
+        walkBy(lon: r.lon, lat: r.lat)
+    }
 
     private let core: Core
     private let sound: RouteSound

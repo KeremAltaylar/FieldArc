@@ -8,6 +8,7 @@ import SwiftUI
 struct WalkPanel: View {
     @ObservedObject var walk: Walk
     @ObservedObject var core: Core
+    var onLongPress: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: T.s3) {
@@ -34,7 +35,15 @@ struct WalkPanel: View {
         HStack(alignment: .firstTextBaseline, spacing: T.s3) {
             Text(walk.mode == .denied ? "Location is off" : (walk.place ?? "Fieldscape"))
                 .font(T.display(T.md)).foregroundStyle(T.ink).lineLimit(1)
+                .onLongPressGesture(perform: onLongPress)
             Spacer(minLength: T.s2)
+            Button { core.setSound(!core.soundOn) } label: {
+                Text(core.soundOn ? "Stop" : "Sound").font(T.body(T.sm, .medium)).foregroundStyle(T.ink)
+                    .frame(minWidth: 64, minHeight: T.target)
+                    .background(T.raised, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
+            }
+            .accessibilityLabel(core.soundOn ? "Stop the sound" : "Play the sound")
             switch walk.mode {
             case .live(let a): chip(String(format: "±%.0f m", a))
             case .holding(let a): chip(String(format: "±%.0f m · HOLDING", a))
@@ -49,6 +58,20 @@ struct WalkPanel: View {
         if walk.route != nil || !walk.rhythms.isEmpty {
             note((walk.route.map { Text("Route ") + Text($0).foregroundColor(T.ink) } ?? Text(""))
                  + (walk.rhythms.isEmpty ? Text("") : Text(walk.route == nil ? "Rhythm " : " · rhythm ") + Text(walk.rhythms.joined(separator: ", ")).foregroundColor(T.ink)))
+        }
+        /* away from every route: go to one (the map flies there, the walker stands at its start) */
+        if walk.route == nil && !walk.routes.isEmpty {
+            HStack(spacing: T.s2) {
+                ForEach(Array(walk.routes.enumerated()), id: \.offset) { i, r in
+                    Button { walk.visit(route: i) } label: {
+                        Text(r.name).font(T.body(T.sm, .medium)).foregroundStyle(T.ink).lineLimit(1)
+                            .frame(maxWidth: .infinity, minHeight: T.target).padding(.horizontal, T.s2)
+                            .background(T.raised, in: RoundedRectangle(cornerRadius: 10))
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(T.hairline))
+                    }
+                    .accessibilityLabel("Go to " + r.name)
+                }
+            }
         }
         if walk.rows.isEmpty {
             if let n = walk.nearest {

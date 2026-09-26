@@ -27,6 +27,23 @@ final class Core: ObservableObject {
     @Published var test = false { didSet { testChanged() } }
     /* Why the sound is paused, when it is: shown in the walk panel with a Resume button. */
     @Published var paused: String? = nil
+    /* The Sound / Stop button: the whole output fades (the web's SOUND_FADE_IN / OUT), then the
+       engine pauses, so a stopped walk costs no battery. */
+    @Published var soundOn = true
+    private var fadeTimer: Timer?
+    func setSound(_ on: Bool) {
+        soundOn = on
+        fadeTimer?.invalidate()
+        let mixer = engine.mainMixerNode
+        if on { if paused == nil { restart() } }
+        let from = mixer.outputVolume, to: Float = on ? 1 : 0, secs = on ? 2.0 : 1.5, steps = 30
+        var k = 0
+        fadeTimer = Timer.scheduledTimer(withTimeInterval: secs / Double(steps), repeats: true) { [weak self] t in
+            k += 1
+            mixer.outputVolume = from + (to - from) * Float(k) / Float(steps)
+            if k >= steps { t.invalidate(); if !on { self?.engine.pause() } }
+        }
+    }
     private var bufferMs = 0.0
 
     /* Recordings reach the audio thread through `pending`, taken with a try-lock inside the
@@ -134,7 +151,7 @@ final class Core: ObservableObject {
         }
     }
 
-    func resume() { paused = nil; restart() }
+    func resume() { paused = nil; if soundOn { restart() } }
 
     private func restart() {
         try? AVAudioSession.sharedInstance().setActive(true)
@@ -217,9 +234,9 @@ struct ContentView: View {
             else { Text(failed ?? "Loading the map…").font(T.body(T.sm)).foregroundStyle(T.dim).frame(maxHeight: .infinity) }
             VStack(alignment: .leading, spacing: T.s5) {
                 Capsule().fill(T.hairline).frame(width: 38, height: 4).frame(maxWidth: .infinity)
-                WalkPanel(walk: walk, core: core)
-                    .contentShape(Rectangle())
-                    .onLongPressGesture { withAnimation(.easeOut(duration: 0.18)) { developer.toggle() } }
+                /* the long-press lives on the place name alone: on the whole panel it swallowed its
+                   buttons' taps (Go to did nothing on the simulator, 2026-09-26) */
+                WalkPanel(walk: walk, core: core, onLongPress: { withAnimation(.easeOut(duration: 0.18)) { developer.toggle() } })
                 if developer {
                     ScrollView { DeveloperPanel(core: core, open: true) }.frame(maxHeight: 360)
                 }
