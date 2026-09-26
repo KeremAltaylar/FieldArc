@@ -24,7 +24,7 @@ try {
     if (m.method === "Runtime.consoleAPICalled" && /core|error/i.test(JSON.stringify(m.params.args))) console.log("console:", m.params.args.map((a) => a.value ?? a.description).join(" ").slice(0, 300));
   });
   await s.send("Runtime.enable");
-  await s.send("Page.navigate", { url: "http://localhost:8765/?core" });
+  await s.send("Page.navigate", { url: process.env.FS_URL || "http://localhost:8765/?core" });
   const ev = async (e) => (await s.send("Runtime.evaluate", { expression: e, returnByValue: true, awaitPromise: true })).result.value;
   for (let i = 0; i < 100 && !(await ev("!!(window.__fa && __fa.walkTo && document.body.classList.contains('world'))")); i++) await sleep(300);
   await sleep(3000);                                      /* the published features */

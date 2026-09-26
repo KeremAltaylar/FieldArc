@@ -8228,13 +8228,14 @@ dl.props dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: ta
      route's piece, the rhythm points, the mix and its limiter), in an AudioWorklet. The page only
      tells it where the walker is (worldMove) and fetches the recordings it asks for; every sound
      choice is made inside it. Open world only for now; place-mode walks and the setter panels
-     still run on Tone. Opt in with ?core (remembered) and out with ?core=0. */
+     still run on Tone. The default since 2026-09-26 (Kerem: "lets go"); ?core=0 falls back to
+     the Tone engine (remembered), ?core brings the core back. */
   var CORE = (function () {
     var m = /[?&]core(=([^&]*))?/.exec(location.search);
     try {
       if (m) { localStorage.setItem("fs.core", m[2] === "0" ? "0" : "1"); }
-      return localStorage.getItem("fs.core") === "1";
-    } catch (e) { return !!m && m[2] !== "0"; }
+      return localStorage.getItem("fs.core") !== "0";
+    } catch (e) { return !(m && m[2] === "0"); }
   })();
   var core = null;
   function coreStart() {
