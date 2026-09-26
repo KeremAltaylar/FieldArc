@@ -9,7 +9,7 @@ import os
 
 /* The test number of this build (docs/TESTS.md): shown first in the developer line, so Kerem can
    see which build he is testing. Bump it with every build handed over. */
-let TEST_BUILD = 3
+let TEST_BUILD = 4
 
 final class Core: ObservableObject {
     struct Param: Identifiable { let id: Int; let key, name, unit: String; let min, max: Float }
@@ -172,21 +172,45 @@ final class Core: ObservableObject {
        Headphones pulled out: paused, as every iOS player does, rather than suddenly playing out loud
        from the speaker in the street; the panel offers Resume. A hardware change (Bluetooth
        headphones switching rate) stops the engine: it is started again. */
+    /* Test 4: what iOS does to the audio, counted, with the hardware's rate and buffer each time - the
+       first screen lock and the first screenshot still glitch with 0 dropouts in the app (Test 3). */
+    private var events: [String: Int] = [:]
+    private var lastEvent = "none"
+    private func note(_ what: String) {
+        events[what, default: 0] += 1
+        let s = AVAudioSession.sharedInstance()
+        let t = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        lastEvent = String(format: "%@ at %@ · %.0f Hz · io %.1f ms · engine %@", what, t, s.sampleRate, s.ioBufferDuration * 1000,
+                           engine.isRunning ? "running" : "stopped")
+    }
+
     private func observeSession() {
         let nc = NotificationCenter.default, session = AVAudioSession.sharedInstance()
         nc.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] n in
             guard let self, let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            self.note(type == .began ? "interruption" : "interruption end")
             if type == .ended && self.paused == nil { self.restart() }
         }
         nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] n in
-            guard let self, let raw = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-                  AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
+            guard let self, let raw = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt else { return }
+            self.note("route change \(raw)")
+            guard AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
             self.engine.pause()
             self.paused = "Headphones were unplugged."
         }
         nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            self?.note("engine config change")
             if self?.paused == nil { self?.restart() }
+        }
+        nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main) { [weak self] _ in
+            self?.note("media services reset")
+        }
+        nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.note("background")
+        }
+        nc.addObserver(forName: UIApplication.userDidTakeScreenshotNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.note("screenshot")
         }
     }
 
@@ -249,6 +273,8 @@ final class Core: ObservableObject {
         if let p = player { fs_player_stats(p, &pu, &pw, &ahead) }
         line = String(format: "Fieldscape · Test %d\nahead %.0f ms · dropouts %lld · render worst %.1f ms · callback worst %.2f ms of %.1f · late %d · limiter %.1f dB · over %lld",
                       TEST_BUILD, ahead, pu, pw, w, bufferMs, late, gr, over)
+            + "\nevents: " + (events.isEmpty ? "none" : events.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", "))
+            + "\nlast: " + lastEvent
         _ = under
     }
 }
